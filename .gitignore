@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+*.egg
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Generated logs (engine output, not the catalog itself)
+out/
+*.log
+
+# Re-include test fixture sample logs (verbatim ground truth for wazuh-logtest)
+!tests/fixtures/**/*.log
+
+# Local env / secrets
+.env
+.env.local
+
+# Future: api/ web/ build artifacts
+api/.venv/
+web/node_modules/
+web/.next/
+web/out/

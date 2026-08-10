@@ -1,0 +1,350 @@
+vendor: fortinet
+product: fortios
+version: "7.4"
+log_type: traffic.forward
+description: |
+  FortiGate FortiOS 7.4 forward-traffic log
+  (logid="0000000013" = LOG_ID_TRAFFIC_END_FORWARD — session-end record).
+  Native FortiOS wire format is space-separated key=value pairs, wrapped
+  in RFC3164 syslog with a local7-class PRI. This is the format emitted
+  by `config log syslogd setting` with `format` left at default.
+
+  CEF emission for traffic logs is OPTIONAL and added starting in
+  FortiOS 7.4.x — enabled via `config log syslogd setting / set format
+  cef` (or `csv` for the legacy comma form). When CEF mode is active
+  the device emits a CEF:0|Fortinet|FortiGate|... header followed by
+  the same field set as extensions; that variant is covered by a
+  sibling catalog (traffic-cef.yaml) when needed. Default native
+  key=value is what FortiAnalyzer, Wazuh's `fortigate` decoder, the
+  Elastic `fortinet_fortigate` integration, Splunk Connect for Syslog's
+  `fgt_traffic` sourcetype, and Sekoia's Fortigate intake all consume
+  by default.
+
+  Source-of-truth (URLs verified 2026-05-15):
+    - FortiOS 7.4.4 Log Message Reference — 13 LOG_ID_TRAFFIC_END_FORWARD
+      (canonical field list + sample for the session-end forward log
+      that uses logid="0000000013"):
+        https://docs.fortinet.com/document/fortigate/7.4.4/fortios-log-message-reference/13/13-log-id-traffic-end-forward
+    - FortiOS 7.4.4 Log Message Reference — Log message fields
+      (master field catalog the per-logid pages reference):
+        https://docs.fortinet.com/document/fortigate/7.4.4/fortios-log-message-reference/357866/log-message-fields
+    - FortiOS 7.4.2 Log Message Reference — Traffic log support for CEF
+      (where CEF mode for traffic was introduced/documented for 7.4):
+        https://docs.fortinet.com/document/fortigate/7.4.2/fortios-log-message-reference/949981/traffic-log-support-for-cef
+    - FortiOS 7.4.0 Log Reference (full PDF, Traffic Logs section):
+        https://fortinetweb.s3.amazonaws.com/docs.fortinet.com/v2/attachments/831b6976-e083-11ed-8e6d-fa163e15d75b/FortiOS_7.4.0_Log_Reference.pdf
+    - Splunk Connect for Syslog — Fortinet source (sourcetype
+      `fgt_traffic`, index `netfw`):
+        https://splunk.github.io/splunk-connect-for-syslog/main/sources/Fortinet/
+    - Elastic integration — fortinet_fortigate (key=value KV parsing,
+      index `logs-fortinet_fortigate.log-*`):
+        https://www.elastic.co/docs/reference/integrations/fortinet_fortigate
+
+  Real vendor wire-format sample (verbatim from FortiOS 7.4.x Log
+  Reference — Traffic log support for CEF page, "default" native
+  example):
+
+    date=2018-12-27 time=11:07:55 logid="0000000013" type="traffic" subtype="forward" level="notice" vd="vdom1" eventtime=1545937675 srcip=10.1.100.11 srcport=54190 srcintf="port12" srcintfrole="undefined" dstip=52.53.140.235 dstport=443 dstintf="port11" dstintfrole="undefined" poluuid="c2d460aa-fe6f-51e8-9505-41b5117dfdd4" sessionid=402 proto=6 action="close" policyid=1 policytype="policy" service="HTTPS" dstcountry="United States" srccountry="Reserved" trandisp="snat" transip=172.16.200.1 transport=54190 appid=40568 app="HTTPS.BROWSER" appcat="Web.Client" apprisk="medium" applist="g-default" duration=2 sentbyte=3652 rcvdbyte=146668 sentpkt=58 rcvdpkt=105 utmaction="allow" countapp=2 utmref=65532-56
+
+  Notes on field ordering (kept faithful to the vendor sample):
+    * `dstcountry` / `srccountry` appear AFTER `service`, not next to
+      the IPs — this is the FortiOS 7.4 ordering.
+    * `appid app appcat apprisk applist` form a contiguous block
+      between `transport` and `duration`.
+    * `utmaction countapp utmref` close the line; `utmref` carries
+      the FortiGate-internal correlation id used to stitch this
+      session-end record to its UTM-side companion logs.
+    * `tz` and `devname` / `devid` are PRESENT in real-world syslog
+      output once `config log syslogd setting / set device-id` is
+      configured — they are not in the doc's pared-down example but
+      they are in every production capture. Both are retained here.
+
+  Wazuh notes: the bundled `fortigate` decoder keys off the `devname=`
+  / `devid=` / `logid=` triple at the head of the body. Stripping the
+  `<PRI>RFC3164_TS HOSTNAME` prefix happens earlier in the pre-decoder
+  chain; Wazuh's tokenizer then handles quoted and unquoted values
+  uniformly.
+
+format: key_value
+transport: [udp_syslog, tcp_syslog, file, beats]
+
+ocsf:
+  class: network_activity
+  category_uid: 4
+  class_uid: 4001
+
+# ──────────────── DetectOps v2 metadata ────────────────
+# traffic.forward is a baseline visibility feed. Default Wazuh ruleset
+# decodes it but does NOT fire alerts on individual flows — that's correct
+# behavior. Lateral-movement / data-exfiltration rules layer on top of the
+# decoded fields. Empty `wazuh.rule_id` means "expected to decode, not alert".
+detections:
+  wazuh:
+    - decoder: fortigate
+      # No rule_id: traffic.forward is baseline. Anomaly rules (e.g. high
+      # sentbyte, geo-flagged dstcountry) would be project-local additions.
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  # Baseline visibility — not a direct risk simulation. But missing this
+  # baseline makes R10 (lagging intelligence) and lateral-movement detection
+  # impossible. ttx_class N/A — this is steady-state telemetry, not an event.
+  risk_refs: []
+  pa_refs: []
+
+regression:
+  # 1000 baseline flows should produce ~0 alerts under default ruleset.
+  # Ingest latency: filebeat → ES typically <2s. Tighten after measuring.
+  baseline_alert_count: 0
+  baseline_ttd_ms: 5000
+
+# Default parameters; overridable via CLI / API params at generation time.
+params:
+  devname: { default: "FGT100E-LAB" }
+  devid:   { default: "FG100E1234567890" }
+  vd:      { default: "root" }
+  src_cidr: { default: "10.0.0.0/24" }
+  dst_pool: { default: ["8.8.8.8", "1.1.1.1", "151.101.1.140", "203.0.113.50"] }
+
+# Field generators - referenced by {{field}} in template.
+fields:
+  - name: pri
+    type: fixed
+    value: 189                              # local7.notice (23*8 + 5)
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  - name: date
+    type: datetime
+    format: "%Y-%m-%d"
+
+  - name: time
+    type: datetime
+    format: "%H:%M:%S"
+
+  - name: eventtime
+    type: datetime
+    format: epoch_ns
+
+  - name: tz
+    type: fixed
+    value: "+0800"
+
+  - name: devname
+    type: param
+    param: devname
+
+  - name: devid
+    type: param
+    param: devid
+
+  - name: vd
+    type: param
+    param: vd
+
+  - name: logid
+    type: fixed
+    value: "0000000013"                     # LOG_ID_TRAFFIC_END_FORWARD
+
+  - name: srcip
+    type: cidr
+    cidr: ${params.src_cidr}
+
+  - name: srcport
+    type: int_range
+    min: 1024
+    max: 65535
+
+  - name: srcintf
+    type: fixed
+    value: "port1"
+
+  - name: srcintfrole
+    type: fixed
+    value: "lan"
+
+  - name: dstip
+    type: choice
+    choices: ${params.dst_pool}
+
+  - name: dstport
+    type: weighted_choice
+    choices:
+      "443": 0.55
+      "80":  0.20
+      "53":  0.10
+      "22":  0.05
+      "3389": 0.05
+      "8080": 0.05
+
+  - name: dstintf
+    type: fixed
+    value: "port2"
+
+  - name: dstintfrole
+    type: fixed
+    value: "wan"
+
+  - name: srccountry
+    type: fixed
+    value: "Reserved"
+
+  - name: dstcountry
+    type: weighted_choice
+    choices:
+      "United States": 0.6
+      "Japan":         0.2
+      "Taiwan":        0.1
+      "Singapore":     0.1
+
+  - name: sessionid
+    type: int_range
+    min: 100000
+    max: 999999
+
+  - name: proto
+    type: weighted_choice
+    choices: { "6": 0.85, "17": 0.13, "1": 0.02 }
+
+  - name: action
+    # Real FortiOS 7.4 traffic.forward action vocabulary — `accept` and
+    # `close` dominate (close == session-end normal teardown), `deny`
+    # for policy block, `client-rst` / `server-rst` for RST teardown,
+    # `timeout` for idle expiry. Per vendor sample distribution.
+    type: weighted_choice
+    choices:
+      accept:     0.55
+      close:      0.35
+      deny:       0.05
+      client-rst: 0.03
+      timeout:    0.02
+
+  - name: policyid
+    type: int_range
+    min: 1
+    max: 50
+
+  - name: policytype
+    type: fixed
+    value: "policy"
+
+  - name: policyname
+    type: weighted_choice
+    choices:
+      "Internet":          0.55
+      "Allow-Out":         0.20
+      "DMZ-to-WAN":        0.10
+      "Branch-VPN":        0.10
+      "Block-RFC1918-Out": 0.05
+
+  - name: poluuid
+    type: faker
+    method: uuid4
+
+  - name: service
+    type: weighted_choice
+    choices: { HTTPS: 0.55, HTTP: 0.20, DNS: 0.10, SSH: 0.05, "RDP": 0.05, Other: 0.05 }
+
+  - name: trandisp
+    type: fixed
+    value: "snat"
+
+  - name: transip
+    type: fixed
+    value: "203.0.113.1"
+
+  - name: transport_port
+    type: int_range
+    min: 1024
+    max: 65535
+
+  - name: appid
+    type: int_range
+    min: 15000
+    max: 50000
+
+  - name: app
+    # Real Fortinet App-Control vocabulary — these strings appear
+    # verbatim in FortiGuard App-Control DB / vendor samples.
+    type: weighted_choice
+    choices:
+      "HTTPS.BROWSER":   0.45
+      "HTTP.BROWSER":    0.15
+      "DNS":             0.15
+      "SSL":             0.10
+      "SSH":             0.05
+      "Microsoft.Portal": 0.05
+      "unknown":         0.05
+
+  - name: appcat
+    type: weighted_choice
+    choices: { "Web.Client": 0.4, "Network.Service": 0.2, "General.Interest": 0.1, "unscanned": 0.3 }
+
+  - name: apprisk
+    # Fortinet App-Control risk levels — verbatim vocabulary.
+    type: weighted_choice
+    choices:
+      "low":      0.45
+      "medium":   0.30
+      "elevated": 0.15
+      "high":     0.07
+      "critical": 0.03
+
+  - name: applist
+    type: fixed
+    value: "g-default"
+
+  - name: duration
+    type: int_range
+    min: 1
+    max: 3600
+
+  - name: sentbyte
+    type: int_range
+    min: 100
+    max: 5000000
+
+  - name: rcvdbyte
+    type: int_range
+    min: 100
+    max: 50000000
+
+  - name: sentpkt
+    type: int_range
+    min: 1
+    max: 5000
+
+  - name: rcvdpkt
+    type: int_range
+    min: 1
+    max: 50000
+
+  - name: utmaction
+    type: weighted_choice
+    choices: { allow: 0.92, block: 0.06, monitor: 0.02 }
+
+  - name: countapp
+    type: int_range
+    min: 0
+    max: 10
+
+  - name: utmref_a
+    type: int_range
+    min: 0
+    max: 65535
+
+  - name: utmref_b
+    type: int_range
+    min: 0
+    max: 65535
+
+# Template — field order mirrors FortiOS 7.4 vendor sample exactly:
+# date time → devname/devid/eventtime/tz → logid/type/subtype/level/vd
+# → src* → dst* → srccountry/dstcountry → sessionid/proto/action
+# → policy* → service → trandisp/transip/transport → app* block
+# → duration → byte/pkt counters → utmaction/countapp/utmref
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{devname}} date={{date}} time={{time}} devname="{{devname}}" devid="{{devid}}" eventtime={{eventtime}} tz="{{tz}}" logid="{{logid}}" type="traffic" subtype="forward" level="notice" vd="{{vd}}" srcip={{srcip}} srcport={{srcport}} srcintf="{{srcintf}}" srcintfrole="{{srcintfrole}}" dstip={{dstip}} dstport={{dstport}} dstintf="{{dstintf}}" dstintfrole="{{dstintfrole}}" srccountry="{{srccountry}}" dstcountry="{{dstcountry}}" sessionid={{sessionid}} proto={{proto}} action="{{action}}" policyid={{policyid}} policytype="{{policytype}}" policyname="{{policyname}}" poluuid="{{poluuid}}" service="{{service}}" trandisp="{{trandisp}}" transip={{transip}} transport={{transport_port}} appid={{appid}} app="{{app}}" appcat="{{appcat}}" apprisk="{{apprisk}}" applist="{{applist}}" duration={{duration}} sentbyte={{sentbyte}} rcvdbyte={{rcvdbyte}} sentpkt={{sentpkt}} rcvdpkt={{rcvdpkt}} utmaction="{{utmaction}}" countapp={{countapp}} utmref={{utmref_a}}-{{utmref_b}}

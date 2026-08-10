@@ -1,0 +1,12 @@
+# /usr/share/logstash/config/logstash.yml
+# Logstash 自身設定。最小化,讓 healthcheck 能用 9600 就好。
+
+http.host: "0.0.0.0"
+http.port: 9600
+
+# 不開 X-Pack monitoring,單 ES 沒 license 路徑
+xpack.monitoring.enabled: false
+
+# Pipeline 自動 reload(改 .conf 不用重啟 container)
+config.reload.automatic: true
+config.reload.interval: 30s

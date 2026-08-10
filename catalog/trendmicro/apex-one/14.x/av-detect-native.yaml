@@ -1,0 +1,449 @@
+vendor: trendmicro
+product: apex-one
+version: "14.x"
+log_type: av.detection-native
+description: |
+  Trend Micro Apex One 14.x AV detection event forwarded by Apex Central
+  Log Forwarder in the **native "Apex Central format"** (the non-CEF
+  alternative selectable in Syslog Forwarder configuration). This is the
+  companion of `av-detect.yaml` (CEF) — the CEF sibling is the modern
+  default; this native form is rarely chosen for new SIEM deployments
+  but still appears in legacy on-prem stacks that pre-date CEF.
+
+  Sibling catalog (same AV event, CEF wire form):
+    catalog/trendmicro/apex-one/14.x/av-detect.yaml
+
+  IMPORTANT — primary open question (Trend Micro doc explicitly states
+  Virus/Malware is CEF-only in Apex Central format):
+    The Apex Central "Supported Log Types and Formats" reference table
+    classifies Virus/Malware as **CEF: Yes / Apex Central Format: No**.
+    Only Behavior Monitoring, Data Loss Prevention, Device Control,
+    Engine Update Status, Managed Product Logon/Logoff Events, and
+    Pattern Update Status support the native "Apex Central format" on
+    a current Apex Central release.
+
+    BUT — older OfficeScan / Control Manager (TMCM, pre-rebrand)
+    deployments DID emit native syslog for Virus/Malware events using
+    the same envelope grammar that Apex Central reuses today for the
+    log types it still supports natively. Real customer samples of the
+    envelope are published in the Splunk Community thread cited below.
+    This catalog reconstructs an Apex One Virus/Malware native line by
+    applying the **documented Apex Central envelope grammar** to the
+    **CEF Virus/Malware field set** (since the field semantics are
+    identical across both wire forms — only the framing differs).
+
+    The reconstruction is documented as the open question; the
+    envelope shape (`Apex Central:<eventid> Generated="<utc>"
+    key="value" key="value"...`) is verbatim from a published real
+    sample. Field NAMES are taken from the Apex Central CEF
+    Virus/Malware mapping table (`VLF_*` / `CLF_*` labels) since the
+    Apex Central docs do not publish a dedicated Apex-Central-format
+    table for Virus/Malware.
+
+  Wire format (envelope verbatim from Splunk Community real sample,
+  fields reconstructed from CEF Virus/Malware mapping table):
+
+    <PRI>RFC3164_TS HOST Apex Central:<EVENTID> Generated="<UTC>" \
+      Product_Entity/Endpoint="<host>" Endpoint="<endpoint_id>" \
+      Managing_Server="<apex_one_server>" Product="<product_name>" \
+      <key>="<value>" <key>="<value>" ...
+
+  Source-of-truth (URLs fetched 2026-05-14):
+    - Trend Micro Apex Central Online Help — "Supported Log Types
+      and Formats" (authoritative confirmation that Virus/Malware is
+      CEF-only on current Apex Central; native format supports only
+      6 of 16 security log types):
+      https://docs.trendmicro.com/en-us/documentation/article/trend-micro-apex-central-patch-4-syslog-log-types-for
+      Mirror page:
+      https://docs.trendmicro.com/en-us/documentation/article/apex-central-online-help-syslog-log-types-for
+    - Splunk Community — "Apex Central - Log doesn't match" thread
+      (real customer-published native-format raw sample showing the
+      `Apex Central:<eventid> Generated="..." key="value"` envelope
+      shape — used by this catalog as the authoritative envelope
+      source):
+      https://community.splunk.com/t5/All-Apps-and-Add-ons/Apex-Central-Log-doesn-t-match/m-p/486704
+    - Trend Micro Apex Central Online Help — CEF Virus/Malware Logs
+      (authoritative field semantics; this catalog reuses the same
+      field set in the native envelope since Trend Micro does not
+      publish a dedicated Apex-Central-format Virus/Malware mapping):
+      https://docs.trendmicro.com/en-us/enterprise/apex-central-online-help/appendices/syslog-mapping-cef/cef-virusmalware-log.aspx
+    - Trend Micro Apex Central CEF Action Mapping Table (action
+      vocabulary preserved verbatim from the CEF sibling — the
+      action strings themselves are wire-format-agnostic):
+      https://docs.trendmicro.com/en-us/documentation/article/trend-micro-apex-central-patch-4-cef-action-table
+    - Configuring Syslog Forwarding (Apex Central admin guide entry
+      that documents the two output mode selector — CEF vs Apex
+      Central format):
+      https://docs.trendmicro.com/en-us/enterprise/trend-micro-apex-central-2019-online-help/detections/logs_001/syslog-forwarding.aspx
+    - Trend Micro KB KA-0007644 "Configuring Splunk Application to
+      display syslog of Control Manager (TMCM) and Apex Central"
+      (Trend Micro KB confirming the dual-format Splunk onboarding
+      path; supporting evidence that native form is real and in-use):
+      https://success.trendmicro.com/en-US/solution/KA-0007644
+
+  Real envelope sample (verbatim from Splunk Community published
+  customer trace, Device Access Control event 700107 — used here
+  solely to anchor the ENVELOPE grammar):
+
+    Mar 6 12:01:05 Apex Central:700107 Generated="2020-03-06 11:49:05" \
+      Product_Entity/Endpoint="BRAHMS_OSCE" Endpoint="M32124" \
+      Managing_Server="BRAHMS" Product="Apex One" \
+      Target_Process="C:\Windows\System32\wbem\WmiPrvSE.exe" \
+      File_Name="\Device\Harddisk1\DR1" \
+      Device_Type="USB storage device" \
+      Permission="List device content only"
+
+  Reconstructed Virus/Malware native sample (envelope above + fields
+  from CEF Virus/Malware mapping table — see Open Questions for the
+  reconstruction caveat):
+
+    <134>Feb 18 14:34:00 apexcentral.lab.local Apex Central:700104 \
+      Generated="2026-05-14 02:34:00" \
+      Product_Entity/Endpoint="ApexOneClient01" Endpoint="104" \
+      Managing_Server="ApexOneServer01" Product="Apex One" \
+      Detection_Type="virus log" Virus_Name="JS_EXPLOIT.SMDN" \
+      Action="File renamed" First_Action_Result="File renamed" \
+      Second_Action_Result="N/A" Pattern_Number="920500" \
+      Engine_Version="9.500.1005" Product_Version="10.6" \
+      Function_Code="Manual Scan" Severity_Code="2" \
+      File_Name="0348C693056617D34FC5B5BAB4643885FEE5FEDF" \
+      File_Path="C:\Users\Administrator\Desktop\trend_test_virus\Trojans\" \
+      Source_Host="ABC-OSCE-WKS12" Source_User="ABC-OSCE-WKS12" \
+      Destination_IP="10.201.129.24" Domain="APEXTMCM" \
+      Domain_Hierarchy="OSCEDomain1" \
+      Apex_Central_Host="TW-APEXCENTRAL-01" \
+      Reason="B" Count="1"
+
+  SIEM rule mapping: covers the SAME 8 of 9 AV_TrendMicro
+  rules as the CEF sibling. The Wazuh-side rule_ids are decoupled
+  from wire format — the same 8 rules fire for either
+  envelope after the decoder normalizes. The remaining 130036
+  「伺服器連線惡意網址」 is a Web Reputation event — separate wire
+  format shipped via `web-reputation.yaml` in this same vendor/version
+  dir.
+
+  TrendMicro rules are 全區 only (no 來源/目的 axis split), so we do
+  not populate both attackerAddress and targetAddress. host_class
+  drives the workstation vs server rule family.
+
+  Rule coverage matrix (scenario × host_class) — same as CEF sibling:
+    單一主機偵測大量病毒          130118
+    單一主機偵測勒索病毒          130096
+    單一主機偵測病毒(已刪除)      130073
+    單一主機偵測病毒(未刪除)      130009
+    伺服器主機偵測大量病毒        130063
+    伺服器主機偵測病毒(已刪除)    130037
+    伺服器主機偵測病毒(未刪除)    130050
+    伺服器主機感染勒索軟體病毒    130083
+
+format: key_value          # Apex Central native — space-delimited KEY="VALUE"
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+detections:
+  wazuh:
+    # Native format requires a `trendmicro-apex` decoder family (Wazuh
+    # community / custom decoder authored against the `Apex Central:<id>
+    # Generated="..." KEY="VALUE"` envelope). Wazuh built-in `cef`
+    # decoder will NOT parse this — only the CEF sibling.
+    - decoder: trendmicro-apex
+    - rule_id: 130118  # AV_TrendMicro_單一主機偵測大量病毒
+      level: 7
+    - rule_id: 130096  # AV_TrendMicro_單一主機偵測勒索病毒
+      level: 7
+    - rule_id: 130073  # AV_TrendMicro_單一主機偵測病毒(已刪除)
+      level: 7
+    - rule_id: 130009  # AV_TrendMicro_單一主機偵測病毒(未刪除)
+      level: 7
+    - rule_id: 130063  # AV_TrendMicro_伺服器主機偵測大量病毒
+      level: 7
+    - rule_id: 130037  # AV_TrendMicro_伺服器主機偵測病毒(已刪除)
+      level: 7
+    - rule_id: 130050  # AV_TrendMicro_伺服器主機偵測病毒(未刪除)
+      level: 7
+    - rule_id: 130083  # AV_TrendMicro_伺服器主機感染勒索軟體病毒
+      level: 7
+  sigma:
+    - rule: trendmicro_apex_one_av_detection_native
+      ref: https://github.com/SigmaHQ/sigma  # community contrib pending
+  elk_detection:
+    - kibana_rule_id: trendmicro-apex-native-av-malware-detected
+      severity: high
+    - kibana_rule_id: trendmicro-apex-native-av-ransomware-detected
+      severity: critical
+
+mythos_alignment:
+  risk_refs: [R1, R4]
+  pa_refs: [PA10]
+  ttx_class: rapid
+
+regression:
+  # Same baseline as CEF sibling — host_class split + ransom weight
+  # drives all 8 rules to fire at least once in 1000 events.
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 4000
+
+params:
+  syslog_host:
+    default: "apexcentral.lab.local"
+  apex_central_host:
+    default: "TW-APEXCENTRAL-01"
+  apex_central_domain:
+    default: "APEXTMCM"
+  apex_central_dntdom:
+    default: "OSCEDomain1"
+  apex_one_server:
+    default: "ApexOneServer01"
+  product_name:
+    default: "Apex One"
+  workstation_pool:
+    default:
+      - "DESKTOP-WIN10-A1"
+      - "DESKTOP-WIN11-B2"
+      - "LAPTOP-USR-23"
+      - "LAPTOP-CONS-04"
+      - "DESKTOP-MKT-09"
+  server_pool:
+    default:
+      - "SRV-FILE01"
+      - "SRV-DC01"
+      - "WEB-PRD-02"
+      - "DB-MSSQL-01"
+      - "APP-ERP-03"
+  internal_subnet:
+    default: "10.0.20.0/24"
+  server_subnet:
+    default: "10.0.50.0/24"
+  user_pool:
+    default: ["alice", "bob", "svc_backup", "contractor_a", "admin_b"]
+
+fields:
+  # Apex Central Syslog Forwarder native default per docs:
+  # "Sets the syslog Facility code to 'Local0' and the Severity code
+  # to 'Notice'" → PRI = (16*8) + 5 = 133. CEF sibling uses 134
+  # (local0.info) per its docs; the native form per Trend Micro
+  # explicitly states local0.notice, so we honor the lower-level
+  # severity here.
+  - name: pri
+    type: fixed
+    value: 133
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  # Native "Generated=" timestamp — Splunk Community sample shows
+  # "2020-03-06 11:49:05" (UTC, no zone suffix). Format YYYY-MM-DD
+  # HH:MM:SS plain — distinct from the CEF sibling's
+  # "Feb 18 2016 14:34:00 GMT+00:00" framing.
+  - name: generated_ts
+    type: datetime
+    format: "%Y-%m-%d %H:%M:%S"
+
+  - name: host_class
+    type: weighted_choice
+    choices:
+      workstation: 0.60
+      server:      0.40
+
+  - name: workstation_host
+    type: choice
+    choices: ${params.workstation_pool}
+
+  - name: server_host
+    type: choice
+    choices: ${params.server_pool}
+
+  # Product_Entity/Endpoint — the endpoint hostname reporting the
+  # detection. Real sample format shows this with the literal slash
+  # in the key name (Product_Entity/Endpoint) per Splunk thread.
+  - name: product_entity
+    type: template
+    template: "{% if host_class == 'server' %}{{server_host}}{% else %}{{workstation_host}}{% endif %}"
+
+  # Endpoint id — Apex Central-assigned numeric id (matches CEF
+  # sibling's deviceExternalId). Real sample shows compact numeric
+  # ("M32124"); we emit pure-numeric here to stay decoder-friendly.
+  - name: endpoint_id
+    type: int_range
+    min: 100
+    max: 9999
+
+  - name: workstation_ip
+    type: cidr
+    cidr: ${params.internal_subnet}
+
+  - name: server_ip
+    type: cidr
+    cidr: ${params.server_subnet}
+
+  - name: destination_ip
+    type: template
+    template: "{% if host_class == 'server' %}{{server_ip}}{% else %}{{workstation_ip}}{% endif %}"
+
+  - name: user_name
+    type: choice
+    choices: ${params.user_pool}
+
+  # Trend Micro malware naming — same weighted distribution as CEF
+  # sibling (the threat-name vocabulary is wire-format-agnostic).
+  - name: virus_name
+    type: weighted_choice
+    choices:
+      "Trojan.Win32.FRS.VSNW03G24":        0.15
+      "Trojan.Win32.GENERIC.SM":           0.12
+      "Mal_Generic-1":                     0.10
+      "Ransom.Win64.LOCKBIT.SMYXBLBE":     0.10
+      "Ransom.Win32.CONTI.THDOEBA":        0.08
+      "Ransom.Win64.LOCKER.A":             0.07
+      "TROJ_GENERIC.SM":                   0.08
+      "PE_KARO.A":                         0.05
+      "JS_EXPLOIT.SMDN":                   0.05
+      "Worm.Win32.DOWNAD.AD":              0.05
+      "PUA.Linux.CoinMiner.A":             0.05
+      "Backdoor.Win32.GENERIC.SMA":        0.05
+      "HEUR.Behavior.Win32.Suspicious.A":  0.05
+
+  # CLF_SeverityCode range 0..4 — preserved from CEF sibling.
+  - name: severity_code
+    type: weighted_choice
+    choices:
+      "2": 0.50
+      "3": 0.35
+      "4": 0.15
+
+  - name: file_path
+    type: weighted_choice
+    choices:
+      "C:\\Users\\Public\\Downloads\\":                                  0.18
+      "C:\\Users\\alice\\AppData\\Local\\Temp\\":                        0.15
+      "C:\\inetpub\\wwwroot\\uploads\\":                                 0.13
+      "C:\\Program Files\\Trend Micro\\quarantine\\":                    0.10
+      "D:\\Share\\HR\\":                                                 0.12
+      "C:\\Windows\\Temp\\7z_extract\\":                                 0.12
+      "C:\\Windows\\System32\\drivers\\":                                0.10
+      "C:\\Users\\bob\\Desktop\\":                                       0.10
+
+  - name: file_name
+    type: weighted_choice
+    choices:
+      "invoice_2026.exe":     0.18
+      "update.exe":           0.15
+      "shell.aspx":           0.13
+      "virus.bin":            0.10
+      "readme_decrypt.txt":   0.12
+      "payload.dll":          0.12
+      "malicious.sys":        0.10
+      "fake_invoice.pdf.exe": 0.10
+
+  # Apex Central CEF Action Mapping Table — verbatim action strings.
+  # Same weighting as CEF sibling so the action distribution matches
+  # for cross-format detection regression comparison.
+  - name: action_taken
+    type: weighted_choice
+    choices:
+      "File cleaned":                       0.30
+      "File quarantined":                   0.20
+      "File deleted":                       0.10
+      "File renamed":                       0.05
+      "File passed":                        0.05
+      "Unable to clean file. Passed":       0.10
+      "Unable to clean file. File deleted": 0.05
+      "Unable to clean file. File renamed": 0.05
+      "Access denied":                      0.05
+      "No action":                          0.05
+
+  - name: second_action_result
+    type: weighted_choice
+    choices:
+      "N/A":               0.70
+      "File quarantined":  0.15
+      "File deleted":      0.08
+      "File cleaned":      0.05
+      "File passed":       0.02
+
+  - name: function_code
+    type: weighted_choice
+    choices:
+      "Real-time Scan":          0.55
+      "Manual Scan":             0.15
+      "Scheduled Scan":          0.20
+      "Behavior Monitoring":     0.07
+      "Damage Cleanup Services": 0.03
+
+  - name: pattern_version
+    type: weighted_choice
+    choices:
+      "1956500": 0.45
+      "1958200": 0.30
+      "1960100": 0.20
+      "920500":  0.05
+
+  - name: engine_version
+    type: weighted_choice
+    choices:
+      "11.000.1006": 0.40
+      "12.500.1005": 0.30
+      "9.500.1005":  0.15
+      "12.600.1010": 0.15
+
+  - name: product_version
+    type: weighted_choice
+    choices:
+      "14.0":  0.55
+      "11":    0.20
+      "10.6":  0.15
+      "14.5":  0.10
+
+  # CLF_ReasonCode — constant "virus log" for AV events (preserved
+  # across both wire forms).
+  - name: detection_type
+    type: fixed
+    value: "virus log"
+
+  # Apex Central event id for Virus/Malware. The Splunk Community
+  # sample uses 700107 for Device Access Control; Trend Micro
+  # publishes the 7-series codes for Apex Central security events
+  # but does NOT publish a definitive native-format event id for
+  # Virus/Malware (since the docs declare Virus/Malware as CEF-only).
+  # 700104 used here as the catalog's working assumption pending
+  # vendor confirmation.
+  - name: event_id
+    type: fixed
+    value: "700104"
+
+  # File_Name slot — Apex One real samples reuse the same field for
+  # SHA-1 fingerprint when the malware was detected by hash (per the
+  # CEF sample `fname=0348C69...;0xD5D56AC2`). Native form preserves
+  # this dual-purpose by emitting the literal SHA-1 here.
+  - name: file_hash
+    type: faker
+    method: sha1
+
+  # Reason letter A..G — same distribution as CEF sibling. Trend Micro
+  # does not publish the letter→category table.
+  - name: reason_letter
+    type: weighted_choice
+    choices:
+      "B": 0.40
+      "E": 0.30
+      "A": 0.10
+      "C": 0.08
+      "D": 0.05
+      "F": 0.05
+      "G": 0.02
+
+# Template emits the native Apex Central wire format. Envelope grammar
+# is verbatim from the Splunk Community published customer sample
+# (Apex Central:<EVENTID> Generated="<UTC>" KEY="VALUE" KEY="VALUE"...).
+# Field NAMES (Virus_Name, First_Action_Result, etc.) are the
+# Apex-Central-native equivalents of the CEF VLF_*/CLF_* labels —
+# preserved from the CEF Virus/Malware mapping table since Trend
+# Micro does not publish a dedicated native-format Virus/Malware
+# field table.
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{params.syslog_host}} Apex Central:{{event_id}} Generated="{{generated_ts}}" Product_Entity/Endpoint="{{product_entity}}" Endpoint="{{endpoint_id}}" Managing_Server="{{params.apex_one_server}}" Product="{{params.product_name}}" Detection_Type="{{detection_type}}" Virus_Name="{{virus_name}}" Action="{{action_taken}}" First_Action_Result="{{action_taken}}" Second_Action_Result="{{second_action_result}}" Pattern_Number="{{pattern_version}}" Engine_Version="{{engine_version}}" Product_Version="{{product_version}}" Function_Code="{{function_code}}" Severity_Code="{{severity_code}}" File_Name="{{file_name}}" File_Path="{{file_path}}" File_Hash="{{file_hash}}" Source_Host="{{product_entity}}" Source_User="{{params.apex_central_domain}}\\{{user_name}}" Destination_IP="{{destination_ip}}" Domain="{{params.apex_central_domain}}" Domain_Hierarchy="{{params.apex_central_dntdom}}" Apex_Central_Host="{{params.apex_central_host}}" Reason="{{reason_letter}}" Count="1"

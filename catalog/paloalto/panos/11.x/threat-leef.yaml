@@ -1,0 +1,376 @@
+vendor: paloalto
+product: panos
+version: "11.x"
+log_type: threat-leef
+description: |
+  Palo Alto Networks PAN-OS 11.x THREAT log emitted as **LEEF 2.0** from
+  the Syslog Server Profile when the customer pastes the PAN-OS-supplied
+  "PAN-OS Syslog Integration" Custom Log Format string (the recipe
+  shipped with the PAN-OS App for QRadar and reproduced verbatim in the
+  IBM QRadar DSM Configuration Guide → Palo Alto Networks PA Series →
+  Configuring Syslog or LEEF formatted events).
+
+  THIS IS THE QRADAR-FACING WIRE FLAVOR. There is a second LEEF 2.0
+  shape that Strata Logging Service / Cortex Data Lake emit
+  (header `Next Generation Firewall|<panos_ver>|<numeric_eventid>|`,
+  tab-delimited body, keys like `TimeReceived` / `DeviceSN` / `cat=threat`).
+  Cortex Data Lake is a SaaS pipeline — it doesn't come out of an
+  on-prem firewall's syslog server profile — so this catalog targets
+  the on-prem PAN-OS device output that QRadar / generic SIEMs ingest.
+
+  Sibling catalogs:
+    catalog/paloalto/panos/11.x/threat.yaml       — native CSV (110 cols)
+
+  Source-of-truth for wire format:
+    - Palo Alto Networks LIVEcommunity — official "LEEF Format" thread,
+      contains the canonical PAN-OS Syslog Integration LEEF 2.0
+      Custom Log Format string for Threat logs (pasted into Device >
+      Server Profiles > Syslog > Custom Log Format > Threat):
+      https://live.paloaltonetworks.com/t5/general-topics/leef-format/td-p/519825
+    - IBM QRadar DSM Configuration Guide — Configuring Syslog or LEEF
+      formatted events on your Palo Alto PA Series device (publishes
+      the same Custom Log Format strings; authoritative for the
+      QRadar-side parser):
+      https://www.ibm.com/docs/en/dsm?topic=panps-configuring-syslog-leef-formatted-events-your-palo-alto-pa-series-device
+    - Juniper JSA 7.5.0 DSM — Palo Alto Networks PA Series (mirror of
+      the QRadar DSM PAN-OS LEEF mapping, useful cross-check):
+      https://www.juniper.net/documentation/us/en/software/jsa7.5.0/jsa-dsm/topics/concept/concept-jsa-configuring-dsm-palo-alto-networks-pa-series.html
+    - Palo Alto Networks Strata Logging Service — Network Threat LEEF
+      Fields (authoritative LEEF-key ↔ PAN-field MAPPING TABLE; used
+      to cross-check that on-prem PAN-OS Syslog Integration keys are
+      a documented subset of the full Strata field set):
+      https://docs.paloaltonetworks.com/strata-logging-service/log-reference/network-logs/network-threat-log/network-threat-leef-fields
+    - Palo Alto Networks PAN-OS 11.1 Admin Guide — Custom Log/Event
+      Format (defines how Custom Log Format strings are configured
+      per log type in the Syslog Server Profile):
+      https://docs.paloaltonetworks.com/pan-os/11-1/pan-os-admin/monitoring/use-syslog-for-monitoring/syslog-field-descriptions/custom-logevent-format
+    - Native CSV reference (column semantics shared between CSV and
+      LEEF since the LEEF body is just the same columns re-keyed):
+      https://docs.paloaltonetworks.com/pan-os/11-1/pan-os-admin/monitoring/use-syslog-for-monitoring/syslog-field-descriptions/threat-log-fields
+
+  Wire grammar (PAN-OS Syslog Integration LEEF 2.0):
+    <PRI>RFC3164_TS HOSTNAME LEEF:2.0|Palo Alto Networks|PAN-OS Syslog Integration|<panos_version>|<threatid>|x7C|<body>
+
+    Header pipes (|) are LITERAL. The 6th header slot — "x7C" — is the
+    LEEF 2.0 delimiter advertisement. x7C is the hex code for the ASCII
+    pipe character (|), so the BODY also uses | as the key/value-pair
+    separator. (LEEF 2.0 lets the vendor pick any single-byte delimiter
+    and announce it in this slot; Strata Logging Service uses x09 / tab,
+    but the PAN-OS on-prem Custom Log Format string uses x7C / pipe.)
+
+    Body grammar:
+      key1=value1|key2=value2|...|keyN=valueN
+
+    No quoting. Empty values render as `key=`. Values do NOT escape
+    embedded `|` — the PAN-OS docs are silent on this, so consumers
+    typically strip control bytes from the input fields rather than
+    quote them. CyberRange follows the same policy: emit blanks where
+    a real device would emit blanks, never inject `|` into a field.
+
+    LEEF header position #5 ("eventid") is bound to `$threatid` per
+    the PAN-OS Syslog Integration template — i.e. the THREAT log's
+    `Threat ID` (e.g. `91991`) becomes the LEEF event id. For
+    non-vulnerability subtypes (url, file, wildfire, virus) the
+    Threat ID is still a numeric id from the Apps+Threats / WildFire
+    / URL content packs. The CSV catalog quotes the threat name+id
+    in the `"Name(Number)"` form; LEEF strips the wrapper and uses
+    just the numeric portion.
+
+  Quoting & escaping:
+    - LEEF 2.0 has no built-in quoting. Values containing whitespace,
+      `=`, or non-`|` punctuation are emitted as-is.
+    - Multi-line values (e.g. HTTP Headers) are NOT supported by the
+      PAN-OS Syslog Integration template — that key isn't in the
+      published Threat template at all. Use the CSV catalog if you
+      need HTTP Headers fidelity.
+
+  Transport: same as native CSV — UDP/TCP syslog (default 514). LEEF
+  lines tend to be SHORTER than the CSV body (fewer fields), so UDP is
+  more tolerant than for the CSV catalog.
+
+format: leef
+transport: [udp_syslog, tcp_syslog]
+
+# Engine note: schema.py treats `format` as a free-form `str` (no enum
+# constraint), so `format: leef` loads fine. The generator renders the
+# template verbatim — there's no CEF-style header builder — so the
+# LEEF 2.0 header and the `|`-delimited body are both produced by the
+# Jinja template below. If/when the engine grows a format-aware
+# renderer (e.g. to auto-escape `|` in values), this catalog should
+# move from `leef` (free string) to a registered enum value.
+
+ocsf:
+  class: security_finding
+  category_uid: 2
+  class_uid: 2001
+
+# ──────────────── DetectOps v2 metadata ────────────────
+# Same scenario family as native CSV (PAN-OS threat = device-side IPS /
+# URL / spyware / wildfire detection at the perimeter), but ingested
+# via a LEEF parser instead of the PAN-OS CSV decoder. Wazuh ships a
+# generic LEEF decoder; the rule below catches LEEF lines whose
+# `cat=THREAT` keyword matches PAN-OS.
+detections:
+  wazuh:
+    - decoder: leef             # Wazuh 0560-leef_decoders.xml
+    - rule_id: 63100            # Reuse the paloalto-threat group rule;
+      level: 7                  # Wazuh classifies on `cat`+`Severity`
+  sigma:
+    - rule: net_paloalto_threat_detected
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/network/firewall
+  elk_detection:
+    - kibana_rule_id: panw-threat-leef-high-severity
+      severity: high
+
+mythos_alignment:
+  # Same alignment as native CSV — wire format change doesn't shift
+  # the underlying Mythos risk; this catalog exists so DetectOps can
+  # validate the LEEF ingest path independently.
+  risk_refs: [R4, R10]
+  pa_refs: [PA10]
+  ttx_class: rapid
+
+regression:
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 3000
+
+params:
+  device_name: { default: "PA-VM-01" }
+  serial:      { default: "001234567890123" }
+  panos_ver:   { default: "11.1.0" }     # advertised in LEEF header slot 4
+  src_cidr:    { default: "10.50.0.0/24" }
+  dst_pool:
+    default:
+      - "172.217.0.10"
+      - "151.101.1.140"
+      - "104.18.32.7"
+      - "203.0.113.99"
+
+fields:
+  # ──────── syslog header ────────
+  - name: pri
+    type: fixed
+    value: 14                              # local0.alert (PAN default for threat)
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+  - name: device_name
+    type: param
+    param: device_name
+
+  # ──────── LEEF header slots (1..5; slot 6 is the literal x7C) ────────
+  # slot 1: "LEEF:2.0" — literal, in template
+  # slot 2: vendor — "Palo Alto Networks", literal, in template
+  # slot 3: product — "PAN-OS Syslog Integration", literal, in template
+  - name: panos_ver                        # slot 4 — version
+    type: param
+    param: panos_ver
+  - name: leef_eventid                     # slot 5 — bound to numeric threat id
+    type: weighted_choice
+    choices:
+      "91991": 0.20                        # Apache Log4j RCE
+      "35601": 0.20                        # XSS attempt
+      "40015": 0.20                        # SSH brute force
+      "13235": 0.20                        # Suspicious UA strings
+      "40026": 0.20                        # Coinhive JS miner
+
+  # ──────── LEEF body (PAN-OS Syslog Integration Threat template, verbatim key order) ────────
+  # Key order below MATCHES the official template published on
+  # LIVEcommunity / IBM QRadar DSM guide. Do NOT reorder; QRadar's DSM
+  # regex anchors on position for some optional fields.
+  - name: receive_time                     # ReceiveTime
+    type: datetime
+    format: "%Y/%m/%d %H:%M:%S"
+  - name: serial                           # SerialNumber
+    type: param
+    param: serial
+  - name: log_type                         # cat — literal THREAT (matches $type)
+    type: fixed
+    value: "THREAT"
+  - name: subtype                          # Subtype
+    type: weighted_choice
+    choices:
+      vulnerability: 0.45
+      spyware:       0.20
+      virus:         0.10
+      url:           0.15
+      wildfire:      0.05
+      file:          0.05
+  - name: dev_time                         # devTime — CEF/LEEF formatted
+    type: datetime
+    format: "%b %d %Y %H:%M:%S"
+  - name: src_ip                           # src
+    type: cidr
+    cidr: ${params.src_cidr}
+  - name: dst_ip                           # dst
+    type: choice
+    choices: ${params.dst_pool}
+  - name: nat_src_ip                       # srcPostNAT
+    type: fixed
+    value: "203.0.113.10"
+  - name: nat_dst_ip                       # dstPostNAT
+    type: fixed
+    value: ""
+  - name: rule_name                        # RuleName
+    type: weighted_choice
+    choices:
+      "outbound-web":   0.55
+      "dmz-to-inside":  0.20
+      "guest-internet": 0.15
+      "mgmt-allow":     0.10
+  - name: src_user                         # usrName + SourceUser (template emits twice)
+    type: weighted_choice
+    choices:
+      "lab\\alice": 0.4
+      "lab\\bob":   0.3
+      "":           0.3
+  - name: dst_user                         # DestinationUser
+    type: fixed
+    value: ""
+  - name: application                      # Application
+    type: weighted_choice
+    choices:
+      web-browsing:  0.40
+      ssl:           0.30
+      dns-base:      0.10
+      smtp:          0.05
+      ms-rdp:        0.05
+      ssh:           0.05
+      "ping":        0.05
+  - name: vsys                             # VirtualSystem
+    type: fixed
+    value: "vsys1"
+  - name: src_zone                         # SourceZone
+    type: fixed
+    value: "trust"
+  - name: dst_zone                         # DestinationZone
+    type: fixed
+    value: "untrust"
+  - name: in_iface                         # IngressInterface
+    type: fixed
+    value: "ethernet1/1"
+  - name: out_iface                        # EgressInterface
+    type: fixed
+    value: "ethernet1/2"
+  - name: log_action                       # LogForwardingProfile
+    type: fixed
+    value: "default"
+  - name: session_id                       # SessionID
+    type: int_range
+    min: 100000
+    max: 999999
+  - name: repeat_count                     # RepeatCount
+    type: fixed
+    value: 1
+  - name: src_port                         # srcPort
+    type: int_range
+    min: 1024
+    max: 65535
+  - name: dst_port                         # dstPort
+    type: weighted_choice
+    choices: { "443": 0.55, "80": 0.20, "53": 0.10, "22": 0.05, "3389": 0.05, "25": 0.05 }
+  - name: nat_src_port                     # srcPostNATPort
+    type: int_range
+    min: 1024
+    max: 65535
+  - name: nat_dst_port                     # dstPostNATPort
+    type: fixed
+    value: 0
+  - name: flags                            # Flags
+    type: fixed
+    value: "0x80000000"
+  - name: protocol                         # proto
+    type: weighted_choice
+    choices: { tcp: 0.85, udp: 0.13, icmp: 0.02 }
+  - name: action                           # action — PAN-OS 11 enum
+    type: weighted_choice
+    choices:
+      alert:        0.50
+      drop:         0.20
+      reset-both:   0.10
+      reset-client: 0.05
+      reset-server: 0.05
+      block-url:    0.05
+      sinkhole:     0.03
+      allow:        0.02
+  - name: misc                             # Miscellaneous — URL/Filename
+    type: weighted_choice
+    choices:
+      "evil.example.com/malware.exe":      0.20
+      "phishing-site.example.org":         0.20
+      "/wp-login.php?cmd=whoami":          0.20
+      "cryptominer.bad/pool.json":         0.15
+      "powershell-downloader.example/dl":  0.15
+      "":                                   0.10
+  - name: threat_id_body                   # ThreatID — same numeric id as leef_eventid
+    type: weighted_choice
+    choices:
+      "91991": 0.20
+      "35601": 0.20
+      "40015": 0.20
+      "13235": 0.20
+      "40026": 0.20
+  - name: url_category                     # URLCategory
+    type: weighted_choice
+    choices:
+      command-and-control: 0.25
+      malware:             0.30
+      exploit-kit:         0.15
+      phishing:            0.20
+      bruteforce:          0.10
+  - name: sev_num                          # sev — LEEF-standard numeric severity (1=Inform .. 10=Critical)
+    type: weighted_choice
+    choices: { "10": 0.10, "8": 0.25, "6": 0.40, "3": 0.20, "1": 0.05 }
+  - name: severity_text                    # Severity — PAN-OS lowercase enum (mirrors sev_num bucket)
+    type: weighted_choice
+    choices: { critical: 0.10, high: 0.25, medium: 0.40, low: 0.20, informational: 0.05 }
+  - name: direction                        # Direction
+    type: weighted_choice
+    choices: { client-to-server: 0.7, server-to-client: 0.3 }
+  - name: seqno                            # sequence
+    type: int_range
+    min: 1000000000
+    max: 9999999999
+  - name: action_flags                     # ActionFlags
+    type: fixed
+    value: "0x0"
+  - name: src_country                      # SourceLocation
+    type: fixed
+    value: "10.0.0.0-10.255.255.255"
+  - name: dst_country                      # DestinationLocation
+    type: weighted_choice
+    choices: { US: 0.5, JP: 0.2, TW: 0.1, SG: 0.1, RU: 0.05, CN: 0.05 }
+  - name: content_type                     # ContentType
+    type: fixed
+    value: ""
+  - name: pcap_id                          # PCAP_ID
+    type: fixed
+    value: 0
+  - name: file_digest                      # FileDigest
+    type: fixed
+    value: ""
+  - name: cloud                            # Cloud
+    type: fixed
+    value: ""
+  - name: url_idx                          # URLIndex
+    type: fixed
+    value: 0
+  - name: http_method                      # RequestMethod
+    type: weighted_choice
+    choices: { "GET": 0.6, "POST": 0.3, "": 0.1 }
+
+# Template — PAN-OS Syslog Integration LEEF 2.0 Threat string, verbatim
+# key order from the LIVEcommunity / QRadar DSM template. Body delimiter
+# is | (announced by `x7C` in header slot 6).
+#
+# Key ordering CHECK (49 keys including the doubled usrName/SourceUser):
+#  ReceiveTime SerialNumber cat Subtype devTime src dst srcPostNAT
+#  dstPostNAT RuleName usrName SourceUser DestinationUser Application
+#  VirtualSystem SourceZone DestinationZone IngressInterface
+#  EgressInterface LogForwardingProfile SessionID RepeatCount srcPort
+#  dstPort srcPostNATPort dstPostNATPort Flags proto action
+#  Miscellaneous ThreatID URLCategory sev Severity Direction sequence
+#  ActionFlags SourceLocation DestinationLocation ContentType PCAP_ID
+#  FileDigest Cloud URLIndex RequestMethod
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{device_name}} LEEF:2.0|Palo Alto Networks|PAN-OS Syslog Integration|{{panos_ver}}|{{leef_eventid}}|x7C|ReceiveTime={{receive_time}}|SerialNumber={{serial}}|cat={{log_type}}|Subtype={{subtype}}|devTime={{dev_time}}|src={{src_ip}}|dst={{dst_ip}}|srcPostNAT={{nat_src_ip}}|dstPostNAT={{nat_dst_ip}}|RuleName={{rule_name}}|usrName={{src_user}}|SourceUser={{src_user}}|DestinationUser={{dst_user}}|Application={{application}}|VirtualSystem={{vsys}}|SourceZone={{src_zone}}|DestinationZone={{dst_zone}}|IngressInterface={{in_iface}}|EgressInterface={{out_iface}}|LogForwardingProfile={{log_action}}|SessionID={{session_id}}|RepeatCount={{repeat_count}}|srcPort={{src_port}}|dstPort={{dst_port}}|srcPostNATPort={{nat_src_port}}|dstPostNATPort={{nat_dst_port}}|Flags={{flags}}|proto={{protocol}}|action={{action}}|Miscellaneous={{misc}}|ThreatID={{threat_id_body}}|URLCategory={{url_category}}|sev={{sev_num}}|Severity={{severity_text}}|Direction={{direction}}|sequence={{seqno}}|ActionFlags={{action_flags}}|SourceLocation={{src_country}}|DestinationLocation={{dst_country}}|ContentType={{content_type}}|PCAP_ID={{pcap_id}}|FileDigest={{file_digest}}|Cloud={{cloud}}|URLIndex={{url_idx}}|RequestMethod={{http_method}}

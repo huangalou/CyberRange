@@ -1,0 +1,355 @@
+vendor: linux
+product: openssh
+version: "9.x"
+log_type: auth.failure-cef
+description: |
+  OpenSSH 9.x sshd authentication failure events AFTER an upstream
+  ArcSight SmartConnector for Unix OS Syslog has parsed the native
+  /var/log/secure (RHEL family) or /var/log/auth.log (Debian/Ubuntu)
+  entry and re-emitted it in ArcSight Common Event Format (CEF) over
+  syslog. This is the wire form that arrives at SIEMs whose CEF
+  ingest path is the canonical entry point — ArcSight ESM/Logger,
+  Microsoft Sentinel CEF-via-AMA, Splunk Connect for Syslog (SC4S)
+  CEF source, IBM QRadar CEF DSM, Securonix, etc.
+
+  Sibling catalog (same sshd event, NATIVE RFC3164 wire form):
+    catalog/linux/openssh/9.x/auth-failure.yaml
+
+  IMPORTANT — sshd does NOT emit CEF natively. sshd's `auth_log()`
+  and `getpwnamallow()` in openssh-portable write plain syslog body
+  text (see source-of-truth URLs in the native sibling). A CEF line
+  appears only after one of these upstream re-emitters has parsed
+  the native event and re-shaped it:
+
+    1. ArcSight SmartConnector for Unix OS Syslog (the canonical CEF
+       emitter for /var/log/secure — its Configuration Guide is
+       referenced below as the authoritative mapping source).
+    2. Splunk Connect for Syslog (SC4S) `linux_secure` source with a
+       custom CEF re-emit filter.
+    3. Custom rsyslog / syslog-ng / NXLog template that wraps the
+       parsed sshd body in a CEF header.
+
+  This sibling exists because real SOC deployments receive the SAME
+  sshd event in BOTH wire forms depending on the path the log took
+  to reach the SIEM:
+
+    sshd → /var/log/secure → native syslog (UDP/514) → Wazuh `sshd`
+                                                       decoder (rules
+                                                       5710/5716/5722)
+    sshd → /var/log/secure → ArcSight SmartConnector → CEF on TCP/514
+                                                       → ArcSight ESM
+                                                         categorization
+                                                         (THIS CATALOG)
+
+  Source-of-truth (URLs fetched 2026-05-15):
+    - Configuration Guide for UNIX OS Syslog SmartConnector
+      (ArcSight SmartConnectors 8.4) — base parser for all syslog
+      sub-connectors; documents the connector behavior of producing
+      `deviceVendor=Unix` / `deviceProduct=Unix OS` for unmapped
+      sub-messages and the `arcsight:N:M` deviceEventClassId format
+      for unstructured Unix syslog (parser submessage index :
+      regex pattern index):
+        https://www.microfocus.com/documentation/arcsight/arcsight-smartconnectors-8.4/pdfdoc/unix-os-syslog/unix-os-syslog.pdf
+    - Syslog Connectors overview (ArcSight SmartConnectors 25.1)
+      confirming the Unix OS Syslog connector is the base parser
+      for syslog sub-connectors:
+        https://www.microfocus.com/documentation/arcsight/arcsight-smartconnectors-25.1/AS_smartconn_install/Content/GettingStarted/smartconn_type_syslog.htm
+    - Microsoft Sentinel CEF key → CommonSecurityLog field mapping
+      (authoritative CEF extension dictionary; defines `dproc`,
+      `dpid`, `src`, `spt`, `dvchost`, `suser`, `duser`, `act`,
+      `cat`, `cs1..cs6`, `cn1..cn3`, `externalId`, `msg`, `outcome`,
+      etc. as used below):
+        https://learn.microsoft.com/en-us/azure/sentinel/cef-name-mapping
+    - "What is CEF?" (ArcSight CEF Implementation Standard 8.3)
+      defining the canonical header form
+      `CEF:Version|Device Vendor|Device Product|Device Version|Device Event Class ID|Name|Severity|[Extension]`:
+        https://www.microfocus.com/documentation/arcsight/arcsight-smartconnectors-8.3/cef-implementation-standard/Content/CEF/Chapter%201%20What%20is%20CEF.htm
+    - OpenText community thread "generic unix syslog eventid"
+      confirming the Unix Syslog SmartConnector emits
+      `deviceEventClassId="arcsight:<submessage>:<pattern>"` and
+      providing the verified example `arcsight:1:60` =
+      "Did not receive identification string":
+        https://community.opentext.com/cyberres/arcsight/f/discussions/269185/generic-unix-syslog-eventid
+    - OpenSSH portable auth.c — the same `auth_log()` and
+      `getpwnamallow()` format strings the SmartConnector parses
+      before re-emitting:
+        https://github.com/openssh/openssh-portable/blob/master/auth.c
+    - Wazuh built-in sshd decoder `0310-ssh_decoders.xml` —
+      gated by `<program_name>^sshd</program_name>`, which means it
+      does NOT match CEF-wrapped events (the syslog program slot
+      becomes the SmartConnector's hostname, not `sshd`):
+        https://github.com/wazuh/wazuh-ruleset/blob/master/decoders/0310-ssh_decoders.xml
+
+  Real CEF wire-format examples (composed strictly from the
+  authoritative CEF Implementation Standard header layout and the
+  Sentinel cef-name-mapping extension dictionary cited above; the
+  native sshd body strings are quoted 1:1 from openssh-portable
+  auth.c). One sample per scenario:
+
+    <86>May 15 04:22:11 web-server-01 CEF:0|Unix|Unix OS|9.x|arcsight:5:0|Failed password|5|act=Failed dproc=sshd dpid=31204 dvchost=web-server-01 src=45.155.205.34 spt=51877 suser=oracle outcome=failure cs1=invalid_user cs1Label=AuthCategory cs2=ssh2 cs2Label=SSHProtocol cs3=password cs3Label=AuthMethod msg=Failed password for invalid user oracle from 45.155.205.34 port 51877 ssh2
+    <86>May 15 04:23:02 web-server-01 CEF:0|Unix|Unix OS|9.x|arcsight:5:1|Failed password|5|act=Failed dproc=sshd dpid=31218 dvchost=web-server-01 src=92.118.39.71 spt=33102 suser=root outcome=failure cs1=failed_password cs1Label=AuthCategory cs2=ssh2 cs2Label=SSHProtocol cs3=password cs3Label=AuthMethod msg=Failed password for root from 92.118.39.71 port 33102 ssh2
+    <86>May 15 04:22:14 web-server-01 CEF:0|Unix|Unix OS|9.x|arcsight:6:0|Connection closed|3|act=Closed dproc=sshd dpid=31204 dvchost=web-server-01 src=45.155.205.34 spt=51877 suser=oracle outcome=failure cs1=preauth_close cs1Label=AuthCategory msg=Connection closed by authenticating user oracle 45.155.205.34 port 51877 [preauth]
+    <86>May 15 04:21:58 web-server-01 CEF:0|Unix|Unix OS|9.x|arcsight:5:2|Invalid user|4|act=Failed dproc=sshd dpid=31204 dvchost=web-server-01 src=45.155.205.34 spt=51877 suser=oracle outcome=failure cs1=invalid_user_announce cs1Label=AuthCategory msg=Invalid user oracle from 45.155.205.34 port 51877
+
+  Cross-coverage caveat (intentional, not a bug):
+    Wazuh's built-in sshd ruleset (0095-sshd_rules.xml, rules
+    5710 / 5716 / 5720 / 5722) pivots off the `sshd` decoder, which
+    is gated by `<program_name>^sshd</program_name>`. A CEF line
+    arriving on TCP/514 has its program slot set to the
+    SmartConnector's hostname (e.g. `arcsight-connector-01`) — not
+    `sshd` — so the native sshd decoder does NOT match. Wazuh does
+    not ship a built-in `cef` decoder either. Sites that want
+    SOC-side coverage on BOTH wire forms typically deploy a custom
+    CEF decoder (e.g. SOCFortress's `cef` decoder pack, or a local
+    `<decoder name="cef-ssh">` that extracts `cs1`, `suser`, `src`,
+    `dpid` then chains to custom rules in the 100000+ namespace).
+    This catalog declares the EXPECTED downstream rule_ids the
+    native sibling fires (5710/5716/5720/5722) for completeness;
+    they will not fire by default without that custom decoder.
+
+format: cef
+transport: [udp_syslog, tcp_syslog, file, beats]
+
+ocsf:
+  class: authentication
+  category_uid: 3
+  class_uid: 3002
+
+# ──────────────── DetectOps v2 metadata ────────────────
+# Same DetectOps coverage as the native sibling: machine-speed SSH
+# brute force probe stress-tests R1/R4 and PA5/PA9/PA10 alike — the
+# wire format on the SIEM ingress path doesn't change the threat
+# model. CEF sibling exists so the regression matrix covers BOTH
+# decoders.
+detections:
+  wazuh:
+    # The 5710/5716/5720/5722 rule_ids below are the EXPECTED
+    # downstream rules from the native sibling. They will only fire
+    # under a custom CEF decoder that re-tags decoded events with
+    # `decoded_as=sshd` — see Cross-coverage caveat above.
+    - decoder: cef          # custom (NOT built-in; see caveat)
+    - rule_id: 5710
+      level: 5
+    - rule_id: 5712
+      level: 10
+    - rule_id: 5716
+      level: 5
+    - rule_id: 5720
+      level: 10
+    - rule_id: 5722
+      level: 0
+  sigma:
+    - rule: lnx_ssh_brute_force_attempt
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/linux/builtin/auth
+    - rule: lnx_ssh_failed_password
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/linux/builtin/auth
+  elk_detection:
+    - kibana_rule_id: lnx-ssh-multi-failure
+      severity: medium
+
+mythos_alignment:
+  risk_refs: [R1, R4]
+  pa_refs: [PA5, PA9, PA10]
+  ttx_class: rapid
+
+regression:
+  # Mirrors the native sibling's baseline so the dual-format
+  # regression matrix can compare alert counts on a like-for-like
+  # basis. Under a custom CEF decoder both forms should hit the
+  # same ~105 alert-class total; without one, the CEF-side count
+  # collapses to 0 — which is itself a useful baseline (confirms
+  # the SOC's CEF decoding gap).
+  baseline_alert_count: 105
+  baseline_ttd_ms: 3000
+
+params:
+  hostname: { default: "web-server-01" }
+  src_pool:
+    default:
+      - "45.155.205.34"
+      - "92.118.39.71"
+      - "185.220.101.7"
+      - "61.177.172.140"
+      - "194.169.175.36"
+      - "103.149.162.108"
+  user_pool:
+    default:
+      - "admin"
+      - "root"
+      - "ubuntu"
+      - "test"
+      - "oracle"
+      - "git"
+      - "postgres"
+      - "ftpuser"
+      - "support"
+
+fields:
+  # ──────────────── syslog envelope ────────────────
+  # PRI is preserved from the upstream sshd event (the SmartConnector
+  # does NOT rewrite PRI when re-emitting; see Unix OS Syslog 8.4
+  # Configuration Guide §"Syslog Output"). 86 = AUTHPRIV.INFO,
+  # identical to the native sibling — same justification.
+  - name: pri
+    type: fixed
+    value: 86
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  # The syslog HOST slot on the CEF line is the SmartConnector's own
+  # host (the relay), NOT the originating sshd box. We emit the
+  # originating box name here for readability and put it in `dvchost`
+  # below as well (CEF canonical extension for the device generating
+  # the event).
+  - name: hostname
+    type: param
+    param: hostname
+
+  # ──────────────── kind dispatcher ────────────────
+  # Same four scenarios as the native sibling. Weights preserved 1:1
+  # so the regression baseline_alert_count remains comparable.
+  - name: kind
+    type: weighted_choice
+    choices:
+      invalid_user:           0.45
+      failed_password:        0.30
+      preauth_close:          0.15
+      invalid_user_announce:  0.10
+
+  - name: user
+    type: choice
+    choices: ${params.user_pool}
+
+  - name: src_ip
+    type: choice
+    choices: ${params.src_pool}
+
+  - name: src_port
+    type: int_range
+    min: 1024
+    max: 65535
+
+  # sshd PID — emitted to CEF as `dpid` (DestinationProcessId per
+  # Sentinel cef-name-mapping). Range matches the native sibling.
+  - name: pid
+    type: int_range
+    min: 1000
+    max: 65535
+
+  # ──────────────── CEF header fields ────────────────
+  # signature_id (deviceEventClassId) format = arcsight:<submessage>:<pattern>
+  # per OpenText community thread referenced above. Real Unix syslog
+  # SmartConnector parsers ship a fixed submessage table for SSH
+  # patterns; we pin a stable per-kind triple here. The submessage:
+  # pattern numbers are SmartConnector internal indexes that vary by
+  # parser version (the public docs only confirm the FORMAT, not the
+  # exact numbers for every sshd line) — site engineers wanting the
+  # production-parser-exact numbers must inspect their connector's
+  # `syslog.subagent.sdkrfilereader.properties` file. We use a
+  # stable assignment so detection rules pivoting on a known
+  # signature_id remain deterministic in regression runs.
+  - name: signature_id
+    type: template
+    template: "{% if kind == 'invalid_user' %}arcsight:5:0{% elif kind == 'failed_password' %}arcsight:5:1{% elif kind == 'preauth_close' %}arcsight:6:0{% else %}arcsight:5:2{% endif %}"
+
+  # CEF `name` slot — human-readable event description per CEF
+  # standard. Tracks the leading verb of the sshd body line so
+  # ArcSight ESM categorization (/Authentication/Verify/Failure)
+  # has a stable pivot.
+  - name: event_name
+    type: template
+    template: "{% if kind == 'preauth_close' %}Connection closed{% elif kind == 'invalid_user_announce' %}Invalid user{% else %}Failed password{% endif %}"
+
+  # CEF severity — ArcSight 0..10 scale (Sentinel cef-name-mapping:
+  # 0-3 Low / 4-6 Medium / 7-8 High / 9-10 Very-High). Authentication
+  # failures sit firmly in Low/Medium because each individual event
+  # is low-impact; brute-force aggregation (rule 5720) is what
+  # earns High in downstream rule logic. We split:
+  #   Failed password (real or invalid user): sev 5 (medium-low)
+  #   Invalid user announce:                  sev 4 (medium-low)
+  #   Connection closed (preauth):            sev 3 (low)
+  - name: cef_severity
+    type: template
+    template: "{% if kind == 'failed_password' or kind == 'invalid_user' %}5{% elif kind == 'invalid_user_announce' %}4{% else %}3{% endif %}"
+
+  # ──────────────── CEF extension fields ────────────────
+  # `act` — DeviceAction per Sentinel cef-name-mapping. ArcSight Unix
+  # parser surfaces the auth verb (Failed/Closed) so downstream rules
+  # can pivot off act alone.
+  - name: cef_act
+    type: template
+    template: "{% if kind == 'preauth_close' %}Closed{% else %}Failed{% endif %}"
+
+  # `dproc` — DestinationProcessName per Sentinel cef-name-mapping
+  # ("such as telnetd or sshd"). Fixed for this catalog.
+  - name: cef_dproc
+    type: fixed
+    value: "sshd"
+
+  # `outcome` — EventOutcome per Sentinel cef-name-mapping
+  # (success/failure). Every line emitted by this catalog is a
+  # failure path.
+  - name: cef_outcome
+    type: fixed
+    value: "failure"
+
+  # `cs1` — DeviceCustomString1, used here as the auth-category
+  # pivot label. ArcSight ESM Authentication-tree categorization
+  # consumes the native verb; we surface the catalog `kind` value
+  # 1:1 so the regression matrix can correlate dual-wire events on
+  # `cs1` alone.
+  - name: cef_cs1
+    type: template
+    template: "{{kind}}"
+
+  # `cs2` — SSH protocol version. Real sshd lines always trail with
+  # `ssh2`; only emit it where the underlying body actually does
+  # (suppress on preauth_close + invalid_user_announce).
+  - name: cef_cs2
+    type: template
+    template: "{% if kind == 'invalid_user' or kind == 'failed_password' %}ssh2{% else %}{% endif %}"
+
+  # `cs3` — sshd auth method (password). Only present for the two
+  # Failed-password kinds.
+  - name: cef_cs3
+    type: template
+    template: "{% if kind == 'invalid_user' or kind == 'failed_password' %}password{% else %}{% endif %}"
+
+  # `msg` — full original sshd body string per Sentinel
+  # cef-name-mapping ("A message that gives more details about the
+  # event"). SmartConnectors typically copy the raw post-prefix body
+  # into `msg` so downstream consumers can recover the native form.
+  # We reproduce that behavior verbatim — the string is the same one
+  # the native sibling emits, drilled into openssh-portable
+  # auth.c::auth_log() / getpwnamallow().
+  - name: cef_msg
+    type: template
+    template: "{% if kind == 'invalid_user' %}Failed password for invalid user {{user}} from {{src_ip}} port {{src_port}} ssh2{% elif kind == 'failed_password' %}Failed password for {{user}} from {{src_ip}} port {{src_port}} ssh2{% elif kind == 'preauth_close' %}Connection closed by authenticating user {{user}} {{src_ip}} port {{src_port}} [preauth]{% else %}Invalid user {{user}} from {{src_ip}} port {{src_port}}{% endif %}"
+
+# CEF template — strict layout per ArcSight CEF Implementation
+# Standard 8.3 header (CEF:Version|DeviceVendor|DeviceProduct|
+# DeviceVersion|DeviceEventClassID|Name|Severity|Extension) plus a
+# stable extension key order that matches the Sentinel
+# cef-name-mapping dictionary. Field-mapping inline trace:
+#
+#   act           ← Sentinel cef-name-mapping (DeviceAction)
+#   dproc         ← Sentinel cef-name-mapping (DestinationProcessName "sshd")
+#   dpid          ← Sentinel cef-name-mapping (DestinationProcessId — sshd PID)
+#   dvchost       ← Sentinel cef-name-mapping (DeviceName — originating host)
+#   src           ← Sentinel cef-name-mapping (SourceIP — connecting client)
+#   spt           ← Sentinel cef-name-mapping (SourcePort)
+#   suser         ← Sentinel cef-name-mapping (SourceUserName — attempted user)
+#   outcome       ← Sentinel cef-name-mapping (EventOutcome — failure)
+#   cs1 / cs1Label    ← DeviceCustomString1 — catalog `kind` pivot
+#   cs2 / cs2Label    ← DeviceCustomString2 — SSH protocol (ssh2 when present)
+#   cs3 / cs3Label    ← DeviceCustomString3 — auth method (password when present)
+#   msg           ← Sentinel cef-name-mapping (Message — raw sshd body)
+#
+# Empty cs2/cs3 lines (preauth_close, invalid_user_announce) emit
+# `cs2= cs2Label=SSHProtocol`-style key with empty value — this is
+# the SmartConnector's documented behaviour for absent SEPM fields
+# in the Symantec sibling and is harmless for downstream parsers.
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} CEF:0|Unix|Unix OS|9.x|{{signature_id}}|{{event_name}}|{{cef_severity}}|act={{cef_act}} dproc={{cef_dproc}} dpid={{pid}} dvchost={{hostname}} src={{src_ip}} spt={{src_port}} suser={{user}} outcome={{cef_outcome}} cs1={{cef_cs1}} cs1Label=AuthCategory cs2={{cef_cs2}} cs2Label=SSHProtocol cs3={{cef_cs3}} cs3Label=AuthMethod msg={{cef_msg}}

@@ -1,0 +1,368 @@
+vendor: microsoft
+product: windows
+version: "2022"
+log_type: sysmon.network_connect.teampcp
+description: |
+  Sysmon v15 Event ID 3 (Network Connection) — TeamPCP campaign C2 outbound.
+  Models the post-compromise behavior of LiteLLM 1.82.7 / 1.82.8 and
+  Telnyx 4.87.x: python-spawned outbound HTTPS to TeamPCP exfiltration
+  endpoints (models.litellm[.]cloud, checkmarx[.]zone) and raw HTTP to
+  the Telnyx second-stage WAV server (83.142.209.203:8080).
+
+  Wire format is JSON in the Winlogbeat / Wazuh-agent forwarded shape
+  (channel `Microsoft-Windows-Sysmon/Operational`), single-line for
+  line-delimited TCP syslog ingest into filebeat 9514/tcp. The 18-field
+  EventData block is authoritative per MSTIC schema (see Source-of-
+  truth URLs below) — EID 3 has a COMPLETELY DIFFERENT field set from
+  EID 1 ProcessCreate; there is no PE-metadata, no Hashes, no Logon
+  correlation block. The pivots that matter for network detection are
+  `Image` (which process initiated the connection), `User` (whose
+  token), `Initiated` (true = outbound from this host),
+  `DestinationIp` / `DestinationHostname` / `DestinationPort`
+  (where it went), and `Protocol` (tcp / udp).
+
+  Source-of-truth (URLs fetched 2026-05-15):
+    - Microsoft Sysinternals Sysmon manual page (current schema
+      version 4.82+, EventID 3 NetworkConnect definition):
+        https://learn.microsoft.com/en-us/sysinternals/downloads/sysmon
+    - Official Sysmon schema XML (MSTIC-Sysmon, schema 4.81
+      corresponds to Sysmon v13.30+, EID 3 structure preserved
+      through v15.x; the v15 schema bump added EID 29
+      FileExecutableDetected, NOT a change to EID 3):
+        https://github.com/microsoft/MSTIC-Sysmon/blob/main/windows/schemas/sysmonv13.30_4.81.xml
+    - UltimateWindowsSecurity field-by-field reference for
+      Sysmon EID 3:
+        https://www.ultimatewindowssecurity.com/securitylog/encyclopedia/event.aspx?eventID=3
+    - SwiftOnSecurity sysmon-config (canonical baseline config —
+      `<NetworkConnect onmatch="include">` rule patterns that
+      populate the `RuleName` field):
+        https://github.com/SwiftOnSecurity/sysmon-config
+    - TrustedSec SysmonCommunityGuide § Network Connection
+      (field-by-field reference matching the MSTIC schema):
+        https://github.com/trustedsec/SysmonCommunityGuide/blob/master/chapters/network-connection.md
+    - Datadog Security Labs — TeamPCP supply-chain campaign
+      advisory (IOC source for this catalog):
+        https://securitylabs.datadoghq.com/articles/litellm-compromised-pypi-teampcp-supply-chain-campaign/
+
+  Authoritative field order from the MSTIC schema for
+  SYSMONEVENT_NETWORK_CONNECT (18 fields):
+
+    1.  RuleName             10. SourceIp
+    2.  UtcTime              11. SourceHostname
+    3.  ProcessGuid          12. SourcePort
+    4.  ProcessId            13. SourcePortName
+    5.  Image                14. DestinationIsIpv6
+    6.  User                 15. DestinationIp
+    7.  Protocol             16. DestinationHostname
+    8.  Initiated            17. DestinationPort
+    9.  SourceIsIpv6         18. DestinationPortName
+
+  Notes on field semantics (per MSTIC schema + Community Guide):
+
+    - `RuleName` is the friendly name from the SwiftOnSecurity-
+      style config `<NetworkConnect onmatch="include">
+        <DestinationPort name="T1071,suspicious_https">443
+        </DestinationPort></NetworkConnect>` mapping. Wire value
+      is the literal `name="..."` text, or `-` if unset.
+    - `UtcTime` format is `YYYY-MM-DD HH:MM:SS.fff` UTC (same as
+      EID 1) — note the SPACE, not `T`, between date and time;
+      this is Sysmon's wire convention, distinct from the ISO-
+      8601 `@timestamp` field at the envelope level.
+    - `Image` is the FULL PATH of the process that initiated the
+      TCP/UDP connect — for TeamPCP this is `python.exe` (one of
+      three install locations weighted in this catalog).
+    - `User` is `DOMAIN\user` form. For machine accounts it is
+      `NT AUTHORITY\SYSTEM`. The TeamPCP scenario fires in user
+      context (pip install → import-time payload), so `LAB\dev01`.
+    - `Protocol` is enum `tcp` | `udp` (lowercase per schema).
+    - `Initiated` is the critical direction flag: `true` =
+      outbound from this host (THIS catalog's case — C2
+      callback); `false` = inbound. C2 detection rules MUST
+      filter `Initiated=true` to suppress inbound traffic noise.
+    - `SourceIsIpv6` / `DestinationIsIpv6` are `true`/`false`
+      strings (not booleans on the wire — see schema inType
+      `Boolean` with outType `xs:string`).
+    - `SourcePortName` / `DestinationPortName` are the IANA
+      service-name lookup result (`https`, `http`, `ssh`, `-`
+      if unknown). Sysmon resolves via `%SystemRoot%\System32
+      \drivers\etc\services`. Port 8080 is `-` because it is
+      not registered in the default services file.
+    - `SourceHostname` / `DestinationHostname` are reverse-DNS
+      lookup results performed by Sysmon at event time. For
+      outbound C2 to a fresh-TLD domain the destination is
+      USUALLY resolved (since the process just did the forward
+      lookup to dial out); for a raw-IP connection (no prior
+      forward lookup) `DestinationHostname` is `-`.
+
+  SIEM rule mapping: Sysmon Network Connect feeds the
+  endpoint-side outbound-C2 rule family that pivots on
+  Image / User / DestinationIp / DestinationHostname /
+  DestinationPort + `Initiated=true`. The TeamPCP IOC list
+  (cti.iocs block below) is the allow-list against which
+  Sigma/Wazuh rules match. The generic Wazuh rule for EID 3 is
+  61606 (sysmon_event_3); specific child rules layer on top.
+
+format: json
+transport: [tcp_syslog, beats, file]
+
+ocsf:
+  class: network_activity
+  category_uid: 4
+  class_uid: 4001
+
+# ──────────────── DetectOps v2 metadata ────────────────
+# Sysmon EID 3 is the canonical endpoint-side signal for outbound C2.
+# Detection should fire on dst_hostname / dst_ip match against TeamPCP IOC
+# allow-list, plus tag the originating process (python.exe spawning a
+# raw HTTPS connection to a fresh TLD) as suspicious.
+detections:
+  wazuh:
+    - decoder: windows_eventchannel
+    - rule_id: 61606  # sysmon_event_3 (network connection) generic
+      level: 5
+  sigma:
+    - rule: net_connection_win_susp_external_ip
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/windows/network_connection
+    - rule: net_connection_win_python_outbound_unknown_tld
+      ref: TBD  # placeholder — write custom Sigma rule for TeamPCP IOC list
+  elk_detection:
+    - kibana_rule_id: endpoint-suspicious-outbound-c2
+      severity: high
+    - kibana_rule_id: teampcp-c2-domain-match
+      severity: critical
+
+mythos_alignment:
+  # R1 Accelerated Threat Exploitation — TeamPCP shows a 5-stage cross-
+  #   ecosystem campaign that reaches PyPI within hours of upstream Trivy
+  #   compromise; outbound C2 is the visible aftermath.
+  # R10 Threat Detection Dependent on Lagging Intelligence — this catalog
+  #   exists exactly to flip that: advisory ingest → IOC backfill →
+  #   detection verified within days, not waiting for CTI feed propagation.
+  risk_refs: [R1, R10]
+  # PA1 Point Agents at Code (CTI agent ingests advisory → catalog draft)
+  # PA5 Continuous Patching (post-patch regression must verify detection)
+  pa_refs: [PA1, PA5]
+  ttx_class: rapid
+
+regression:
+  # 50-event live-fire on 2026-05-18 (Sibling 1 of TeamPCP batch sprint):
+  #   - Wazuh rule 132020 (hostname IOC: models.litellm.cloud + checkmarx.zone) → 32/50 fire
+  #   - Wazuh rule 132021 (raw-IP IOC: 83.142.209.203 + 83.142.209.11 + 46.151.182.203) → 18/50 fire
+  #   - Combined: 50/50 (100% catalog hit, no negative scenario — every event is TeamPCP IOC)
+  #   - ELK syslog-other-2026.05.18 index: 50/50 ingest
+  #
+  # Weighted-choice expectation:
+  #   - hostname axis: 0.40 (exfil_litellm) + 0.25 (beacon_checkmarx) = 0.65 → ~33 ± 5
+  #   - raw-IP axis  : 0.20 (wav_stage_telnyx) + 0.10 (related_a) + 0.05 (related_b) = 0.35 → ~17 ± 5
+  # Both fall within tolerance.
+  baseline_alert_count: 50         # 132020 + 132021 sum (parent anchor 132019 is level-0, not counted)
+  baseline_132020_count: 32        # hostname axis (exfil_litellm + beacon_checkmarx scenarios)
+  baseline_132021_count: 18        # raw-IP axis (wav_stage_telnyx + related_infra_a/b scenarios)
+  baseline_ttd_ms: 2000
+  parent_chain: 132019             # level-0 anchor on "Microsoft-Windows-Sysmon" string match
+
+# ──────────────── v3: CTI advisory provenance + IOCs ────────────────
+cti:
+  source: datadog-security-labs
+  source_url: https://securitylabs.datadoghq.com/articles/litellm-compromised-pypi-teampcp-supply-chain-campaign/
+  advisory_id: PYSEC-2026-2
+  ingested_at: "2026-05-07"
+  related_campaign: teampcp
+  cve_refs: []   # No CVE assigned as of advisory publish date; PYSEC + GHSA only
+  # IOC bundle收斂到 Sysmon EID 3 實際渲染的軸:domains + ips + 共用的
+  # package_versions(campaign metadata)。file_paths 由 sibling
+  # auditd catalog 擁有,http_fingerprints 由 sibling k8s-audit catalog
+  # (User-Agent)擁有 — 三軸互斥讓 SOC 從單一 catalog 的 IOC bundle
+  # 衍生 detection rule 時不會混入 catalog 模板沒輸出的欄位類型。
+  iocs:
+    domains:
+      - models.litellm.cloud
+      - checkmarx.zone
+      - aquasecurtiy.org   # typosquat of aquasecurity[.]com used in Trivy stage
+    ips:
+      - 83.142.209.203     # Telnyx WAV server + LiteLLM exfil
+      - 83.142.209.11      # related campaign infrastructure
+      - 46.151.182.203     # related campaign infrastructure
+    package_versions:
+      - { ecosystem: pypi, name: litellm, versions: ["1.82.7", "1.82.8"] }
+      - { ecosystem: pypi, name: telnyx,  versions: ["4.87.1", "4.87.2"] }
+
+# ──────────────── v3: VulnOps reverse-lookup ────────────────
+vulnops:
+  cve_refs: []
+  affects:
+    - { vendor: pypi, product: litellm, version_range: "1.82.7,1.82.8" }
+    - { vendor: pypi, product: telnyx,  version_range: "4.87.1,4.87.2" }
+  patch_signal:
+    - "litellm 1.82.7 / 1.82.8 quarantined on PyPI"
+    - "telnyx 4.87.1 / 4.87.2 quarantined on PyPI"
+  regression_critical: true   # P0: cross-cosystem supply-chain compromise
+
+params:
+  hostname:    { default: "DEV-LAPTOP-04" }
+  domain:      { default: "lab.local" }
+  victim_user: { default: "LAB\\\\dev01" }
+  src_cidr:    { default: "10.42.0.0/24" }
+
+fields:
+  # ── Timestamps ──────────────────────────────────────
+  - name: ts_iso
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S.%fZ"
+
+  # Sysmon `UtcTime` field — SPACE delimiter between date and time,
+  # millisecond precision (3 fractional digits per schema, Python
+  # `%f` produces 6 — downstream ingest accepts both widths).
+  - name: ts_sysmon
+    type: datetime
+    format: "%Y-%m-%d %H:%M:%S.%f"
+
+  # ── Host identity ───────────────────────────────────
+  - name: hostname
+    type: param
+    param: hostname
+
+  - name: fqdn
+    type: template
+    template: "{{hostname}}.{{params.domain}}"
+
+  # ── RuleName (SwiftOnSecurity-style network rule tag) ──
+  # Wire convention: `-` when no Sysmon NetworkConnect rule matched
+  # (most baseline traffic), `technique_id=Txxxx,description` when
+  # config has tagged the destination port / image as suspicious.
+  - name: rule_name
+    type: weighted_choice
+    choices:
+      "-": 0.60
+      "technique_id=T1071,suspicious_https_443": 0.20
+      "technique_id=T1071.001,c2_callback_python": 0.15
+      "technique_id=T1105,raw_http_unregistered_port": 0.05
+
+  # ── Process identity (which process initiated the connection) ──
+  - name: process_guid
+    type: faker
+    method: uuid4
+
+  - name: process_id
+    type: int_range
+    min: 1000
+    max: 60000
+
+  # TeamPCP payload runs at `import` time during pip install, so
+  # the originating image is python.exe — distributed across the
+  # three install locations a developer laptop commonly carries.
+  - name: image
+    type: weighted_choice
+    choices:
+      "C:\\\\Python311\\\\python.exe": 0.5
+      "C:\\\\Users\\\\dev01\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe": 0.3
+      "C:\\\\Program Files\\\\Python312\\\\python.exe": 0.2
+
+  # ── User context ────────────────────────────────────
+  - name: user
+    type: param
+    param: victim_user
+
+  # ── Protocol + direction ────────────────────────────
+  # All TeamPCP outbound C2 in this catalog is TCP (HTTPS/HTTP).
+  # `Protocol` is lowercase per Sysmon schema enum.
+  - name: protocol
+    type: fixed
+    value: tcp
+
+  # `Initiated=true` = outbound from THIS host. The TeamPCP scenario
+  # is C2 callback, so always outbound. (Inbound EID 3 events are
+  # rare — usually only listening services receive them, and only
+  # if Sysmon config enables `<NetworkConnect onmatch="include">`
+  # for incoming.)
+  - name: initiated
+    type: fixed
+    value: "true"
+
+  # ── IPv4/IPv6 flags (string-typed on wire per schema) ──
+  - name: source_is_ipv6
+    type: fixed
+    value: "false"
+
+  - name: destination_is_ipv6
+    type: fixed
+    value: "false"
+
+  # ── Source endpoint ──────────────────────────────────
+  - name: src_ip
+    type: cidr
+    cidr: ${params.src_cidr}
+
+  - name: src_port
+    type: int_range
+    min: 49152      # IANA ephemeral range start
+    max: 65535
+
+  # SourcePortName is usually `-` for ephemeral ports (no IANA
+  # service name for the 49152-65535 range).
+  - name: src_port_name
+    type: fixed
+    value: "-"
+
+  # ── Destination endpoint (5 TeamPCP scenarios, weighted) ──
+  - name: scenario
+    type: weighted_choice
+    choices:
+      exfil_litellm:    0.40   # HTTPS POST to models.litellm.cloud:443
+      beacon_checkmarx: 0.25   # HTTPS GET  to checkmarx.zone:443
+      wav_stage_telnyx: 0.20   # HTTP raw   to 83.142.209.203:8080
+      related_infra_a:  0.10   # HTTPS to 83.142.209.11:443
+      related_infra_b:  0.05   # HTTPS to 46.151.182.203:443
+
+  - name: dst_hostname
+    type: template
+    template: |-
+      {%- if scenario == 'exfil_litellm' -%}models.litellm.cloud
+      {%- elif scenario == 'beacon_checkmarx' -%}checkmarx.zone
+      {%- else -%}-
+      {%- endif -%}
+
+  # For raw-IP scenarios (wav_stage_telnyx, related_infra_*) the
+  # IP is the IOC; for domain scenarios the IP is the resolved
+  # A-record. Cloudflare IPs (104.21.x / 172.67.x) are realistic
+  # front-facing addresses for litellm.cloud / checkmarx.zone
+  # domains hosted behind Cloudflare.
+  - name: dst_ip
+    type: template
+    template: |-
+      {%- if scenario == 'wav_stage_telnyx' -%}83.142.209.203
+      {%- elif scenario == 'related_infra_a' -%}83.142.209.11
+      {%- elif scenario == 'related_infra_b' -%}46.151.182.203
+      {%- elif scenario == 'beacon_checkmarx' -%}172.67.182.93
+      {%- else -%}104.21.74.18
+      {%- endif -%}
+
+  - name: dst_port
+    type: template
+    template: |-
+      {%- if scenario == 'wav_stage_telnyx' -%}8080{%- else -%}443{%- endif -%}
+
+  # DestinationPortName: `https` for 443, `-` for 8080 (8080 is
+  # not in the default IANA services file). Per Sysmon convention
+  # the well-known ports below 1024 resolve to lowercase names;
+  # 443 → `https`, 80 → `http`, 22 → `ssh`, etc.
+  - name: dst_port_name
+    type: template
+    template: |-
+      {%- if scenario == 'wav_stage_telnyx' -%}-{%- else -%}https{%- endif -%}
+
+  # ── Syslog envelope ──────────────────────────────────
+  - name: pri
+    type: fixed
+    value: 134                              # local0.info
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+# Wire template — single-line JSON prefixed with RFC3164 syslog header.
+# EventData block emits the 18 EID 3 fields in MSTIC schema order.
+# ProcessGuid wraps in `{...}` braces per Sysmon GUID convention
+# (identical to EID 1, applies to all Sysmon EventData GUIDs).
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} {"@timestamp":"{{ts_iso}}","event":{"code":3,"provider":"Microsoft-Windows-Sysmon","action":"Network connection detected","category":["network"],"type":["connection","start","protocol"]},"host":{"name":"{{hostname}}","hostname":"{{hostname}}"},"network":{"protocol":"{{protocol}}","direction":"egress"},"source":{"ip":"{{src_ip}}","port":{{src_port}}},"destination":{"ip":"{{dst_ip}}","port":{{dst_port}},"domain":"{{dst_hostname}}"},"winlog":{"channel":"Microsoft-Windows-Sysmon/Operational","event_id":3,"provider_name":"Microsoft-Windows-Sysmon","computer_name":"{{fqdn}}","event_data":{"RuleName":"{{rule_name}}","UtcTime":"{{ts_sysmon}}","ProcessGuid":"{{'{'}}{{process_guid}}{{'}'}}","ProcessId":"{{process_id}}","Image":"{{image}}","User":"{{user}}","Protocol":"{{protocol}}","Initiated":"{{initiated}}","SourceIsIpv6":"{{source_is_ipv6}}","SourceIp":"{{src_ip}}","SourceHostname":"{{fqdn}}","SourcePort":"{{src_port}}","SourcePortName":"{{src_port_name}}","DestinationIsIpv6":"{{destination_is_ipv6}}","DestinationIp":"{{dst_ip}}","DestinationHostname":"{{dst_hostname}}","DestinationPort":"{{dst_port}}","DestinationPortName":"{{dst_port_name}}"}}}

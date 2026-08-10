@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cyberrange"
+version = "0.0.1"
+description = "Catalog-driven log generator for SIEM detection rule validation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "huangalou" }]
+dependencies = [
+  "pydantic>=2.5",
+  "pyyaml>=6.0",
+  "jinja2>=3.1",
+  "feedparser>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+cyberrange = "cyberrange.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cyberrange"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+  "unit: pure-Python unit tests (no IO / no catalog walk)",
+  "integration: spans loader + catalog tree",
+]

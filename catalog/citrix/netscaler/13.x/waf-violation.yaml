@@ -1,0 +1,490 @@
+vendor: citrix
+product: netscaler
+version: "13.x"
+log_type: waf.violation
+description: |
+  NetScaler ADC 13.x Web App Firewall (AppFW) security-check violation
+  event, emitted over RFC3164 syslog with the **CEF** action enabled on
+  the audit logging policy (Security > NetScaler Web App Firewall > Change
+  Engine Settings > "CEF Logging" checkbox). All Web App Firewall
+  violations land in `/var/log/ns.log` (and `/var/log/ns.log.appfw` when
+  segregated) and are forwarded with `<local0.info>` priority.
+
+  ## Source-of-truth (cited, not invented)
+
+  - NetScaler product docs — "Web App Firewall logs":
+    https://docs.netscaler.com/en-us/citrix-adc/current-release/application-firewall/logs.html
+  - Citrix support article CTX136146 — "Common Event Format (CEF) Logging
+    Support in the Application Firewall":
+    https://support.citrix.com/article/CTX136146
+  - Citrix support article CTX691236 — "NetScaler AppFirewall:
+    Configuration, CEF logging, Signatures"
+  - NetScaler 13.1 syslog message reference:
+    https://developer-docs.netscaler.com/en-us/netscaler-syslog-message-reference/13-1.html
+  - Microsoft Sentinel ASim parser (real-world field mapping):
+    https://github.com/Azure/Azure-Sentinel/blob/master/Parsers/ASimWebSession/Parsers/ASimWebSessionCitrixNetScaler.yaml
+  - Elastic integration "Citrix Web App Firewall":
+    https://docs.elastic.co/integrations/citrix_waf
+
+  ## Real verbatim sample lines (from docs.netscaler.com)
+
+  Signature match (rule ID 807 web-cgi, NS11.0 — same wire shape on 13.x):
+
+      Jun 13 01:11:09 <local0.info> 10.217.31.98 CEF:0|Citrix|NetScaler|NS11.0|APPFW|APPFW_SIGNATURE_MATCH|6|src=10.217.253.62 spt=61141 method=GET request= http://aaron.stratum8.net/FFC/wwwboard/passwd.txt msg=Signature violation rule ID 807: web-cgi /wwwboard/passwd.txt access cn1=140 cn2=841 cs1=pr_ffc cs2=PPE0 cs3=OyTgjbXBqcpBFeENKDlde3OkMQ00001 cs4=ALERT cs5=2015 cs6=web-cgi act=blocked
+
+  Multiple header (NS13.1 sample with geolocation field):
+
+      CEF:0|Citrix|NetScaler|NS13.1|APPFW|APPFW_MULTIPLE_HEADER|6|src=1.2.3.4 geolocation=Unknown spt=61903 method=GET request=https://www.example.org/services msg=Multiple headers in request cn1=3755128 cn2=1636674 cs1=WAF_PRF_RULE1 cs2=PPE1 cs4=ALERT cs5=2023 act=blocked
+
+  Native (non-CEF) format for the same event class is also documented:
+
+      Feb 23 08:39:13 <local0.info> 192.168.229.10 02/23/2023:08:39:13 GMT Innsbruck 0-PPE-0 : default APPFW APPFW_STARTURL 1932 0 :  192.168.229.1 1546-PPE0 - waf_prof_test Disallow Illegal URL: http://192.168.229.100/green.htm <blocked>
+
+  This catalog emits the **CEF variant** — it is what real SOC pipelines
+  on top of NetScaler use (every SIEM vendor parser examined keys off CEF;
+  native is harder to parse and rarely chosen for forwarding).
+
+  ## Vendor / product token choice
+
+  CEF header uses literal `Citrix|NetScaler|NS<major>.<minor>` exactly as
+  the device emits — verified across NS11.0, NS13.1 and NS14.1 docs. The
+  Citrix → Cloud Software Group rebrand to standalone "NetScaler" (2023+)
+  did **not** change the CEF header tokens — devices still ship
+  `CEF:0|Citrix|NetScaler|...`. We keep that literal so SIEM regex
+  parsers match. CyberRange catalog vendor key stays `citrix` for
+  registry-lookup symmetry with the Citrix ADC documentation tree
+  (`docs.citrix.com/en-us/citrix-adc/13/`).
+
+  ## SIEM rule mapping
+
+  Same 32-rule vendor-agnostic WAF family as the F5 ASM and Imperva
+  catalogs. NetScaler APPFW_* event types feed
+  the same attack_type tokens (SQL Injection / XSS / Buffer
+  Overflow / Deny URL / Cookie Tampering / Signature Match) so all 32
+  rules fire when src/dst zones and `act=` field are populated correctly.
+
+  ## What changed in the 2026-05-14 fidelity rewrite (vs prior catalog)
+
+  - Removed invented `APPFW_SIG_BLOCKED` / `APPFW_FORMAT` / `APPFW_CMD`
+    categories — replaced with verbatim ones from NetScaler docs:
+    APPFW_SIGNATURE_MATCH / APPFW_SQL / APPFW_XSS / APPFW_STARTURL /
+    APPFW_DENYURL / APPFW_BUFFEROVERFLOW_URL / APPFW_BUFFEROVERFLOW_COOKIE /
+    APPFW_BUFFEROVERFLOW_HDR / APPFW_FIELDFORMAT / APPFW_FIELDCONSISTENCY /
+    APPFW_COOKIE / APPFW_REFERER_HEADER / APPFW_MULTIPLE_HEADER /
+    APPFW_SAFECOMMERCE / APPFW_XML_SQL.
+  - Action vocabulary corrected to literal `blocked` / `not blocked` /
+    `transformed` / `alert` (the prior `BLOCK / LOG / TRANSFORM / STATS /
+    NONE` values are profile-config CLI keywords, NOT what `act=` carries
+    in syslog).
+  - Signature IDs aligned with real signature-rule range (samples in docs
+    use 807 / 953 / 1932 / 5852 — three- to four-digit Snort-derived IDs;
+    NOT 998xxx).
+  - Product version token reshaped to `NS<major>.<minor>` (`NS13.1` /
+    `NS13.0` / `NS14.1`) — that is what appears in the CEF header.
+  - Added real CEF fields seen in samples: `cs1=Profile`, `cs2=PPE`,
+    `cs3=SessionID`, `cs4=ALERT|EMERG`, `cs5=Year`, `cs6=SigCategory`,
+    `cn1=TransactionID`, `cn2=ConnectionPPE`, and `geolocation`.
+
+format: cef
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: web_resources_activity
+  category_uid: 6
+  class_uid: 6004
+
+detections:
+  wazuh:
+    - decoder: cef
+    # 32 ArcSight rule_ids preserved verbatim from prior catalog —
+    # same vendor-agnostic WAF family covers F5 ASM / Imperva / NetScaler.
+    - rule_id: 130005
+      level: 7
+    - rule_id: 130079
+      level: 7
+    - rule_id: 130021
+      level: 7
+    - rule_id: 130082
+      level: 7
+    - rule_id: 130108
+      level: 7
+    - rule_id: 130145
+      level: 7
+    - rule_id: 130035
+      level: 7
+    - rule_id: 130091
+      level: 7
+    - rule_id: 130081
+      level: 7
+    - rule_id: 130131
+      level: 7
+    - rule_id: 130019
+      level: 7
+    - rule_id: 130038
+      level: 7
+    - rule_id: 130002
+      level: 7
+    - rule_id: 130126
+      level: 7
+    - rule_id: 130049
+      level: 7
+    - rule_id: 130086
+      level: 7
+    - rule_id: 130065
+      level: 7
+    - rule_id: 130146
+      level: 7
+    - rule_id: 130139
+      level: 7
+    - rule_id: 130147
+      level: 7
+    - rule_id: 130054
+      level: 7
+    - rule_id: 130125
+      level: 7
+    - rule_id: 130078
+      level: 7
+    - rule_id: 130095
+      level: 7
+    - rule_id: 130015
+      level: 7
+    - rule_id: 130070
+      level: 7
+    - rule_id: 130003
+      level: 7
+    - rule_id: 130056
+      level: 7
+    - rule_id: 130014
+      level: 7
+    - rule_id: 130124
+      level: 7
+    - rule_id: 130121
+      level: 7
+    - rule_id: 130127
+      level: 7
+  sigma:
+    - rule: citrix_netscaler_appfw_violation
+      ref: https://github.com/SigmaHQ/sigma
+  elk_detection:
+    - kibana_rule_id: cef-waf-attack-blocked
+      severity: high
+    - kibana_rule_id: cef-waf-high-severity-unblocked
+      severity: critical
+
+mythos_alignment:
+  risk_refs: [R1, R4]
+  pa_refs: [PA1]
+  ttx_class: rapid
+
+regression:
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 3000
+
+params:
+  device_name:
+    default: "ns-waf-lab-01"
+  device_id:
+    default: "ns-waf-lab-01.lab.local"
+  policy_name:
+    default: "WAF_PRF_PROD"   # real-world cs1 values are profile-rule names
+  profile_name:
+    default: "pr_ffc"          # docs sample uses pr_ffc / waf_prof_test
+  external_attacker_pool:
+    default:
+      - "203.0.113.45"
+      - "198.51.100.77"
+      - "45.142.213.18"
+      - "194.165.16.99"
+      - "172.93.179.115"
+  internal_source_pool:
+    default: "10.0.20.0/24"
+  protected_dest_pool:
+    default:
+      - "10.0.50.10"
+      - "10.0.50.11"
+      - "10.0.50.12"
+      - "10.0.50.13"
+      - "10.0.50.14"
+  protected_hostname_pool:
+    default:
+      - "app.example.lab"
+      - "api.example.lab"
+      - "portal.example.lab"
+      - "admin.example.lab"
+      - "store.example.lab"
+
+fields:
+  - name: pri
+    type: fixed
+    value: 134   # local0.info — what NetScaler AppFW actually emits
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  - name: src_zone
+    type: weighted_choice
+    choices:
+      external: 0.60
+      internal: 0.40
+
+  - name: external_src
+    type: choice
+    choices: ${params.external_attacker_pool}
+
+  - name: internal_src
+    type: cidr
+    cidr: ${params.internal_source_pool}
+
+  - name: src_ip
+    type: template
+    template: "{% if src_zone == 'external' %}{{external_src}}{% else %}{{internal_src}}{% endif %}"
+
+  - name: geolocation
+    type: weighted_choice
+    choices:
+      "Unknown":       0.40
+      "RU":            0.15
+      "CN":            0.15
+      "US":            0.10
+      "TW":            0.10
+      "NL":            0.05
+      "BR":            0.05
+
+  - name: dst_ip
+    type: choice
+    choices: ${params.protected_dest_pool}
+
+  - name: dhost
+    type: choice
+    choices: ${params.protected_hostname_pool}
+
+  - name: src_port
+    type: int_range
+    min: 1024
+    max: 65535
+
+  - name: dst_port
+    type: weighted_choice
+    choices:
+      "443": 0.75
+      "80":  0.25
+
+  - name: scheme
+    type: template
+    template: "{% if dst_port == '443' %}https{% else %}http{% endif %}"
+
+  # Real APPFW_* event types — verbatim from docs.netscaler.com/.../logs.html
+  # and Citrix support CTX136146. APPFW_SIGNATURE_MATCH is the generic
+  # signature hit; the *_BUFFEROVERFLOW family has three positional variants
+  # (URL / COOKIE / HDR); APPFW_SQL & APPFW_XSS are HTML-protection checks.
+  - name: appfw_event
+    type: weighted_choice
+    choices:
+      "APPFW_SIGNATURE_MATCH":      0.22
+      "APPFW_SQL":                  0.18
+      "APPFW_XSS":                  0.15
+      "APPFW_STARTURL":             0.08
+      "APPFW_DENYURL":              0.07
+      "APPFW_BUFFEROVERFLOW_URL":   0.05
+      "APPFW_BUFFEROVERFLOW_HDR":   0.03
+      "APPFW_BUFFEROVERFLOW_COOKIE": 0.02
+      "APPFW_FIELDFORMAT":          0.05
+      "APPFW_FIELDCONSISTENCY":     0.04
+      "APPFW_COOKIE":               0.03
+      "APPFW_REFERER_HEADER":       0.03
+      "APPFW_MULTIPLE_HEADER":      0.02
+      "APPFW_SAFECOMMERCE":         0.02
+      "APPFW_XML_SQL":              0.01
+
+  # ArcSight attack_type tokens — kept aligned with the 32-rule family.
+  # Decoupled from appfw_event since cs6 (sig category) and ArcSight
+  # taxonomy do not map 1:1 (NetScaler taxonomy is finer-grained).
+  - name: attack_type
+    type: weighted_choice
+    choices:
+      "SQL-Injection":               0.22
+      "Cross Site Scripting (XSS)":  0.18
+      "Buffer Overflow":             0.10
+      "Vulnerability Scan":          0.15
+      "Brute Force":                 0.10
+      "Cookie Tampering":            0.05
+      "Deny URL":                    0.10
+      "Start URL Violation":         0.05
+      "Field Consistency":           0.05
+
+  # Real signature-rule ID range. Docs samples show 807 (web-cgi), 953,
+  # 1932, 5852, etc. — three/four-digit Snort-derived IDs. NOT 998xxx.
+  - name: signature_id
+    type: weighted_choice
+    choices:
+      "807":   0.15
+      "953":   0.12
+      "1932":  0.12
+      "5852":  0.10
+      "1248":  0.10
+      "1657":  0.10
+      "2008":  0.08
+      "3215":  0.08
+      "4012":  0.08
+      "6711":  0.07
+
+  # cs6 — signature category (web-cgi / web-iis / web-php / sql / xss / etc.)
+  - name: sig_category
+    type: weighted_choice
+    choices:
+      "web-cgi":     0.20
+      "web-iis":     0.10
+      "web-php":     0.15
+      "web-misc":    0.15
+      "sql":         0.15
+      "web-client":  0.10
+      "web-attacks": 0.15
+
+  # cs4 — severity word. ALERT is the most common; EMERG appears for
+  # signature severities >= 7.
+  - name: severity_word
+    type: weighted_choice
+    choices:
+      "ALERT": 0.80
+      "EMERG": 0.20
+
+  # CEF header severity is 1–10 integer — docs samples consistently use 6.
+  - name: cef_severity
+    type: weighted_choice
+    choices:
+      "5": 0.20
+      "6": 0.55
+      "7": 0.15
+      "8": 0.10
+
+  # Real act= vocabulary — verbatim from docs samples:
+  # `blocked` / `not blocked` / `transformed` / `alert`.
+  # NOT the CLI policy-action keywords (BLOCK/LOG/TRANSFORM/STATS/NONE).
+  - name: action
+    type: weighted_choice
+    choices:
+      "blocked":      0.62
+      "not blocked":  0.20   # detect-only / signature in LOG action
+      "transformed":  0.10   # safe-commerce / entity decoding pass-through
+      "alert":        0.08
+
+  - name: outcome
+    type: template
+    template: "{% if action == 'blocked' %}blocked{% elif action == 'transformed' %}transformed{% else %}alerted{% endif %}"
+
+  - name: http_method
+    type: weighted_choice
+    choices:
+      "POST":   0.55
+      "GET":    0.35
+      "PUT":    0.05
+      "DELETE": 0.05
+
+  - name: http_path
+    type: weighted_choice
+    choices:
+      "/login.php?id=1' OR '1'='1":                     0.18
+      "/search.aspx?q=<script>alert(1)</script>":       0.15
+      "/exec?cmd=cat%20/etc/passwd":                    0.13
+      "/admin/upload?file=../../etc/shadow":            0.10
+      "/checkout?coupon=' UNION SELECT NULL--":         0.12
+      "/api/v2/users?filter[id]=1%20AND%20SLEEP(5)":    0.10
+      "/wwwboard/passwd.txt":                           0.10
+      "/static/../../etc/hosts":                        0.07
+      "/wp-login.php":                                  0.05
+
+  - name: http_url
+    type: template
+    template: "{{scheme}}://{{dhost}}{{http_path}}"
+
+  - name: user_agent
+    type: weighted_choice
+    choices:
+      "sqlmap/1.7":                                                  0.20
+      "Nikto/2.5.0":                                                 0.15
+      "WPScan v3.8.22":                                              0.12
+      "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36":            0.30
+      "curl/7.81":                                                   0.08
+      "python-requests/2.31":                                        0.15
+
+  - name: response_code
+    type: weighted_choice
+    choices:
+      "200": 0.10
+      "302": 0.05
+      "403": 0.55
+      "401": 0.10
+      "500": 0.10
+      "503": 0.10
+
+  # cn1 — TransactionID (5–8 digit decimal, real samples: 140, 108, 3755128)
+  - name: transaction_id
+    type: int_range
+    min: 100
+    max: 9999999
+
+  # cn2 — Connection-level PPE id (real samples: 841, 644, 1636674)
+  - name: connection_ppe
+    type: int_range
+    min: 100
+    max: 9999999
+
+  # cs2 — Packet Processing Engine: PPE0 / PPE1 / PPE2 / PPE3
+  - name: ppe_engine
+    type: weighted_choice
+    choices:
+      "PPE0": 0.40
+      "PPE1": 0.30
+      "PPE2": 0.20
+      "PPE3": 0.10
+
+  # cs3 — NetScaler session id (28–30 base64-ish chars, real sample shape).
+  - name: session_id
+    type: faker
+    method: hex_16
+
+  # cs5 — Year (NetScaler emits 4-digit current year as cs5).
+  - name: year
+    type: fixed
+    value: "2026"
+
+  - name: device_name
+    type: param
+    param: device_name
+
+  - name: device_id
+    type: param
+    param: device_id
+
+  - name: policy_name
+    type: param
+    param: policy_name
+
+  - name: profile_name
+    type: param
+    param: profile_name
+
+  # CEF product version token — verbatim `NS<major>.<minor>` shape.
+  - name: ns_version
+    type: weighted_choice
+    choices:
+      "NS13.1": 0.55
+      "NS13.0": 0.30
+      "NS14.1": 0.15
+
+  # Per-event-type message body. Wording verified against docs samples:
+  #   APPFW_SIGNATURE_MATCH → "Signature violation rule ID <id>: <cat> ..."
+  #   APPFW_STARTURL        → "Disallow Illegal URL"
+  #   APPFW_DENYURL         → "URL Denied: ..."
+  #   APPFW_SQL             → "SQL Keyword check failed for field ..."
+  #   APPFW_XSS             → "Cross-site script check failed for field ..."
+  - name: msg_body
+    type: template
+    template: "{% if appfw_event == 'APPFW_SIGNATURE_MATCH' %}Signature violation rule ID {{signature_id}}: {{sig_category}} access{% elif appfw_event == 'APPFW_STARTURL' %}Disallow Illegal URL{% elif appfw_event == 'APPFW_DENYURL' %}URL Denied{% elif appfw_event == 'APPFW_SQL' %}SQL Keyword check failed for field{% elif appfw_event == 'APPFW_XSS' %}Cross-site script check failed for field{% elif appfw_event == 'APPFW_BUFFEROVERFLOW_URL' %}URL length check failed{% elif appfw_event == 'APPFW_BUFFEROVERFLOW_HDR' %}Header length check failed{% elif appfw_event == 'APPFW_BUFFEROVERFLOW_COOKIE' %}Cookie length check failed{% elif appfw_event == 'APPFW_FIELDFORMAT' %}Field format check failed{% elif appfw_event == 'APPFW_FIELDCONSISTENCY' %}Field consistency check failed{% elif appfw_event == 'APPFW_COOKIE' %}Cookie consistency check failed{% elif appfw_event == 'APPFW_REFERER_HEADER' %}Referer header check failed{% elif appfw_event == 'APPFW_MULTIPLE_HEADER' %}Multiple headers in request{% elif appfw_event == 'APPFW_SAFECOMMERCE' %}Safe object violation{% else %}XML SQL injection check failed{% endif %}"
+
+# Wire format — RFC3164 prefix + CEF body, exactly as docs.netscaler.com
+# samples emit. CEF extension order matches the verbatim samples
+# (src spt method request msg cn1 cn2 cs1 cs2 cs3 cs4 cs5 cs6 act).
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{device_name}} CEF:0|Citrix|NetScaler|{{ns_version}}|APPFW|{{appfw_event}}|{{cef_severity}}|src={{src_ip}} geolocation={{geolocation}} spt={{src_port}} method={{http_method}} request={{http_url}} msg={{msg_body}} cn1={{transaction_id}} cn2={{connection_ppe}} cs1={{profile_name}} cs2={{ppe_engine}} cs3={{session_id}} cs4={{severity_word}} cs5={{year}} cs6={{sig_category}} act={{action}}

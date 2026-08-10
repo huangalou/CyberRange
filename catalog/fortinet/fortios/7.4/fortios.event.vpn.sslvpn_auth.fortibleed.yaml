@@ -1,0 +1,179 @@
+vendor: fortinet
+product: fortios
+version: "7.4"
+log_type: fortios.event.vpn.sslvpn_auth.fortibleed
+description: |
+  FortiGate FortiOS 7.4 SSL VPN tunnel-up success event modelling the
+  FortiBleed S3 stage: a VALID account authenticating to SSL VPN using
+  credentials recovered from an infostealer plaintext store (password
+  complexity already neutralised).
+
+  Anomaly signal: remip originating from an unexpected geo / outside baseline
+  IP ranges. The tunnel-up itself is VALID — the detection hook is context
+  (geo anomaly, off-hours, followed by AD lateral movement in later stages).
+
+  Source-of-truth (wire format):
+    Wazuh OOTB FortiGate decoder sample — 0100-fortigate_decoders.xml line 37:
+      logid=0101039947 type=event subtype=vpn level=information vd="root"
+      logdesc="SSL VPN tunnel up" action="tunnel-up" tunneltype="ssl-tunnel"
+      tunnelid=1050355638 remip=9.8.7.7 tunnelip=1.2.4.6 user="my_user_name"
+      group="SSL_VPN" dst_host="N/A" reason="N/A" msg="SSL tunnel established"
+
+  FortiOS 7.4 event/vpn logid 0101039947 = SSL VPN tunnel-up success.
+  Note: the wire format has NO `status` field — tunnel-up action itself
+  signals success. RFC3164 syslog PRI (local7.notice = 189), same
+  framing as sibling traffic.yaml.
+
+  Related Wazuh OOTB rule: 81622 (level 3, "Fortigate: VPN user connected.",
+  group: authentication_success, MITRE T1078).
+
+format: key_value
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: authentication
+  category_uid: 3
+
+# ──────────────── DetectOps v2 metadata ────────────────
+detections:
+  wazuh:
+    - decoder: fortigate
+      rule_id: 81622
+      level: 3
+    # FortiBleed custom chain rule (Task 2 will add 132080/132085)
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  risk_refs: []
+  pa_refs: []
+
+# Default parameters; overridable via CLI / API params at generation time.
+params:
+  devname:    { default: "FGT-EDGE" }
+  devid:      { default: "FG100F0000000000" }
+  vd:         { default: "root" }
+  user_pool:  { default: ["alice", "bob", "jchen", "svc_vpn"] }
+  remip_pool: { default: ["203.0.113.50", "198.51.100.22", "10.0.0.45"] }
+  tunnelip_pool: { default: ["192.168.100.10", "192.168.100.11", "192.168.100.12"] }
+
+fields:
+  - name: pri
+    type: fixed
+    value: 189                         # local7.notice (23*8 + 5)
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  - name: devname
+    type: param
+    param: devname
+
+  - name: devid
+    type: param
+    param: devid
+
+  - name: date
+    type: datetime
+    format: "%Y-%m-%d"
+
+  - name: time
+    type: datetime
+    format: "%H:%M:%S"
+
+  - name: logid
+    type: fixed
+    value: "0101039947"               # Task 0 pinned LOGID_SSLVPN
+
+  - name: vd
+    type: param
+    param: vd
+
+  - name: action
+    type: fixed
+    value: tunnel-up
+
+  - name: tunneltype
+    type: weighted_choice
+    choices:
+      "ssl-tunnel": 0.85
+      "ssl-web":    0.15
+
+  - name: tunnelid
+    type: int_range
+    min: 1000000
+    max: 4294967295
+
+  - name: user
+    type: choice
+    choices: ${params.user_pool}
+
+  - name: remip
+    type: choice
+    choices: ${params.remip_pool}
+
+  - name: tunnelip
+    type: choice
+    choices: ${params.tunnelip_pool}
+
+  - name: group
+    type: fixed
+    value: "SSL_VPN"
+
+# Template mirrors real Wazuh decoder sample wire order exactly:
+# date/time/devname/devid → logid/type/subtype/level/vd/logdesc
+# → action/tunneltype/tunnelid/remip/tunnelip/user/group
+# → dst_host/reason/msg
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{devname}} date={{date}} time={{time}} devname="{{devname}}" devid="{{devid}}" logid={{logid}} type=event subtype=vpn level=information vd="{{vd}}" logdesc="SSL VPN tunnel up" action="{{action}}" tunneltype="{{tunneltype}}" tunnelid={{tunnelid}} remip={{remip}} tunnelip={{tunnelip}} user="{{user}}" group="{{group}}" dst_host="N/A" reason="N/A" msg="SSL tunnel established"
+
+# ──────────────── Regression baseline (Task 6 live-fire 2026-06-19) ────────────────
+regression:
+  live_fire_done: true
+  real_ingest_path_validated: true
+  live_fire_date: "2026-06-19"
+  branch: "feat/fortibleed-pivot-slice"
+
+  fixtures:
+    s3: "tests/fixtures/wazuh-logtest/sslvpn-pivot-fortibleed/s3-sslvpn-auth-success.log"
+    s4: "tests/fixtures/wazuh-logtest/sslvpn-pivot-fortibleed/s4-4720-account-create.log"
+
+  wazuh:
+    rule_132080_hits: 1               # S3 SSL VPN tunnel-up — fire ✅
+    rule_132080_ttd_seconds: "<10"    # UDP 514 → socat → analysisd；即時
+    rule_132080_field_dstuser: "jchen"
+    rule_131021_hits: 0               # S4 JSON-over-syslog — 不 fire
+    rule_131021_note: >
+      Windows JSON 帶 RFC3164 syslog 前綴，Wazuh JSON decoder 在 syslog 路徑無法解碼
+      winlog.event_data.SubjectUserName。需 Winlogbeat agent transport 才能觸發。
+    rule_132085_hits: 0               # dormant by design — 期望 0 ✅
+    rule_132085_note: >
+      if_matched_sid co-occurrence rule（rule-tree 掛 FortiGate chain，
+      不評估 Windows json，結構上無法跨源 fire）。
+      本規則為「關聯意圖」文件化設計，非 CDB lookup；
+      真正跨源 pivot 關聯由 ELK EQL 負責。
+
+  elk:
+    s3_index: "fortigate-2026.06.19"
+    s4_index: "windows-sec-2026.06.19"
+    user_normalize_pipeline: "fortibleed-user-normalize"
+    routing_pipeline: "auto-route"
+    s3_user_name: "jchen"
+    s4_user_name: "jchen"
+    eql_rule_name: "FortiBleed pivot — SSL VPN valid-account login → AD account creation"
+    eql_rule_id: "<kibana-rule-uuid>"
+    eql_signal_count: 3               # 預期 1；多餘 2 signal 為測試殘留 doc（舊 jchen 4720 docs）
+    eql_signal_user_name: "jchen"
+    eql_ttd_seconds: 210              # 300s interval 首次排程；ingest latency 本身 < 2s
+    eql_ttd_note: >
+      EQL rule interval=300s；S3+S4 於 13:40:21-23 ingest，signal 於 13:43:51 生成（差 210s）。
+      單一 pivot 對應單一 S3→S4 pair；多 signal 為先前測試送出殘留所致。
+
+  detection_summary:
+    pivot_primary_detector: "ELK EQL sequence by user.name maxspan=15m"
+    s3_wazuh_ttd: "<10s"
+    pivot_elk_ttd: "~210s (300s rule interval)"
+    s2_blind_spot: >
+      S2 離線爆破無 log，SOC 偵測盲區。
+      勿假設無 log = 攻擊者未取得密碼。

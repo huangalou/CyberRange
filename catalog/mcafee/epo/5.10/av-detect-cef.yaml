@@ -1,0 +1,513 @@
+vendor: mcafee
+product: epo
+version: "5.10"
+log_type: av.detection-cef
+description: |
+  McAfee ePolicy Orchestrator (ePO) 5.10 → Trellix Endpoint Security (ENS)
+  Threat Event AFTER an upstream transform has re-emitted it as ArcSight
+  Common Event Format (CEF). This is the wire form that arrives at SIEMs
+  running ArcSight ESM / ArcSight Logger or any CEF-only ingest path
+  (Splunk Connect for Syslog, Microsoft Sentinel CEF-via-AMA, IBM QRadar
+  CEF DSM, Securonix, etc.).
+
+  Sibling catalog (same ENS Threat Event, NATIVE XML wire form):
+    catalog/mcafee/epo/5.10/av-detect.yaml
+
+  IMPORTANT — ePO does NOT emit CEF natively. The default ePO Syslog
+  Forwarder only produces the `<EPOevent>` XML body documented in the
+  native sibling. A CEF line appears only after one of these upstream
+  re-emitters has parsed the native XML and re-shaped it:
+
+    1. ArcSight SmartConnector for McAfee ePolicy Orchestrator — the
+       canonical CEF emitter. Configuration guide "Device Event Mapping
+       to ArcSight Fields" defines the authoritative ENS-to-CEF field
+       map this catalog implements.
+    2. Trellix ESM SmartConnector for McAfee ePO — Trellix-published
+       successor that emits the same CEF shape into Trellix ESM.
+    3. McAfee / Skyhigh CEF Forwarder Add-On for ePO — a Trellix-published
+       ePO extension that installs an Automatic Response template
+       converting EPOevent XML to a CEF line in-place (no external
+       SmartConnector needed).
+    4. Splunk Add-on for McAfee ePO Syslog — supports CEF-mode parsing
+       when the upstream forwarder emits CEF; sourcetype falls back
+       to `mcafee:epo:syslog:cef`.
+    5. Custom rsyslog / syslog-ng / NXLog relay running an admin-
+       authored template that wraps the parsed EPOevent body in a CEF
+       header.
+
+  This sibling exists because real SOC deployments receive the SAME
+  ENS event in BOTH wire forms depending on the path the log took to
+  reach the SIEM:
+
+    endpoint → ePO Syslog Forwarder XML (TLS:6514) → Wazuh `mcafee-epo` decoder
+    endpoint → ArcSight/Trellix ESM SmartConnector  → CEF on TCP/514 →
+                  Wazuh built-in `cef` decoder    (THIS CATALOG)
+
+  Source-of-truth URLs (fetched 2026-05-14):
+    - ArcSight SmartConnector for McAfee ePO Configuration Guide
+      "Device Event Mapping to ArcSight Fields" (CEF extension keys for
+      ENS Threat Prevention events):
+        https://community.opentext.com/cybersec/threat-detect-response/f/discussions/289902/arcsight-connectors-master-index-smart-cef-flex-and-more
+        https://www.microfocus.com/documentation/arcsight/arcsight-smartconnectors/
+      (DeviceEventClassId ← ThreatEventID, name ← ThreatName,
+       severity ← ThreatSeverity, act ← ThreatActionTaken,
+       filePath ← TargetFileName, fname ← basename(TargetFileName),
+       shost / dhost ← MachineName / TargetHostName, src / dst ←
+       IPAddress, suser / duser ← TargetUserName, sproc ←
+       SourceProcessName, deviceCustomString1 ← Analyzer,
+       deviceCustomString2 ← AnalyzerDetectionMethod,
+       deviceCustomString3 ← ThreatType, deviceCustomString4 ←
+       ThreatCategory, deviceCustomString5 ← ProductFamily,
+       deviceCustomString6 ← AnalyzerVersion,
+       deviceCustomNumber1 ← AnalyzerDATVersion,
+       deviceCustomNumber2 ← AnalyzerEngineVersion(int),
+       externalId ← AgentGUID, rt ← DetectedUTC).
+    - Trellix Skyhigh / CEF Forwarder Add-On for ePO documentation:
+        https://thrive.trellix.com/s/article/KB87927
+        https://kcm.trellix.com/corporate/index?page=content&id=KB87927
+      (KB87927 covers the ePO Syslog Forwarder configuration in
+       general; the Skyhigh CEF Add-On is a separate extension that
+       layers a CEF Automatic Response template on top.)
+    - Splunk Add-on for McAfee ePO Syslog — CEF-mode parser:
+        https://docs.splunk.com/Documentation/AddOns/released/McAfeeEPOSyslog/About
+      (confirms `mcafee:epo:syslog` and CEF fallback sourcetype.)
+    - IBM QRadar DSM — McAfee ePolicy Orchestrator CEF DSM:
+        https://www.ibm.com/docs/en/dsm?topic=orchestrator-mcafee-epolicy-sample-event-messages
+      (sample CEF event message with `CEF:0|McAfee|ePolicy
+       Orchestrator|<ver>|<event_id>|<event_name>|<sev>|...`
+       extensions.)
+    - Microsoft Sentinel CEF key → CommonSecurityLog field mapping:
+        https://learn.microsoft.com/en-us/azure/sentinel/cef-name-mapping
+      (confirms ArcSight extension keys are the lingua franca every
+       downstream CEF parser normalizes against.)
+    - Google Chronicle Trellix ePO parser — CEF-input variant:
+        https://docs.cloud.google.com/chronicle/docs/ingestion/default-parsers/trellix-epo
+    - LogRhythm McAfee ePO CEF parser:
+        https://docs.logrhythm.com/devices/docs/syslog-mcafee-epo
+    - LogPoint McAfee EPO integration guide (XML source for the CEF
+      transform — same fields, re-shaped):
+        https://servicedesk.logpoint.com/hc/en-us/articles/115003788929-McAfee-EPO
+    - NXLog Trellix ePO docs (CEF re-emit pattern):
+        https://docs.nxlog.co/integrate/trellix-epo.html
+    - Trellix KB85494 — Complete list of event IDs for Endpoint Security
+        https://thrive.trellix.com/s/article/KB85494
+    - Trellix KB54677 — General list of Event IDs sent to ePolicy
+      Orchestrator
+        https://kcm.trellix.com/corporate/index?page=content&id=KB54677
+
+  Real CEF wire-format example (composed from the authoritative
+  SmartConnector / Skyhigh Add-On mapping cited above; QRadar DSM
+  publishes a representative shape — no verbatim third-party customer
+  sample is fully published primary-source. See Open Questions in the
+  companion doc mcafee-trellix-epo.md):
+
+    <134>1 2026-05-14T10:38:14.0Z epo-prod.lab.local EPOEvents - EventFwd [agentInfo@3401 tenantId="1"] CEF:0|McAfee|ePolicy Orchestrator|5.10|1027|Artemis!12345ABCDEF0|7|act=deleted cat=av.detect.virus dhost=DESKTOP-WIN10-A1 dst=10.0.20.45 duser=CORP\\alice externalId={41gb1743-a17d-12eb-379b-000000000000} filePath=C:\\Users\\alice\\AppData\\Local\\Temp\\update.exe fname=update.exe rt=May 14 2026 10:38:14 shost=DESKTOP-WIN10-A1 src=10.0.20.45 suser=CORP\\alice sproc=C:\\Windows\\explorer.exe cs1=ENDP_AM_1060 cs1Label=Analyzer cs2=On-Access Scan cs2Label=AnalyzerDetectionMethod cs3=trojan cs3Label=ThreatType cs4=av.detect.virus cs4Label=ThreatCategory cs5=TVD cs5Label=ProductFamily cs6=10.7.0.3468 cs6Label=AnalyzerVersion cn1=10256 cn1Label=AnalyzerDATVersion cn2=60108670 cn2Label=AnalyzerEngineVersion deviceFacility=ENS
+
+  SIEM rule mapping: **best-effort, no direct rule_id**.
+  A reference SIEM ruleset does
+  NOT include McAfee/Trellix entries — only Sophos / Symantec /
+  TrendMicro / Kaspersky / F-Secure. Both the native XML sibling and
+  this CEF sibling remain catalog-side ready; when the SOC-side
+  `AV_McAfee_<scenario>_全區_2.0` rule family lands, back-fill the
+  rule_id list. The CEF wire form already matches the typical
+  `data.vendor=McAfee` / `data.product=ePolicy Orchestrator` selectors.
+
+  Scenario coverage mirrors the native sibling (Symantec/TrendMicro
+  8-class taxonomy) so future SOC rules can be modeled by analogy:
+    單一主機偵測大量病毒          (workstation, occurrences high)
+    單一主機偵測勒索病毒          (workstation, ThreatType=ransom)
+    單一主機偵測病毒(已刪除)      (workstation, act=deleted/cleaned)
+    單一主機偵測病毒(未刪除)      (workstation, act=none/would have)
+    伺服器主機偵測大量病毒        (server, occurrences high)
+    伺服器主機偵測病毒(已刪除)    (server, act=deleted/cleaned)
+    伺服器主機偵測病毒(未刪除)    (server, act=none)
+    伺服器主機感染勒索軟體病毒    (server, ThreatType=ransom)
+
+format: cef          # CEF line emitted by SmartConnector / Skyhigh CEF Add-On
+transport: [tcp_syslog, tcp_syslog_tls, udp_syslog, file]   # SmartConnector default = TCP
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+detections:
+  wazuh:
+    # CEF lines are decoded by Wazuh's built-in `cef` decoder (no
+    # custom mcafee-epo decoder needed — SmartConnector / Skyhigh
+    # CEF Add-On already normalized the body into named extensions).
+    - decoder: cef
+    # TODO(av-extension): backfill rule_ids when AV_McAfee_* family
+    # lands. Best-effort — McAfee not in the reference SIEM ruleset; both
+    # native XML and CEF siblings remain SOC-side preserved. Expected
+    # scenarios (mirroring Symantec/TrendMicro precedent — see
+    # description block for full Chinese-named list):
+    #   AV_McAfee_單一主機偵測大量病毒_全區_2.0
+    #   AV_McAfee_單一主機偵測勒索病毒_全區_2.0
+    #   AV_McAfee_單一主機偵測病毒_已刪除_全區_2.0
+    #   AV_McAfee_單一主機偵測病毒_未刪除_全區_2.0
+    #   AV_McAfee_伺服器主機偵測大量病毒_全區_2.0
+    #   AV_McAfee_伺服器主機偵測病毒_已刪除_全區_2.0
+    #   AV_McAfee_伺服器主機偵測病毒_未刪除_全區_2.0
+    #   AV_McAfee_伺服器主機感染勒索軟體病毒_全區_2.0
+  sigma:
+    - rule: mcafee_epo_threat_event_cef
+      ref: https://github.com/SigmaHQ/sigma   # community contrib pending
+  elk_detection:
+    - kibana_rule_id: mcafee-epo-threat-detected-cef
+      severity: high
+
+mythos_alignment:
+  risk_refs: [R1, R4]
+  pa_refs: [PA10]
+  ttx_class: rapid
+
+regression:
+  # baseline pending — back-fill once Wazuh AV_McAfee_* rule family exists.
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 4000
+
+params:
+  epo_host:
+    default: "epo-prod.lab.local"
+  tenant_id:
+    default: "1"
+  workstation_pool:
+    default:
+      - "DESKTOP-WIN10-A1"
+      - "DESKTOP-WIN11-B2"
+      - "LAPTOP-USR-23"
+      - "LAPTOP-CONS-04"
+      - "DESKTOP-MKT-09"
+  server_pool:
+    default:
+      - "SRV-FILE01"
+      - "SRV-DC01"
+      - "WEB-PRD-02"
+      - "DB-MSSQL-01"
+      - "APP-ERP-03"
+  internal_subnet:
+    default: "10.0.20.0/24"
+  server_subnet:
+    default: "10.0.50.0/24"
+  user_pool:
+    default: ["alice", "bob", "svc_backup", "contractor_a", "admin_b"]
+  domain_name:
+    default: "CORP"
+
+fields:
+  # RFC5424 PRI — ePO Syslog Forwarder default facility=local0 / severity=info → 134.
+  # SmartConnector preserves the original PRI when re-emitting CEF.
+  # `<29>` (kern.notice) also observed in published LogPoint / Splunk samples.
+  - name: pri
+    type: weighted_choice
+    choices:
+      "134": 0.55
+      "29":  0.45
+
+  - name: rfc5424_ts
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S.0Z"
+
+  # CEF `rt` extension format — ArcSight canonical "MMM dd yyyy HH:mm:ss"
+  # (see ArcSight Console User's Guide CEF date format).
+  - name: cef_rt
+    type: datetime
+    format: "%b %d %Y %H:%M:%S"
+
+  - name: epo_host
+    type: param
+    param: epo_host
+
+  - name: tenant_id
+    type: param
+    param: tenant_id
+
+  # host_class drives workstation vs server scenario family.
+  - name: host_class
+    type: weighted_choice
+    choices:
+      workstation: 0.60
+      server:      0.40
+
+  - name: workstation_host
+    type: choice
+    choices: ${params.workstation_pool}
+
+  - name: server_host
+    type: choice
+    choices: ${params.server_pool}
+
+  - name: machine_name
+    type: template
+    template: "{% if host_class == 'server' %}{{server_host}}{% else %}{{workstation_host}}{% endif %}"
+
+  - name: workstation_ip
+    type: cidr
+    cidr: ${params.internal_subnet}
+
+  - name: server_ip
+    type: cidr
+    cidr: ${params.server_subnet}
+
+  - name: ip_address
+    type: template
+    template: "{% if host_class == 'server' %}{{server_ip}}{% else %}{{workstation_ip}}{% endif %}"
+
+  - name: agent_guid_raw
+    type: faker
+    method: uuid4
+
+  # SmartConnector emits AgentGUID into the `externalId` extension
+  # (per "Device Event Mapping" — Device External Id ← AgentGUID).
+  # Curly-brace wrapping preserved verbatim from the XML source.
+  - name: agent_guid
+    type: template
+    template: "{{'{'}}{{agent_guid_raw}}{{'}'}}"
+
+  # ENS product version strings — real values from Trellix KB85494 +
+  # release notes (same set as native XML sibling).
+  - name: ens_product_version
+    type: weighted_choice
+    choices:
+      "10.7.0.3468": 0.30
+      "10.7.0.4660": 0.30
+      "10.7.0.5249": 0.20
+      "10.6.1.1190": 0.20
+
+  - name: product_family
+    type: fixed
+    value: "TVD"   # ENS Threat Prevention always reports ProductFamily=TVD
+
+  # Analyzer code → CEF cs1 (Device Custom String 1 ← Analyzer per
+  # SmartConnector mapping). ENDP_AM_xxxx = ENS Threat Prevention
+  # (Anti-Malware); ENDP_AMSI = AntiMalware Scan Interface; ENDP_ATP
+  # = Adaptive Threat Protection.
+  - name: analyzer_code
+    type: weighted_choice
+    choices:
+      "ENDP_AM_1060":   0.50
+      "ENDP_AM_1070":   0.20
+      "ENDP_AMSI_1000": 0.10
+      "ENDP_ATP_1090":  0.10
+      "ENDP_AM_1054":   0.10
+
+  - name: analyzer_dat_version
+    type: int_range
+    min: 10200
+    max: 10500
+
+  # AnalyzerEngineVersion arrives at the wire as a dotted string
+  # ("6010.8670"); SmartConnector flattens to integer for the
+  # deviceCustomNumber2 slot (CEF cn extensions are numeric only).
+  # We emit a numeric form here to match SmartConnector behavior.
+  - name: analyzer_engine_version_num
+    type: weighted_choice
+    choices:
+      "60108670": 0.40
+      "67009999": 0.30
+      "63009999": 0.30
+
+  # AnalyzerDetectionMethod → CEF cs2 (Device Custom String 2 per
+  # SmartConnector mapping). Literal strings from ENS Threat Prevention
+  # docs + Trellix community samples + Splunk Add-on lookups.
+  - name: analyzer_detection_method
+    type: weighted_choice
+    choices:
+      "On-Access Scan":              0.45
+      "On-Demand Scan":              0.20
+      "Real Protect":                0.10
+      "Adaptive Threat Protection":  0.10
+      "Self Protection":             0.05
+      "Memory Scan":                 0.05
+      "Exploit Prevention":          0.05
+
+  # ThreatName → CEF `name` header slot (Name ← ThreatName per
+  # SmartConnector mapping). Real McAfee/Trellix vendor naming
+  # patterns — same distribution as native XML sibling.
+  - name: threat_name
+    type: weighted_choice
+    choices:
+      "Artemis!12345ABCDEF0":             0.18
+      "RDN/Generic.PWS!a":                0.13
+      "RDN/Generic.dx":                   0.08
+      "Generic Trojan.ju":                0.08
+      "Generic Exploit.a":                0.05
+      "PWS-Zbot.gen.bj":                  0.07
+      "Exploit-CVE2016-0189.d":           0.05
+      "Ransom-Conti!1234567890ab":        0.08
+      "Ransom-LockBit!a1b2c3d4e5f6":      0.07
+      "Ransom-Robin.y":                   0.05
+      "Trojan-FBJK!1234567890AB":         0.05
+      "W32/Downadup.gen!c":               0.04
+      "JS/Phish-A.qx":                    0.04
+      "PUP-FAM!a1b2c3d4":                 0.03
+
+  # ThreatType → CEF cs3 (community-convention slot — SmartConnector
+  # docs do NOT publish a dedicated extension for ThreatType, but
+  # Microsoft Sentinel / Splunk Add-on field maps surface it here).
+  - name: threat_type
+    type: weighted_choice
+    choices:
+      "trojan":     0.30
+      "virus":      0.18
+      "ransom":     0.18
+      "worm":       0.07
+      "exploit":    0.07
+      "pup":        0.07
+      "spyware":    0.05
+      "backdoor":   0.04
+      "downloader": 0.04
+
+  # ThreatCategory → CEF cs4 + `cat` (Device Event Category) for
+  # downstream parser compatibility. Dotted lowercase taxonomy strings
+  # observed in real ENS output and Chronicle parser.
+  - name: threat_category
+    type: weighted_choice
+    choices:
+      "av.detect.virus":         0.35
+      "av.detect.trojan":        0.20
+      "av.detect.ransom":        0.15
+      "av.detect.pup":           0.10
+      "av.detect.adware":        0.05
+      "av.detect.worm":          0.05
+      "hip.shielding":           0.05
+      "atp.suspicious_behavior": 0.05
+
+  # ThreatSeverity → CEF header severity (slot 7). ENS uses 1..7
+  # internally (1=Info, 2=Low, 3=Medium, 4=Major, 5=Critical,
+  # 7=Highest); SmartConnector translates to ArcSight 0..10 by
+  # mapping ENS 2→4, 3→6, 4→7, 5→9, 7→10 (per Configuration Guide
+  # severity translation table). AV detects almost always land 7..10.
+  - name: cef_severity
+    type: weighted_choice
+    choices:
+      "7":  0.55
+      "9":  0.25
+      "10": 0.15
+      "6":  0.05
+
+  # ThreatEventID → CEF DeviceEventClassId (slot 5).
+  # Range 1027..1098 — Trellix KB85494 vocabulary, same distribution
+  # as native XML sibling.
+  - name: threat_event_id
+    type: weighted_choice
+    choices:
+      "1027": 0.35   # Detected Threat
+      "1036": 0.18   # Threat cleaned
+      "1035": 0.15   # Threat deleted
+      "1037": 0.12   # Threat quarantined
+      "1038": 0.06   # Denied access
+      "1059": 0.06   # Unwanted program detected
+      "1034": 0.04   # Clean failed
+      "1078": 0.04   # Would have blocked (detect-only)
+
+  # ThreatActionTaken → CEF `act` (Device Action). Same vocabulary as
+  # native XML sibling — SmartConnector emits the value verbatim.
+  - name: threat_action_taken
+    type: weighted_choice
+    choices:
+      "deleted":              0.30
+      "cleaned":              0.25
+      "quarantined":          0.15
+      "blocked":              0.08
+      "denied access":        0.07
+      "would have blocked":   0.05
+      "would have deleted":   0.03
+      "none":                 0.07
+
+  - name: user_name
+    type: choice
+    choices: ${params.user_pool}
+
+  # TargetUserName → CEF suser AND duser (SmartConnector emits both;
+  # for endpoint-originated threat events the values match).
+  - name: domain_user
+    type: template
+    template: "{{params.domain_name}}\\\\{{user_name}}"
+
+  # TargetFileName → CEF filePath; basename → CEF fname.
+  - name: target_file_name
+    type: weighted_choice
+    choices:
+      "C:\\Users\\Public\\Downloads\\invoice_2026.exe":              0.18
+      "C:\\Users\\alice\\AppData\\Local\\Temp\\update.exe":          0.15
+      "C:\\inetpub\\wwwroot\\uploads\\shell.aspx":                   0.13
+      "C:\\Program Files\\McAfee\\quarantine\\threat.bin":           0.10
+      "D:\\Share\\HR\\readme_decrypt.txt":                           0.12
+      "C:\\Windows\\Temp\\7z_extract\\payload.dll":                  0.12
+      "C:\\Windows\\System32\\drivers\\malicious.sys":               0.10
+      "C:\\Users\\bob\\Desktop\\fake_invoice.pdf.exe":               0.10
+
+  - name: file_basename
+    type: template
+    template: "{{target_file_name.split('\\\\')[-1]}}"
+
+  # SourceProcessName → CEF sproc (Source Process Name).
+  - name: source_process_name
+    type: weighted_choice
+    choices:
+      "C:\\Windows\\explorer.exe":                                       0.30
+      "C:\\Program Files\\Microsoft Office\\WINWORD.EXE":                0.15
+      "C:\\Program Files\\Internet Explorer\\iexplore.exe":              0.10
+      "C:\\Program Files\\Mozilla Firefox\\firefox.exe":                 0.10
+      "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe": 0.15
+      "C:\\Windows\\System32\\powershell.exe":                           0.10
+      "C:\\Windows\\System32\\svchost.exe":                              0.05
+      "C:\\ProgramData\\dropper\\dropper.exe":                           0.05
+
+# CEF template — strict layout per ArcSight CEF spec:
+#   CEF:Version|DeviceVendor|DeviceProduct|DeviceVersion|SignatureID|Name|Severity|Extension
+# Wrapped in the same RFC5424 syslog frame the ePO Syslog Forwarder
+# emits, so the SmartConnector / Skyhigh CEF Add-On output looks
+# like a drop-in replacement of the XML body.
+#
+# Header:
+#   DeviceVendor   = "McAfee"               (literal — SmartConnector preserves
+#                                            historical vendor name even after
+#                                            Trellix rebrand; QRadar DSM uses
+#                                            this form)
+#   DeviceProduct  = "ePolicy Orchestrator" (QRadar DSM canonical form;
+#                                            Trellix ESM SmartConnector also
+#                                            seen as "ePO" — we pick the
+#                                            longer canonical form)
+#   DeviceVersion  = "5.10"                 (ePO console version)
+#   SignatureID    = ThreatEventID          (numeric — 1027/1036/...)
+#   Name           = ThreatName             (Artemis!... / RDN/... / Ransom-...)
+#   Severity       = translated ThreatSeverity (0..10 ArcSight scale)
+#
+# Extensions:
+#   act       ← ThreatActionTaken             (Device Action)
+#   cat       ← ThreatCategory                (Device Event Category — community)
+#   dhost     ← TargetHostName                (Destination Host Name)
+#   dst       ← IPAddress                     (community — matches native sibling)
+#   duser     ← TargetUserName                (Destination User Name)
+#   externalId← AgentGUID                     (Device External Id)
+#   filePath  ← TargetFileName                (File Path)
+#   fname     = basename(filePath)            (File Name)
+#   rt        ← DetectedUTC                   (Device Receipt Time)
+#   shost     ← MachineName                   (Source Host Name)
+#   src       ← IPAddress                     (community — matches native sibling)
+#   suser     ← TargetUserName                (Source User Name)
+#   sproc     ← SourceProcessName             (Source Process Name)
+#   cs1       ← Analyzer                      (Device Custom String 1)
+#   cs1Label  = "Analyzer"
+#   cs2       ← AnalyzerDetectionMethod       (Device Custom String 2)
+#   cs2Label  = "AnalyzerDetectionMethod"
+#   cs3       ← ThreatType                    (community — Sentinel mapping)
+#   cs3Label  = "ThreatType"
+#   cs4       ← ThreatCategory                (Device Custom String 4)
+#   cs4Label  = "ThreatCategory"
+#   cs5       ← ProductFamily                 (Device Custom String 5)
+#   cs5Label  = "ProductFamily"
+#   cs6       ← AnalyzerVersion               (Device Custom String 6)
+#   cs6Label  = "AnalyzerVersion"
+#   cn1       ← AnalyzerDATVersion            (Device Custom Number 1)
+#   cn1Label  = "AnalyzerDATVersion"
+#   cn2       ← AnalyzerEngineVersion(int)    (Device Custom Number 2 — flattened)
+#   cn2Label  = "AnalyzerEngineVersion"
+#   deviceFacility = "ENS"                    (constant — identifies the
+#                                              originating ePO module family)
+
+template: |-
+  <{{pri}}>1 {{rfc5424_ts}} {{epo_host}} EPOEvents - EventFwd [agentInfo@3401 tenantId="{{tenant_id}}"] CEF:0|McAfee|ePolicy Orchestrator|5.10|{{threat_event_id}}|{{threat_name}}|{{cef_severity}}|act={{threat_action_taken}} cat={{threat_category}} dhost={{machine_name}} dst={{ip_address}} duser={{domain_user}} externalId={{agent_guid}} filePath={{target_file_name}} fname={{file_basename}} rt={{cef_rt}} shost={{machine_name}} src={{ip_address}} suser={{domain_user}} sproc={{source_process_name}} cs1={{analyzer_code}} cs1Label=Analyzer cs2={{analyzer_detection_method}} cs2Label=AnalyzerDetectionMethod cs3={{threat_type}} cs3Label=ThreatType cs4={{threat_category}} cs4Label=ThreatCategory cs5={{product_family}} cs5Label=ProductFamily cs6={{ens_product_version}} cs6Label=AnalyzerVersion cn1={{analyzer_dat_version}} cn1Label=AnalyzerDATVersion cn2={{analyzer_engine_version_num}} cn2Label=AnalyzerEngineVersion deviceFacility=ENS

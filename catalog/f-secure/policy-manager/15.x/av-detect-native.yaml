@@ -1,0 +1,205 @@
+vendor: f-secure
+product: policy-manager
+version: "15.x"
+log_type: av.detection-native
+description: |
+  F-Secure Policy Manager 15.x **native plaintext syslog** AV detection.
+
+  Companion to the sibling CEF catalog (`av-detect.yaml`, which models the
+  WithSecure Elements Connector wire format). This catalog covers the
+  **legacy on-prem Business Suite** path: Policy Manager 15.x forwards
+  malware-detection alerts as RFC 3164 syslog with a plain-English message
+  body — no CEF / LEEF / JSON, just a hand-crafted template that PM admins
+  configure in the management console under `F-Secure Management Agent`
+  settings.
+
+  Used by Business Suite customers still running on-prem Policy Manager
+  who never migrated to the cloud-managed Elements Connector. The wire
+  format is documented in WithSecure community KBs (the vendor never
+  published a formal grammar spec).
+
+  Wire format (RFC 3164):
+
+    <PRI>RFC3164_TS HOST F-Secure: <body>
+
+  Body template variants observed in the wild (all from community
+  thread 78570):
+
+    A. "Virus Alert! Malicious code found in file $PATH. Infection: $NAME. Action: $ACTION"
+    B. "Virus Alert! Malicious code found in file $PATH. Infection: $NAME"   (no Action field)
+    C. "Virus alert. Malicious code found in file $PATH. Infection: $NAME. Action: none"
+       (lowercase "alert", period not bang — older PM 12/13 carry-over)
+
+  Default facility is `daemon` (per F-Secure KB 20252); admins can change
+  facility + severity in Policy Manager Console. The default PRI 30
+  corresponds to daemon.info (8*3+6=30). Most production deployments
+  retain daemon.info; some shift to local0.notice (133) so the syslog
+  relay rules can isolate F-Secure traffic.
+
+  Action vocabulary (CAPITALISED on the PM native surface — distinct from
+  Elements CEF lowercase `act=`):
+    Disinfected / Renamed / Quarantined / Deleted / Reported / none
+
+  "none" is the only lowercase token (it's the literal default when no
+  action policy is configured).
+
+  Source-of-truth (verbatim sample body templates):
+    - community.withsecure.com/discussion/78570 — virus alert body template
+      with $PATH / $NAME / $ACTION placeholders
+    - community.f-secure.com/t5/Business-Suite/Configuring-syslog-facility-and/ta-p/20252
+      — default facility = daemon, configurable
+    - community.withsecure.com/en/kb/articles/29332 — syslog forwarding
+      setup (UDP/514 default, TCP supported)
+    - community.f-secure.com/en/discussion/105563 — Action vocabulary
+      enumerated (Disinfected / Renamed / Quarantined / Deleted / Reported / none)
+    - f-secure.com/v-descs — canonical threat-naming taxonomy
+      (Trojan:W32/* / Worm:W32/* / Riskware:W32/* / Suspicious:W32/*!DeepGuard)
+
+  Real verbatim sample body (composed from KB 78570 template + KB 29332
+  forwarding example + a real F-Secure threat name from f-secure.com/v-descs):
+
+    <30>May 14 09:23:11 DESKTOP-WIN10-A1 F-Secure: Virus Alert! Malicious code found in file C:\Users\alice\AppData\Local\Temp\update.exe. Infection: Trojan:W32/Agent.gen!A. Action: Quarantined
+
+  SIEM rule mapping: same 3 workstation-side AV_F-Secure rules
+  as the CEF sibling — Wazuh rule IDs 130020 / 130023 / 130119. A native
+  PM syslog stream needs a separate Wazuh decoder (`f-secure-pm`) because
+  the CEF decoder won't parse the plain-English body. Decoder regex
+  anchors on the literal `F-Secure: Virus Alert!` PROGNAME+body marker.
+
+  No 伺服器主機 / 大量勒索 server-axis rules exist for this vendor in the
+  ArcSight ruleset — host_class is therefore workstation-only, mirroring
+  the CEF catalog scope.
+
+  Rule coverage matrix (preserved from CEF sibling):
+    單一主機偵測大量病毒        130020
+    單一主機偵測病毒(已刪除)    130023
+    單一主機偵測病毒(未刪除)    130119
+
+format: rfc3164
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+detections:
+  wazuh:
+    - decoder: f-secure-pm        # custom decoder needed; not the cef one
+    - rule_id: 130020   # AV_F-Secure_單一主機偵測大量病毒
+      level: 7
+    - rule_id: 130023   # AV_F-Secure_單一主機偵測病毒(已刪除)
+      level: 7
+    - rule_id: 130119   # AV_F-Secure_單一主機偵測病毒(未刪除)
+      level: 7
+  sigma:
+    - rule: fsecure_policy_manager_native_av_detection
+      ref: https://github.com/SigmaHQ/sigma   # community contrib pending
+  elk_detection:
+    - kibana_rule_id: fsecure-pm-native-av-malware-detected
+      severity: high
+
+mythos_alignment:
+  risk_refs: [R1, R4]
+  pa_refs: [PA10]
+  ttx_class: rapid
+
+regression:
+  # Same workstation-only baseline as the CEF sibling. Native PM syslog
+  # has lower extension density (no SHA1 / no profileId), but the alert
+  # count and TTD targets are decoder-pipeline characteristics, not
+  # format-density characteristics.
+  baseline_alert_count: 500
+  baseline_ttd_ms: 4000
+
+params:
+  workstation_pool:
+    default:
+      - "DESKTOP-WIN10-A1"
+      - "DESKTOP-WIN11-B2"
+      - "LAPTOP-USR-23"
+      - "LAPTOP-CONS-04"
+      - "DESKTOP-MKT-09"
+  user_pool:
+    default: ["alice", "bob", "svc_backup", "contractor_a", "admin_b"]
+
+fields:
+  # daemon.info = 8*3+6 = 30. Some admins shift to local0.notice (133)
+  # for relay isolation; weight reflects the field reality.
+  - name: pri
+    type: weighted_choice
+    choices:
+      "30":  0.80   # daemon.info — KB 20252 default
+      "29":  0.10   # daemon.notice
+      "133": 0.10   # local0.notice — admin remap for SIEM isolation
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  - name: shost
+    type: choice
+    choices: ${params.workstation_pool}
+
+  - name: user_name
+    type: choice
+    choices: ${params.user_pool}
+
+  # Canonical F-Secure / WithSecure threat names — taken directly from
+  # f-secure.com/v-descs threat-description URLs. Native PM syslog body
+  # carries the same threat-name taxonomy as the Elements CEF surface;
+  # the difference is the surrounding wire format, not the naming
+  # convention.
+  - name: threat_name
+    type: weighted_choice
+    choices:
+      "Trojan:W32/Agent.gen!A":                          0.16
+      "Trojan-Dropper:W32/Agent.DSM":                    0.12
+      "Trojan:W32/CryptoRansomwareBehavior.B!DeepGuard": 0.10
+      "Backdoor:W32/Agent.bay":                          0.10
+      "Worm:W32/Agent.gen":                              0.08
+      "Net-Worm:W32/Conficker.gen":                      0.06
+      "Email-Worm:W32/Warezov.W":                        0.04
+      "Spyware:W32/F-Secure_testfile.A":                 0.06
+      "Riskware:W32/ServU":                              0.06
+      "Riskware:W32/PWDump":                             0.04
+      "Application:W32/Joke":                            0.04
+      "Suspicious:W32/Malware!DeepGuard":                0.08
+      "Testfile:JS/F-Secure_testfile.D":                 0.03
+      "EICAR_Test_File":                                 0.03
+
+  # Action verbs — CAPITALISED on the native PM surface (distinct from
+  # Elements CEF lowercase `act=`). "none" is the only lowercase value.
+  # Source: community.f-secure.com discussion 105563.
+  - name: action_taken
+    type: weighted_choice
+    choices:
+      "Quarantined":  0.40
+      "Deleted":      0.20
+      "Disinfected":  0.15
+      "Renamed":      0.08
+      "Reported":     0.07
+      "none":         0.10   # detect-only / no action — only lowercase token
+
+  # File path — same realistic Windows shapes as the CEF catalog. PM
+  # native syslog body shows the full path unescaped (no double-
+  # backslash CEF quirk; single backslashes are wire-correct here).
+  - name: file_path
+    type: weighted_choice
+    choices:
+      "C:\\Users\\Public\\Downloads\\invoice_2026.exe":            0.18
+      "C:\\Users\\alice\\AppData\\Local\\Temp\\update.exe":        0.16
+      "C:\\Users\\bob\\Desktop\\fake_invoice.pdf.exe":             0.13
+      "C:\\ProgramData\\F-Secure\\quarantine\\threat.bin":         0.08
+      "D:\\Share\\HR\\readme_decrypt.txt":                         0.10
+      "C:\\Windows\\Temp\\7z_extract\\payload.dll":                0.12
+      "C:\\Users\\contractor_a\\Downloads\\driver.zip":            0.12
+      "C:\\Users\\alice\\Downloads\\f8.exe":                       0.06
+      "C:\\WINDOWS\\system32\\cscript.exe":                        0.05
+
+# Body template — matches KB 78570 variant A verbatim:
+#   "Virus Alert! Malicious code found in file $PATH. Infection: $NAME. Action: $ACTION"
+# PROGNAME `F-Secure` is the syslog tag emitted by PM 15.x's built-in
+# forwarder (per KB 29332 sample lines). No PID is appended.
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{shost}} F-Secure: Virus Alert! Malicious code found in file {{file_path}}. Infection: {{threat_name}}. Action: {{action_taken}}

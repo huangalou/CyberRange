@@ -1,0 +1,417 @@
+vendor: kaspersky
+product: ksc
+version: "13.x"
+log_type: av.detection-native
+description: |
+  Kaspersky Security Center (KSC) 13.x threat-detection event forwarded to
+  a SIEM as **RFC 5424 Structured-Data syslog** — KSC's "Syslog format"
+  export target (the fourth option in the SIEM export wizard alongside
+  QRadar/LEEF, ArcSight/CEF, Splunk/CEF). Native RFC 5424 SD is the only
+  KSC wire form that carries "application-specific events" of managed
+  Kaspersky products — CEF/LEEF only carry "general events" per
+  Kaspersky's own export-mode definition. Sites that need BOTH classes
+  often run RFC 5424 SD in parallel with CEF.
+
+  The structured-data block uses an IANA enterprise-private SD-ID:
+    - `event@23668` — older KSC builds (community Wazuh decoder targets
+      this; 23668 is Kaspersky Lab's IANA enterprise OID).
+    - `event@11111` — newer KSC builds (seen in tread-lightly README
+      production sample, 2024).
+  Both appear in the wild. This catalog emits `event@23668` to match the
+  community Wazuh decoder's prematch; a switch to 11111 is a one-token
+  swap.
+
+  SD-PARAM keys (per KSC Cloud Console "About exporting events using
+  Syslog format" + tread-lightly community decoder README):
+    et      — event type code (GNRL_EV_VIRUS_FOUND / KLSRV_HOST_STATUS_*)
+    etdn    — event type display name (localized: EN/RU/...)
+    tdn     — task / component display name
+    hdn     — affected host display name
+    hip     — affected host IPv4
+    gn      — KSC administration group name
+    kscfqdn — KSC administration server FQDN
+    p1..p9  — event-specific parameters, e.g.
+              p1 = SHA256, p2 = URL/object path, p5 = verdict name,
+              p7 = user, p8 = detection-type code, p9 = engine/method JSON
+
+  Source-of-truth for wire format:
+    - tread-lightly/KSC_decoders_and_rules_for_Wazuh (Wazuh decoder +
+      rules) — README ships a verbatim RFC 5424 SD production sample for
+      `GNRL_EV_OBJECT_BLOCKED` with `[event@11111 ...]`, plus the full
+      `et=` event-code vocabulary and SD-PARAM list:
+      https://github.com/tread-lightly/KSC_decoders_and_rules_for_Wazuh
+    - Kaspersky Online Help "Configuring Kaspersky Security Center for
+      export of events to a SIEM system" (KSC 13.0) — declares Syslog
+      (RFC 5424) as the wire form for the non-CEF/LEEF path, names the
+      SD-PARAMs `et` / `tdn` / `etdn` / `hdn` / `hip` / `gn` / `kscfqdn`:
+      https://support.kaspersky.com/ksc/13.0/89277
+    - Kaspersky Online Help "About exporting events using Syslog format"
+      (KSC Cloud Console) — same SD-PARAM contract for the cloud
+      variant, confirms format is RFC 5424:
+      https://support.kaspersky.com/KSC/CloudConsole/en-US/151333.htm
+    - Kaspersky Online Help "Converting events to the CEF or LEEF format"
+      (KSC 15.1) — declares that CEF/LEEF carries only "general events";
+      "application-specific events" of managed Kaspersky products require
+      Syslog (RFC 5424) mode:
+      https://support.kaspersky.com/KSC/15.1/en-US/298793.htm
+    - KES for Windows 12.0 Online Help "Appendix 6. Application events" —
+      authoritative list of `GNRL_EV_*` / `KLSRV_*` / `KLAUD_*` event
+      codes and the English/RU `etdn` display names:
+      https://support.kaspersky.com/keswin/12.0/en-us/214871.htm
+    - Sekoia Kaspersky parser docs — confirms BOTH CEF and RFC 5424 SD
+      forms appear in production deployments:
+      https://docs.sekoia.io/integration/categories/endpoint/kaspersky_endpoint_security/
+    - Kaspersky Threats database / Securelist classification system —
+      verdict naming (same `<Type>.<Platform>.<Family>.<Variant>` schema
+      as the CEF sibling):
+      https://threats.kaspersky.com/en/class/Trojan-Ransom/
+      https://securelist.com/new-malware-classification-system/29875/
+
+  Real verbatim wire sample (tread-lightly README — production RU
+  deployment, 2024, identifiers redacted to EXAMPLE-*; line-folded for
+  readability but on the wire it is a single line with literal `\r\n` in
+  the freeform message body):
+    1 2024-02-19T13:18:51.000Z EXAMPLE-PC KES|11.0.0.0 - GNRL_EV_OBJECT_BLOCKED
+    [event@11111 p1="<sha256>" p2="https://BAD.SITE"
+     p5="not-a-virus:HEUR:AdWare.Script.Pusher.gen" p7="DOMAIN\USER" p8="65"
+     p9="{\"engine\":3,\"method\":0,\"blacklist\":false,\"cloud_sb\":false,\"md5\":\"<md5>\"}"
+     et="GNRL_EV_OBJECT_BLOCKED" tdn="Защита от веб-угроз"
+     etdn="Загрузка объекта запрещена" hdn="EXAMPLE-PC" hip="10.10.10.10"
+     gn="Управляемые устройства" kscfqdn="KES.EXAMPLE"]
+    Описание результата: Запрещено\r\nТип: ... \r\nНазвание:
+    not-a-virus:HEUR:AdWare.Script.Pusher.gen\r\nПользователь:
+    DOMAIN\USER (Инициатор)\r\nОбъект: https://BAD.SITE\r\nДата выпуска
+    баз: 19.02.2024 13:31:00\r\nSHA256: <sha256>\r\nMD5: <md5>
+
+  Note: RFC 5424 grammar — `<PRI>VERSION TIMESTAMP HOSTNAME APP-NAME
+  PROCID MSGID [SD-ID SD-PARAMS] FREEFORM-MSG`. In the sample above
+  `APP-NAME = "KES|11.0.0.0"` (KES product short name + agent version,
+  pipe-delimited — Kaspersky-specific abuse of the APP-NAME slot, not
+  per-spec but matches what KSC actually emits), `PROCID = "-"` (nil),
+  `MSGID = GNRL_EV_OBJECT_BLOCKED` (Kaspersky reuses MSGID for the event
+  code — same value also appears as `et=` SD-PARAM, redundant but real).
+
+  SIEM rule mapping: identical to the CEF sibling
+  (`av-detect.yaml`). Native RFC 5424 SD form covers all 8 AV_Kaspersky
+  rules from a reference SIEM ruleset. Rules are 全區 only
+  (no 來源/目的 axis split). `host_class` drives workstation vs server
+  rule family (workstation 4 + server 4 = 8 total).
+
+  Rule coverage matrix (preserved verbatim from CEF sibling):
+    單一主機偵測大量病毒          130090
+    單一主機偵測勒索病毒          130055
+    單一主機偵測病毒(已刪除)      130044
+    單一主機偵測病毒(未刪除)      130018
+    伺服器主機偵測大量病毒        130080
+    伺服器主機偵測病毒(已刪除)    130134
+    伺服器主機偵測病毒(未刪除)    130074
+    伺服器主機感染勒索軟體病毒    130109
+
+format: rfc5424_sd
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+detections:
+  wazuh:
+    # Wazuh built-in CEF decoder does NOT parse this form. The
+    # community decoder family `tread-lightly/KSC_decoders_and_rules_for_Wazuh`
+    # is the canonical parser — it prematches on `event@23668` (older
+    # build) and extracts `et=` / `tdn=` / `etdn=` / `hdn=` / `hip=` /
+    # `p1..p9` into Wazuh fields. Without that decoder the 8 rule_ids
+    # below cannot fire on the raw SD form.
+    - decoder: kaspersky-ksc-sd
+    - rule_id: 130090  # AV_Kaspersky_單一主機偵測大量病毒
+      level: 7
+    - rule_id: 130055  # AV_Kaspersky_單一主機偵測勒索病毒
+      level: 7
+    - rule_id: 130044  # AV_Kaspersky_單一主機偵測病毒(已刪除)
+      level: 7
+    - rule_id: 130018  # AV_Kaspersky_單一主機偵測病毒(未刪除)
+      level: 7
+    - rule_id: 130080  # AV_Kaspersky_伺服器主機偵測大量病毒
+      level: 7
+    - rule_id: 130134  # AV_Kaspersky_伺服器主機偵測病毒(已刪除)
+      level: 7
+    - rule_id: 130074  # AV_Kaspersky_伺服器主機偵測病毒(未刪除)
+      level: 7
+    - rule_id: 130109  # AV_Kaspersky_伺服器主機感染勒索軟體病毒
+      level: 7
+  sigma:
+    - rule: kaspersky_ksc_av_detection_sd
+      ref: https://github.com/SigmaHQ/sigma  # community contrib pending
+  elk_detection:
+    - kibana_rule_id: ksc-sd-av-malware-detected
+      severity: high
+    - kibana_rule_id: ksc-sd-av-ransomware-detected
+      severity: critical
+
+mythos_alignment:
+  risk_refs: [R1, R4]
+  pa_refs: [PA10]
+  ttx_class: rapid
+
+regression:
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 4000
+
+params:
+  workstation_pool:
+    default:
+      - "DESKTOP-WIN10-A1"
+      - "DESKTOP-WIN11-B2"
+      - "LAPTOP-USR-23"
+      - "LAPTOP-CONS-04"
+      - "DESKTOP-MKT-09"
+  server_pool:
+    default:
+      - "SRV-FILE01"
+      - "SRV-DC01"
+      - "WEB-PRD-02"
+      - "DB-MSSQL-01"
+      - "APP-ERP-03"
+  internal_subnet:
+    default: "10.0.20.0/24"
+  server_subnet:
+    default: "10.0.50.0/24"
+  user_pool:
+    default: ["alice", "bob", "svc_backup", "contractor_a", "admin_b"]
+  ksc_fqdn:
+    default: "ksc.example.lab"
+
+fields:
+  # RFC 5424 PRI — facility 16 (local0) × 8 + severity 6 (info) = 134.
+  # Same as the CEF sibling; KSC uses local0 by default per Online Help.
+  - name: pri
+    type: fixed
+    value: 134
+
+  # RFC 5424 timestamp is ISO 8601 with fractional seconds + timezone.
+  # Real sample: 2024-02-19T13:18:51.000Z.
+  - name: rfc5424_ts
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S.000Z"
+
+  - name: host_class
+    type: weighted_choice
+    choices:
+      workstation: 0.60
+      server:      0.40
+
+  - name: workstation_host
+    type: choice
+    choices: ${params.workstation_pool}
+
+  - name: server_host
+    type: choice
+    choices: ${params.server_pool}
+
+  - name: shost
+    type: template
+    template: "{% if host_class == 'server' %}{{server_host}}{% else %}{{workstation_host}}{% endif %}"
+
+  - name: workstation_ip
+    type: cidr
+    cidr: ${params.internal_subnet}
+
+  - name: server_ip
+    type: cidr
+    cidr: ${params.server_subnet}
+
+  - name: dst_ip
+    type: template
+    template: "{% if host_class == 'server' %}{{server_ip}}{% else %}{{workstation_ip}}{% endif %}"
+
+  - name: user_name
+    type: choice
+    choices: ${params.user_pool}
+
+  # KSC event-code vocabulary — identical universe to the CEF sibling.
+  # Same weighting because Syslog/CEF/LEEF all derive from the same
+  # `siem_conversion_rules.xml` event interpretation; only the wire
+  # encoding differs.
+  - name: event_class_id
+    type: weighted_choice
+    choices:
+      "GNRL_EV_VIRUS_FOUND":              0.18
+      "GNRL_EV_VIRUS_FOUND_AND_BLOCKED":  0.10
+      "GNRL_EV_OBJECT_CURED":             0.15
+      "GNRL_EV_OBJECT_DELETED":           0.15
+      "GNRL_EV_OBJECT_QUARANTINED":       0.10
+      "GNRL_EV_OBJECT_NOTCURED":          0.10
+      "GNRL_EV_OBJECT_BLOCKED":           0.10
+      "GNRL_EV_SUSPICIOUS_OBJECT_FOUND":  0.07
+      "GNRL_EV_VIRUS_FOUND_AND_PASSED":   0.05
+
+  # SD-PARAM `etdn` — localized event-display-name (English here; RU
+  # sites would emit "Загрузка объекта запрещена" etc, same wire layout).
+  # Strings drawn from KES Online Help Appendix 6.
+  - name: etdn
+    type: weighted_choice
+    choices:
+      "Malicious object detected":   0.35
+      "Object disinfected":          0.15
+      "Object deleted":              0.15
+      "Object quarantined":          0.10
+      "Object not disinfected":      0.10
+      "Dangerous link blocked":      0.08
+      "Suspicious object detected":  0.07
+
+  # SD-PARAM `tdn` — task / component display name. KES module that
+  # produced the detection. Same vocabulary as the CEF sibling's
+  # `component` field (KES Online Help Appendix 6, SOCFortress write-up).
+  - name: tdn
+    type: weighted_choice
+    choices:
+      "File Threat Protection":     0.45
+      "Behavior Detection":         0.18
+      "Web Threat Protection":      0.15
+      "Mail Threat Protection":     0.10
+      "Network Threat Protection":  0.07
+      "AMSI Protection":            0.05
+
+  # Kaspersky verdict names — canonical 2007+ classification scheme
+  # (`[<prefix>:]<Behavior>.<Platform>.<Family>.<Variant>`). Identical
+  # set to the CEF sibling — verdict universe is engine-determined,
+  # not wire-form-determined.
+  - name: threat_name
+    type: weighted_choice
+    choices:
+      "HEUR:Trojan.Win32.Generic":              0.15
+      "Trojan-Ransom.Win32.Lockbit.gen":        0.10
+      "Trojan-Ransom.Win32.Wanna.m":            0.08
+      "Trojan-Ransom.Win32.Gen.gen":            0.08
+      "Trojan-Ransom.Win32.Conti.a":            0.07
+      "Trojan-Banker.Win32.Emotet.amwl":        0.08
+      "HEUR:Backdoor.Win32.Cobalt.gen":         0.07
+      "PDM:Trojan.Win32.Generic":               0.07
+      "Email-Worm.Win32.Mydoom.l":              0.05
+      "not-a-virus:HEUR:AdWare.Script.Pusher.gen": 0.05
+      "not-a-virus:RiskTool.Win64.BitcoinMiner.aj": 0.05
+      "Trojan-Dropper.Win32.Agent.bagym":       0.08
+      "HEUR:Exploit.Script.Generic":            0.07
+
+  # Object path / URL — SD-PARAM `p2` in real sample. Mix of filesystem
+  # and HTTP URLs to exercise both File Threat Protection and Web Threat
+  # Protection paths.
+  - name: object_path
+    type: weighted_choice
+    choices:
+      "C:\\Users\\Public\\Downloads\\invoice_2026.exe":            0.18
+      "C:\\Users\\alice\\AppData\\Local\\Temp\\update.exe":        0.15
+      "C:\\inetpub\\wwwroot\\uploads\\shell.aspx":                 0.13
+      "C:\\ProgramData\\Kaspersky Lab\\quarantine\\threat.bin":    0.10
+      "D:\\Share\\HR\\readme_decrypt.txt":                         0.07
+      "/var/tmp/.cache/payload.sh":                                0.07
+      "C:\\Windows\\Temp\\7z_extract\\payload.dll":                0.10
+      "https://malicious.example.test/payload.exe":                0.10
+      "https://phish.example.test/login":                          0.05
+      "https://c2.bad.example/beacon":                             0.05
+
+  # SHA256 of the object — SD-PARAM `p1`.
+  - name: file_sha256
+    type: faker
+    method: sha256
+
+  # MD5 of the object — appears in SD-PARAM `p9` JSON blob (per tread-
+  # lightly sample) AND in the freeform message tail.
+  - name: file_md5
+    type: faker
+    method: md5
+
+  # SD-PARAM `p8` — detection-type integer code. Same `cs6` semantics as
+  # CEF sibling ("70" observed). 1..255 range; no public lookup table.
+  - name: detection_type
+    type: int_range
+    min: 1
+    max: 255
+
+  # SD-PARAM `p9` JSON.engine — observed mapping (1=signature, 2=KSN
+  # cloud, 3=heuristic, 4=behavioral, 5=ML). Same set as CEF cs7.
+  - name: engine_code
+    type: weighted_choice
+    choices:
+      "1": 0.30
+      "2": 0.20
+      "3": 0.30
+      "4": 0.10
+      "5": 0.10
+
+  - name: method_code
+    type: int_range
+    min: 0
+    max: 9
+
+  # SD-PARAM `p9` JSON.blacklist / cloud_sb — boolean flags appearing in
+  # the tread-lightly sample. Render as JSON `false` literal majority of
+  # the time; occasionally `true` for blacklist hits / KSN cloud-sandbox.
+  - name: blacklist_flag
+    type: weighted_choice
+    choices:
+      "false": 0.90
+      "true":  0.10
+
+  - name: cloud_sb_flag
+    type: weighted_choice
+    choices:
+      "false": 0.85
+      "true":  0.15
+
+  # KES agent version — appears in APP-NAME slot (e.g. `KES|11.0.0.0`).
+  # Same realistic distribution as CEF sibling's `cs3`.
+  - name: kes_version
+    type: weighted_choice
+    choices:
+      "11.11.0.452":  0.30
+      "11.10.0.399":  0.25
+      "11.9.0.351":   0.20
+      "11.7.0.669":   0.10
+      "12.0.0.465":   0.10   # KES for Linux
+      "11.0.0.0":     0.05   # legacy (matches tread-lightly sample)
+
+  # SD-PARAM `gn` — KSC administration group. English in this catalog
+  # (RU sites would emit "Управляемые устройства" etc).
+  - name: group_name
+    type: weighted_choice
+    choices:
+      "Managed devices":     0.55
+      "Workstations":        0.20
+      "Servers":             0.15
+      "Roaming":             0.05
+      "Unassigned devices":  0.05
+
+  # SD-PARAM `kscfqdn` — KSC administration server FQDN. Sampled here
+  # from the param so deployments can override per-site.
+  - name: kscfqdn
+    type: param
+    param: ksc_fqdn
+
+  # Database release date — appears in freeform tail
+  # ("Database release date: DD/MM/YYYY HH:MM:SS"). Same format as CEF
+  # sibling per Wazuh #5307.
+  - name: db_date
+    type: datetime
+    format: "%d/%m/%Y %H:%M:%S"
+
+# Wire format: RFC 5424 syslog with one structured-data block keyed by
+# `event@23668` (Kaspersky Lab IANA enterprise OID). Grammar:
+#   <PRI>VERSION TIMESTAMP HOSTNAME APP-NAME PROCID MSGID [SD-ID SD-PARAMS] MSG
+# Notes:
+#   - VERSION = 1 (RFC 5424 only defines version 1).
+#   - APP-NAME = "KES|<agent-version>" — Kaspersky concatenates product
+#     short name and agent version with a pipe (per tread-lightly sample);
+#     not pure RFC 5424 but it's what KSC emits.
+#   - PROCID = "-" (nil per RFC).
+#   - MSGID = the event class id (duplicated in `et=` SD-PARAM — both
+#     fields carry the same value in real samples).
+#   - SD-PARAM order is NOT positional; downstream decoders regex on key
+#     names. Engine emits a consistent order to ease decoder testing.
+#   - Freeform MSG tail carries the same `Description / Type / Name /
+#     User / Object / Database release date / SHA256 / MD5` body that the
+#     CEF sibling packs into `msg=`. Real samples use `\r\n` between
+#     fields on the wire.
+template: |-
+  <{{pri}}>1 {{rfc5424_ts}} {{shost}} KES|{{kes_version}} - {{event_class_id}} [event@23668 p1="{{file_sha256}}" p2="{{object_path}}" p5="{{threat_name}}" p7="{{user_name}}" p8="{{detection_type}}" p9="{\"engine\":{{engine_code}},\"method\":{{method_code}},\"blacklist\":{{blacklist_flag}},\"cloud_sb\":{{cloud_sb_flag}},\"md5\":\"{{file_md5}}\"}" et="{{event_class_id}}" tdn="{{tdn}}" etdn="{{etdn}}" hdn="{{shost}}" hip="{{dst_ip}}" gn="{{group_name}}" kscfqdn="{{kscfqdn}}"] Description: {{etdn}}\r\nType: File\r\nName: {{threat_name}}\r\nUser: {{user_name}} (Active user)\r\nObject: {{object_path}}\r\nDatabase release date: {{db_date}}\r\nSHA256: {{file_sha256}}\r\nMD5: {{file_md5}}

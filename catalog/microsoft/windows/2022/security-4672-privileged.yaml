@@ -1,0 +1,144 @@
+vendor: microsoft
+product: windows
+version: "2022"
+log_type: security.event_id_4672
+description: |
+  Windows Security Event ID 4672 (Special privileges assigned to new logon).
+  Emitted when an account with admin-equivalent privileges (SeTcbPrivilege,
+  SeDebugPrivilege, SeBackupPrivilege, SeImpersonatePrivilege, etc.) starts
+  a logon session. Every SYSTEM logon triggers this event, so the volume is
+  high and ActiveList-style filtering is the typical first-line use case.
+
+  SIEM rule mapping: feeds the AD/`4672_特權帳號清單` regression
+  rule family — privileged-account ActiveList writer + downstream
+  failure-count correlation rules that pivot on SubjectLogonId to correlate
+  with 4624 (the parent logon event).
+
+  Wire format truth (Microsoft Learn `event-4672.md`, fetched 2026-05-15):
+    - EventData XML PrivilegeList is **space-separated**, e.g.
+      `SeTcbPrivilege SeSecurityPrivilege SeTakeOwnershipPrivilege ...`
+      (NOT the `\r\n\t\t\t` form some renderers produce in the human-
+      readable Message body — that form lives in the message template,
+      not in the structured EventData).
+    - Winlogbeat / Wazuh `windows_eventchannel` decode the structured
+      EventData fields directly, so `winlog.event_data.PrivilegeList`
+      preserves the space-separated XML form.
+    - SubjectUserSid for the SYSTEM logon is `S-1-5-18`; for domain
+      admin users it is the full domain SID `S-1-5-21-{domain}-{rid}`.
+    - SubjectLogonId is a hex string with `0x` prefix matching the
+      TargetLogonId of the parent 4624 event (this is the correlation
+      key the legacy ArcSight rule family pivots on).
+
+format: json
+transport: [tcp_syslog, beats, file]
+
+ocsf:
+  class: authentication
+  category_uid: 3
+  class_uid: 3002
+
+# ──────────────── DetectOps v2 metadata ────────────────
+# 4672 is the canonical "this logon got admin-equivalent rights" signal.
+# Wazuh decodes via windows_eventchannel; rule 60112 fires at level 3 on
+# every 4672 by default (high volume, low individual signal). The legacy
+# ArcSight 4672_特權帳號清單 rule family writes to an ActiveList keyed on
+# SubjectLogonId and correlates back to 4624 to score the logon.
+detections:
+  wazuh:
+    - decoder: windows_eventchannel
+    - rule_id: 60112  # windows_security_4672 (special privileges)
+      level: 5
+  sigma:
+    - rule: win_admin_logon
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/windows/builtin/security
+  elk_detection:
+    - kibana_rule_id: ad-privileged-logon-write
+      severity: high
+
+mythos_alignment:
+  # R4 detection velocity — privileged logon must alert within seconds
+  # PA1 identity-driven detection (upstream of EDR)
+  risk_refs: [R4]
+  pa_refs: [PA1]
+  ttx_class: rapid
+
+regression:
+  # Every 4672 is a candidate ActiveList write. Baseline: most events feed
+  # the regression queue (10/10 events write). Real downstream alerts are
+  # gated by SubjectUserSid not in well-known-SYSTEM allowlist.
+  baseline_alert_count: 10
+  baseline_ttd_ms: 2000
+
+params:
+  hostname: { default: "WIN-DC01" }
+  domain:   { default: "LAB" }
+  fqdn_suffix: { default: "lab.local" }
+  domain_sid:
+    default: "S-1-5-21-1111111111-2222222222-3333333333"
+  privileged_user_pool:
+    default: ["admin", "Administrator", "svc_dc", "svc_sccm", "DA_alice"]
+
+fields:
+  - name: ts_iso
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S.%fZ"
+
+  - name: ts_event
+    type: datetime
+    format: "%Y-%m-%d %H:%M:%S"
+
+  - name: hostname
+    type: param
+    param: hostname
+
+  - name: fqdn
+    type: template
+    template: "{{hostname}}.{{params.fqdn_suffix}}"
+
+  # SubjectUserSid — Microsoft Learn canonical: SYSTEM=S-1-5-18,
+  # NETWORK SERVICE=S-1-5-20, LOCAL SERVICE=S-1-5-19, domain admin RID
+  # for human admins. Weighted to reflect real DC volume where SYSTEM
+  # dominates.
+  - name: subject_user_sid
+    type: weighted_choice
+    choices:
+      "S-1-5-18": 0.60                                       # SYSTEM
+      "S-1-5-20": 0.10                                       # NETWORK SERVICE
+      "S-1-5-19": 0.05                                       # LOCAL SERVICE
+      "${params.domain_sid}-500":  0.10                      # built-in Administrator
+      "${params.domain_sid}-1104": 0.15                      # domain admin
+
+  - name: subject_user
+    type: choice
+    choices: ${params.privileged_user_pool}
+
+  - name: subject_domain
+    type: weighted_choice
+    choices:
+      "NT AUTHORITY": 0.75
+      "LAB":          0.25
+
+  - name: subject_logon_id
+    type: faker
+    method: hex_8
+
+  # PrivilegeList — Microsoft Learn `event-4672.md` canonical EventData
+  # rendering is SPACE-separated. Two real-world profiles below:
+  #   1) SYSTEM logon — the full SeTcb-bearing set (~12 privileges)
+  #   2) High-privilege user logon — subset without SeTcbPrivilege
+  - name: privilege_list
+    type: weighted_choice
+    choices:
+      "SeAssignPrimaryTokenPrivilege SeTcbPrivilege SeSecurityPrivilege SeTakeOwnershipPrivilege SeLoadDriverPrivilege SeBackupPrivilege SeRestorePrivilege SeDebugPrivilege SeAuditPrivilege SeSystemEnvironmentPrivilege SeImpersonatePrivilege SeDelegateSessionUserImpersonatePrivilege": 0.55
+      "SeSecurityPrivilege SeTakeOwnershipPrivilege SeLoadDriverPrivilege SeBackupPrivilege SeRestorePrivilege SeDebugPrivilege SeSystemEnvironmentPrivilege SeImpersonatePrivilege SeDelegateSessionUserImpersonatePrivilege": 0.45
+
+  - name: pri
+    type: fixed
+    value: 134                              # local0.info
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} {"@timestamp":"{{ts_iso}}","event":{"code":4672,"provider":"Microsoft-Windows-Security-Auditing","action":"Special privileges assigned to new logon","category":["authentication"],"type":["admin"]},"host":{"name":"{{hostname}}","hostname":"{{hostname}}"},"winlog":{"channel":"Security","event_id":4672,"provider_name":"Microsoft-Windows-Security-Auditing","provider_guid":"{54849625-5478-4994-A5BA-3E3B0328C30D}","computer_name":"{{fqdn}}","task":"Special Logon","keywords":["Audit Success"],"event_data":{"SubjectUserSid":"{{subject_user_sid}}","SubjectUserName":"{{subject_user}}","SubjectDomainName":"{{subject_domain}}","SubjectLogonId":"0x{{subject_logon_id}}","PrivilegeList":"{{privilege_list}}"}}}

@@ -1,0 +1,324 @@
+vendor: microsoft
+product: windows
+version: "2022"
+log_type: sysmon.event_id_1
+description: |
+  Sysmon v15 Event ID 1 (Process Create). JSON envelope matching the
+  Winlogbeat / Wazuh-agent forwarded shape (channel
+  `Microsoft-Windows-Sysmon/Operational`), single-line for line-
+  delimited TCP syslog ingest into filebeat 9514/tcp.
+
+  Source-of-truth (URLs fetched 2026-05-15):
+    - Microsoft Sysinternals Sysmon manual page (current schema
+      version 4.82+, EventID 1 ProcessCreate definition):
+        https://learn.microsoft.com/en-us/sysinternals/downloads/sysmon
+    - Official Sysmon schema XML (MSTIC-Sysmon, schema 4.81
+      corresponds to Sysmon v13.30+, structure preserved through
+      v15.x — the schema bump for v15 was the addition of EventID
+      29 FileExecutableDetected, NOT a change to EventID 1):
+        https://github.com/microsoft/MSTIC-Sysmon/blob/main/windows/schemas/sysmonv13.30_4.81.xml
+    - Olaf Hartong "Sysmon 15.0 — File executable detected and
+      PPL protection" (confirms EventID 1 schema unchanged in v15;
+      v15 additions live on EventID 29):
+        https://medium.com/@olafhartong/sysmon-15-0-file-executable-detected-40fd64349f36
+    - SwiftOnSecurity sysmon-config (canonical baseline config
+      and real-world rule patterns pivoting on Image /
+      OriginalFileName / IntegrityLevel / ParentImage):
+        https://github.com/SwiftOnSecurity/sysmon-config
+    - TrustedSec SysmonCommunityGuide § Process Creation
+      (field-by-field reference matching the MSTIC schema):
+        https://github.com/trustedsec/SysmonCommunityGuide/blob/master/chapters/process-creation.md
+
+  Authoritative field order from the MSTIC schema for
+  SYSMONEVENT_CREATE_PROCESS (23 fields):
+
+    1. RuleName            13. User
+    2. UtcTime             14. LogonGuid
+    3. ProcessGuid         15. LogonId
+    4. ProcessId           16. TerminalSessionId
+    5. Image               17. IntegrityLevel
+    6. FileVersion         18. Hashes
+    7. Description         19. ParentProcessGuid
+    8. Product             20. ParentProcessId
+    9. Company             21. ParentImage
+   10. OriginalFileName    22. ParentCommandLine
+   11. CommandLine         23. ParentUser
+   12. CurrentDirectory
+
+  Notes on field semantics (per MSTIC schema + Community Guide):
+
+    - `RuleName` is the friendly name from the SwiftOnSecurity-
+      style config `<ProcessCreate onmatch="include">
+        <Image name="T1059,powershell.exe" condition="end with">
+          powershell.exe</Image></ProcessCreate>` mapping. Wire
+      value is the literal `"name="` text, or `-` if not set.
+    - `Hashes` is a SINGLE comma-separated string. Algorithms
+      present depend on `<HashAlgorithms>` in the active Sysmon
+      config. SwiftOnSecurity baseline = `*` (all four). Example:
+        `SHA1=91180...,MD5=7528...,SHA256=196CABED...,IMPHASH=144C0DFA...`
+    - `IntegrityLevel` enum: `Low | Medium | High | System | AppContainer`.
+      (`AppContainer` covers UWP / Edge sandbox processes.)
+    - `LogonGuid` correlates back to Security 4624's `TargetLogonId`
+      via Sysmon's domain-scoped GUID. `LogonId` is the hex form
+      (e.g. `0x3e7` = SYSTEM, `0x3e4` = NETWORK SERVICE).
+    - `ParentUser` is the parent process's effective user — added
+      in Sysmon v13.30 (schema 4.81) and present in all v15.x
+      builds. Empty if Sysmon can't resolve the token (race
+      condition with very-short-lived parents).
+    - `OriginalFileName` is the PE resource `OriginalFilename` —
+      survives binary rename. Canonical detection pivot for
+      LOLBin-renaming attacks (`malware.exe` with OriginalFileName
+      `powershell.exe`).
+
+  SIEM rule mapping: Sysmon Process Create feeds the
+  generic endpoint-detection rule family that pivots on Image /
+  CommandLine / ParentImage / OriginalFileName / IntegrityLevel.
+  Specific child rules (LOLBin abuse, unsigned-binary-from-temp,
+  encoded PowerShell, suspicious parent-child chains) layer on
+  top of the generic Wazuh rule 61603.
+
+format: json
+transport: [tcp_syslog, beats, file]
+
+ocsf:
+  class: process_activity
+  category_uid: 1
+  class_uid: 1007
+
+# ──────────────── DetectOps v2 metadata ────────────────
+# Sysmon Event ID 1 (Process Create) is the canonical endpoint-
+# detection signal. Hundreds of Sigma rules pivot off
+# ProcessCommandLine / Image / ParentImage / OriginalFileName.
+# Mythos era: AI-generated process injection / LOLBin abuse
+# detection lives here. TBD: pending live-fire verification.
+detections:
+  wazuh:
+    - decoder: windows_eventchannel
+    - rule_id: 61603  # sysmon_event1 (process create) generic
+      level: 3
+    # Specific child rules (61613 unsigned-binary-from-temp etc.)
+    # fire depending on CommandLine / Image / OriginalFileName.
+  sigma:
+    - rule: proc_creation_win_susp_cmdline
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/windows/process_creation
+    - rule: proc_creation_win_lolbin_execution
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/windows/process_creation
+    - rule: proc_creation_win_renamed_binary
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/windows/process_creation
+  elk_detection:
+    - kibana_rule_id: endpoint-suspicious-process
+      severity: high
+
+mythos_alignment:
+  # R1 Accelerated Threat Exploitation (AI-generated PoC → process create)
+  # R4 Inadequate Detection Velocity (process spawn must be caught in seconds)
+  # PA1 Point Agents at Code (code-injection detection driven by Sysmon)
+  # PA10 Automated Response (kill process / isolate host on match)
+  risk_refs: [R1, R4]
+  pa_refs: [PA1, PA10]
+  ttx_class: rapid
+
+regression:
+  # Most process_create events do NOT alert under default rules;
+  # ratio depends on CommandLine pattern + OriginalFileName mismatch.
+  # Baseline assumes 5-10% match rate.
+  baseline_alert_count: 75
+  baseline_ttd_ms: 2000  # endpoint detection should be near-real-time
+
+params:
+  hostname: { default: "WIN10-CLIENT01" }
+  domain:   { default: "lab.local" }
+
+fields:
+  - name: ts_iso
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S.%fZ"
+
+  - name: ts_sysmon
+    type: datetime
+    format: "%Y-%m-%d %H:%M:%S.%f"
+
+  - name: hostname
+    type: param
+    param: hostname
+
+  - name: fqdn
+    type: template
+    template: "{{hostname}}.{{params.domain}}"
+
+  # ── Process identity ──────────────────────────────────
+  - name: rule_name
+    type: weighted_choice
+    choices:
+      "-": 0.70
+      "technique_id=T1059,powershell.exe": 0.10
+      "technique_id=T1218,signed_binary_proxy": 0.10
+      "technique_id=T1036,renamed_binary": 0.10
+
+  - name: process_guid
+    type: faker
+    method: uuid4
+
+  - name: process_id
+    type: int_range
+    min: 1000
+    max: 60000
+
+  - name: parent_process_guid
+    type: faker
+    method: uuid4
+
+  - name: parent_process_id
+    type: int_range
+    min: 100
+    max: 9999
+
+  - name: image
+    type: weighted_choice
+    choices:
+      "C:\\\\Windows\\\\System32\\\\cmd.exe": 0.20
+      "C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe": 0.20
+      "C:\\\\Windows\\\\System32\\\\notepad.exe": 0.10
+      "C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe": 0.20
+      "C:\\\\Windows\\\\System32\\\\svchost.exe": 0.20
+      "C:\\\\Windows\\\\System32\\\\wbem\\\\WmiPrvSE.exe": 0.10
+
+  # ── PE metadata block (v13.30+, present through v15.x) ─
+  - name: file_version
+    type: weighted_choice
+    choices:
+      "10.0.19041.4046 (WinBuild.160101.0800)": 0.40
+      "10.0.22621.3155 (WinBuild.160101.0800)": 0.30
+      "118.0.5993.118":                          0.20
+      "-":                                       0.10
+
+  - name: description
+    type: weighted_choice
+    choices:
+      "Windows Command Processor":             0.20
+      "Windows PowerShell":                    0.20
+      "Notepad":                               0.10
+      "Google Chrome":                         0.20
+      "Host Process for Windows Services":     0.20
+      "WMI Provider Host":                     0.10
+
+  - name: product
+    type: weighted_choice
+    choices:
+      "Microsoft® Windows® Operating System": 0.70
+      "Google Chrome":                         0.20
+      "-":                                     0.10
+
+  - name: company
+    type: weighted_choice
+    choices:
+      "Microsoft Corporation":      0.70
+      "Google LLC":                 0.20
+      "-":                          0.10
+
+  - name: original_file_name
+    type: weighted_choice
+    choices:
+      "Cmd.Exe":            0.20
+      "PowerShell.EXE":     0.20
+      "NOTEPAD.EXE":        0.10
+      "chrome.exe":         0.20
+      "svchost.exe":        0.20
+      "WmiPrvSE.exe":       0.10
+
+  # ── Command-line context ───────────────────────────────
+  - name: command_line
+    type: weighted_choice
+    choices:
+      'cmd.exe /c whoami': 0.15
+      'powershell.exe -ExecutionPolicy Bypass -File C:\\Users\\Public\\runme.ps1': 0.10
+      'powershell.exe -enc SQBFAFgAIAA=': 0.05
+      'cmd.exe /c systeminfo': 0.10
+      'chrome.exe --type=renderer': 0.30
+      'svchost.exe -k netsvcs -p': 0.20
+      'wmiprvse.exe -secured -Embedding': 0.10
+
+  - name: current_directory
+    type: weighted_choice
+    choices:
+      "C:\\\\Windows\\\\system32\\\\":   0.40
+      "C:\\\\Users\\\\alice\\\\":        0.25
+      "C:\\\\Users\\\\bob\\\\Desktop\\\\": 0.15
+      "C:\\\\Users\\\\Public\\\\":       0.10
+      "C:\\\\Windows\\\\Temp\\\\":       0.10
+
+  # ── Identity / logon correlation (links to Security 4624) ─
+  - name: user
+    type: weighted_choice
+    choices:
+      "LAB\\\\alice":  0.4
+      "LAB\\\\bob":    0.3
+      "NT AUTHORITY\\\\SYSTEM": 0.2
+      "LAB\\\\admin":  0.1
+
+  - name: logon_guid
+    type: faker
+    method: uuid4
+
+  - name: logon_id
+    type: faker
+    method: hex_8
+
+  - name: terminal_session_id
+    type: weighted_choice
+    choices: { "0": 0.4, "1": 0.4, "2": 0.15, "3": 0.05 }
+
+  - name: integrity_level
+    type: weighted_choice
+    choices: { Medium: 0.55, High: 0.30, System: 0.10, AppContainer: 0.05 }
+
+  # ── Hashes (single comma-separated string per Sysmon manual) ─
+  # Wire shape is exactly: SHA1=...,MD5=...,SHA256=...,IMPHASH=...
+  # All four algorithms when config sets <HashAlgorithms>*</HashAlgorithms>.
+  - name: hash_sha1
+    type: faker
+    method: sha1
+  - name: hash_md5
+    type: faker
+    method: md5
+  - name: hash_sha256
+    type: faker
+    method: sha256
+  - name: hash_imphash
+    type: faker
+    method: md5      # IMPHASH is MD5 of import table — 32 hex chars
+
+  # ── Parent context (ParentUser added in v13.30, present in v15) ─
+  - name: parent_image
+    type: weighted_choice
+    choices:
+      "C:\\\\Windows\\\\explorer.exe": 0.50
+      "C:\\\\Windows\\\\System32\\\\services.exe": 0.30
+      "C:\\\\Windows\\\\System32\\\\svchost.exe": 0.20
+
+  - name: parent_command_line
+    type: weighted_choice
+    choices:
+      'C:\\Windows\\Explorer.EXE':                            0.50
+      'C:\\Windows\\System32\\services.exe':                  0.30
+      'C:\\Windows\\System32\\svchost.exe -k netsvcs -p':     0.20
+
+  - name: parent_user
+    type: weighted_choice
+    choices:
+      "LAB\\\\alice":           0.4
+      "LAB\\\\bob":             0.3
+      "NT AUTHORITY\\\\SYSTEM": 0.2
+      "LAB\\\\admin":           0.1
+
+  # ── Syslog envelope ──────────────────────────────────
+  - name: pri
+    type: fixed
+    value: 134                              # local0.info
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} {"@timestamp":"{{ts_iso}}","event":{"code":1,"provider":"Microsoft-Windows-Sysmon","action":"Process Create","category":["process"],"type":["start"]},"host":{"name":"{{hostname}}","hostname":"{{hostname}}"},"winlog":{"channel":"Microsoft-Windows-Sysmon/Operational","event_id":1,"provider_name":"Microsoft-Windows-Sysmon","computer_name":"{{fqdn}}","event_data":{"RuleName":"{{rule_name}}","UtcTime":"{{ts_sysmon}}","ProcessGuid":"{{'{'}}{{process_guid}}{{'}'}}","ProcessId":"{{process_id}}","Image":"{{image}}","FileVersion":"{{file_version}}","Description":"{{description}}","Product":"{{product}}","Company":"{{company}}","OriginalFileName":"{{original_file_name}}","CommandLine":"{{command_line}}","CurrentDirectory":"{{current_directory}}","User":"{{user}}","LogonGuid":"{{'{'}}{{logon_guid}}{{'}'}}","LogonId":"0x{{logon_id}}","TerminalSessionId":"{{terminal_session_id}}","IntegrityLevel":"{{integrity_level}}","Hashes":"SHA1={{hash_sha1}},MD5={{hash_md5}},SHA256={{hash_sha256}},IMPHASH={{hash_imphash}}","ParentProcessGuid":"{{'{'}}{{parent_process_guid}}{{'}'}}","ParentProcessId":"{{parent_process_id}}","ParentImage":"{{parent_image}}","ParentCommandLine":"{{parent_command_line}}","ParentUser":"{{parent_user}}"}}}

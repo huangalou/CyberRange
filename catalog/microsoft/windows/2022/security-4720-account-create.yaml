@@ -1,0 +1,218 @@
+vendor: microsoft
+product: windows
+version: "2022"
+log_type: security.event_id_4720
+description: |
+  Windows Security Event ID 4720 (A user account was created). JSON
+  envelope matching the winlogbeat / Wazuh Windows agent forwarded
+  shape, single-line for line-delimited TCP syslog ingest into
+  filebeat 9514/tcp.
+
+  Source-of-truth (URLs fetched 2026-05-15):
+    - Microsoft Learn — Event 4720(S): A user account was created:
+        https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4720
+      Authoritative Event XML with verbatim EventData ordering and
+      `%%` localization-marker values.
+    - [MS-SAMR] USER_ACCOUNT Codes (NewUacValue bit definitions):
+        https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-samr/b10cfda1-f24f-441b-8f43-80cb93e786ec
+    - ECS winlog field mapping (Elastic) — confirms `winlog.event_data.*`
+      shape for both Beats and NXLog im_msvistalog forwarders:
+        https://www.elastic.co/guide/en/ecs/current/ecs-winlog.html
+    - Wazuh windows_eventchannel decoder (rule 60128 windows_security_4720):
+        https://github.com/wazuh/wazuh/blob/main/ruleset/rules/0095-sysmon_rules.xml
+
+  SIEM rule mapping: direct target of rule id
+  130000 (「AD_新增包含錢字號帳號」). Default param weights include a 25%
+  `$`-containing TargetUserName to verify regression — see Wire-format
+  notes on the `$` anomaly below.
+
+  Wire-format notes (per Microsoft Learn Event 4720 reference, with
+  CONTOSO sample EventData captured 2015-08-20 16:22:02 UTC):
+
+    1. **EventData field order is fixed** (26 fields, version 0):
+       TargetUserName, TargetDomainName, TargetSid, SubjectUserSid,
+       SubjectUserName, SubjectDomainName, SubjectLogonId,
+       PrivilegeList, SamAccountName, DisplayName, UserPrincipalName,
+       HomeDirectory, HomePath, ScriptPath, ProfilePath,
+       UserWorkstations, PasswordLastSet, AccountExpires,
+       PrimaryGroupId, AllowedToDelegateTo, OldUacValue, NewUacValue,
+       UserAccountControl, UserParameters, SidHistory, LogonHours.
+       `PrivilegeList` (between SubjectLogonId and SamAccountName) is
+       commonly omitted by third-party samples but IS present in the
+       canonical Microsoft XML and is preserved here for fidelity.
+
+    2. **`%%` localization markers — domain-created accounts**:
+       - `PasswordLastSet = "%%1794"` (resolves to "<never>" in
+         Event Viewer; literal `%%1794` on the wire)
+       - `AccountExpires  = "%%1794"` ("<never>")
+       - `LogonHours      = "%%1793"` ("<value not set>")
+       - `UserAccountControl = "%%2080 %%2082 %%2084"` (space-
+         separated SAM-style flag markers; resolve to
+         "Account Disabled" + "'Password Not Required' - Enabled" +
+         "'Normal Account' - Enabled")
+       For LOCAL accounts the equivalent slots carry literal text
+       "<value not set>" / "All" — NOT `%%` codes (per Microsoft
+       Learn field-description table). DC-created accounts (this
+       catalog's target) emit `%%`-coded values.
+
+    3. **NewUacValue `0x15`** is the verbatim canonical value from
+       the Microsoft sample (binary 0001 0101 = ACCOUNTDISABLE |
+       PASSWD_NOTREQD | NORMAL_ACCOUNT) — matches the
+       `%%2080 %%2082 %%2084` triplet bit-for-bit per [MS-SAMR]
+       USER_ACCOUNT Codes. OldUacValue is ALWAYS `0x0` for new
+       accounts (Microsoft Learn explicit statement).
+
+    4. **`$`-suffixed TargetUserName anomaly trigger** (a reference SIEM ruleset
+       `AD_新增包含錢字號帳號` rule 130000): in AD, machine
+       (computer) accounts have `sAMAccountName` ending in `$` and
+       are normally provisioned via SAMR `CreateComputer` →
+       Event 4741 (computer account created). A 4720 (USER account
+       created) with a `$`-ending name is therefore a known IOC for:
+         (a) manual machine-account creation via NET USER (skips
+             4741, produces 4720 instead),
+         (b) red-team computer-account-as-user privilege staging
+             (mimikatz / Rubeus pre-Kerberoasting setup),
+         (c) misconfigured provisioning scripts that route
+             machine-account adds through the user path.
+       The default 25% weight here is a regression-test ratio, not
+       a real-world prevalence claim.
+
+format: json
+transport: [tcp_syslog, beats, file]
+
+ocsf:
+  class: account_change
+  category_uid: 3
+  class_uid: 3001
+
+detections:
+  wazuh:
+    - decoder: windows_eventchannel
+    - rule_id: 60128  # windows_security_4720 (user account created)
+      level: 8
+    - rule_id: 130000  # SIEM rule mapping: AD_新增包含錢字號帳號
+      level: 7
+  sigma:
+    - rule: win_susp_user_account_created
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/windows/builtin/security
+  elk_detection:
+    - kibana_rule_id: arcsight-AD-new-account-with-dollar
+      severity: high
+
+mythos_alignment:
+  # R4 detection velocity — provisioning anomalies must alert in seconds
+  # PA1 identity-driven detection
+  risk_refs: [R4]
+  pa_refs: [PA1]
+  ttx_class: rapid
+
+regression:
+  # Approx 25% of generated 4720 events use `$`-containing TargetUserName
+  # to exercise the dollar-sign anomaly rule. Baseline: 250 alerts / 1000 events.
+  baseline_alert_count: 250
+  baseline_ttd_ms: 3000
+
+params:
+  hostname: { default: "WIN-DC01" }
+  domain:   { default: "LAB" }
+  fqdn_suffix: { default: "lab.local" }
+
+fields:
+  - name: ts_iso
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S.%fZ"
+
+  - name: hostname
+    type: param
+    param: hostname
+
+  - name: fqdn
+    type: template
+    template: "{{hostname}}.{{params.fqdn_suffix}}"
+
+  # ── Target (the account being created) ────────────────────────────
+  - name: target_user
+    type: weighted_choice
+    choices:
+      "newuser01":   0.20
+      "intern_2026": 0.15
+      "svc_app":     0.15
+      "contractor_a": 0.15
+      "test$":       0.10   # $-suffix → machine-account-via-user anomaly
+      "svc$":        0.10
+      "backup$":     0.05
+      "admin_b$":    0.10
+
+  - name: target_domain
+    type: param
+    param: domain
+
+  - name: sid_rid
+    type: int_range
+    min: 1100
+    max: 9999
+
+  - name: target_sid
+    type: template
+    template: "S-1-5-21-1111111111-2222222222-3333333333-{{sid_rid}}"
+
+  # ── Subject (the account doing the creation) ──────────────────────
+  - name: subject_user
+    type: weighted_choice
+    choices:
+      "admin":          0.5
+      "Administrator":  0.3
+      "svc_provision":  0.2
+
+  - name: subject_domain
+    type: param
+    param: domain
+
+  - name: subject_logon_id
+    type: faker
+    method: hex_8
+
+  # ── Attributes mirrored from the new user object ──────────────────
+  - name: sam_name
+    type: template
+    template: "{{target_user}}"
+
+  # Display name — for $-suffix machine-account-style entries the
+  # convention is to leave DisplayName as "-" (no human display);
+  # for human accounts we fake a plausible Latin first+last.
+  - name: display_name
+    type: weighted_choice
+    choices:
+      "-":              0.45   # dominant for $-suffix and svc accounts
+      "Ken Smith":      0.10
+      "Alice Wang":     0.10
+      "Bob Chen":       0.10
+      "Intern 2026":    0.10
+      "Contractor A":   0.15
+
+  - name: upn_local
+    type: template
+    template: "{{target_user}}"
+
+  - name: user_principal_name
+    type: template
+    template: "{{upn_local}}@{{params.fqdn_suffix}}"
+
+  # ── Syslog framing ────────────────────────────────────────────────
+  - name: pri
+    type: fixed
+    value: 134                              # local0.info
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+# Template — strict alignment to Microsoft Learn Event 4720 canonical
+# EventData order. `%%`-coded values are wire-form literals (Event
+# Viewer resolves them via wevtutil locale messages; downstream parsers
+# see the raw `%%NNNN` tokens). For LOCAL-account 4720s the wire form
+# differs (literal "<value not set>" / "All") — out of scope for this
+# DC-targeted catalog; create a sibling `security-4720-local.yaml` if
+# needed.
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} {"@timestamp":"{{ts_iso}}","event":{"code":4720,"provider":"Microsoft-Windows-Security-Auditing","action":"A user account was created","category":["iam"],"type":["user","creation"]},"host":{"name":"{{hostname}}","hostname":"{{hostname}}"},"winlog":{"channel":"Security","event_id":4720,"provider_name":"Microsoft-Windows-Security-Auditing","computer_name":"{{fqdn}}","event_data":{"TargetUserName":"{{target_user}}","TargetDomainName":"{{target_domain}}","TargetSid":"{{target_sid}}","SubjectUserSid":"S-1-5-21-1111111111-2222222222-3333333333-500","SubjectUserName":"{{subject_user}}","SubjectDomainName":"{{subject_domain}}","SubjectLogonId":"0x{{subject_logon_id}}","PrivilegeList":"-","SamAccountName":"{{sam_name}}","DisplayName":"{{display_name}}","UserPrincipalName":"{{user_principal_name}}","HomeDirectory":"-","HomePath":"-","ScriptPath":"-","ProfilePath":"-","UserWorkstations":"-","PasswordLastSet":"%%1794","AccountExpires":"%%1794","PrimaryGroupId":"513","AllowedToDelegateTo":"-","OldUacValue":"0x0","NewUacValue":"0x15","UserAccountControl":"%%2080 %%2082 %%2084","UserParameters":"-","SidHistory":"-","LogonHours":"%%1793"}}}

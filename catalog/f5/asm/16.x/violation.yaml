@@ -1,0 +1,504 @@
+vendor: f5
+product: asm
+version: "16.x"
+log_type: waf.violation
+description: |
+  F5 BIG-IP Application Security Manager (ASM) / Advanced WAF violation
+  event emitted by a Remote Logging Profile with the built-in
+  "Splunk" storage format (Key-Value Pairs over RFC3164 syslog). This
+  is the F5-native SIEM format — NOT CEF. CEF only appears when a
+  custom storage format is configured or an upstream relay (e.g.
+  ArcSight SmartConnector) transforms it. We deliberately mimic the
+  out-of-the-box "Splunk" profile because that is what real SOC
+  deployments collect.
+
+  Product naming: F5 BIG-IP ASM and BIG-IP Advanced WAF are the same
+  product line — current name is "Advanced WAF" since BIG-IP 13.1;
+  legacy "ASM" naming and the `ASM:` syslog tag are still emitted by
+  16.x boxes.
+
+  Source-of-truth for wire format (key=value with double-quoted values,
+  comma-delimited, prefixed by `ASM:`):
+    - LogRhythm syslog spec for F5 BIG-IP ASM Key-Value Pairs:
+      https://docs.logrhythm.com/devices/docs/syslog-f5-big-ip-asm-key-value-pairs
+    - F5 TechDocs "Logging Application Security Events" (BIG-IP 17.5
+      docs cover the same field set as 16.x):
+      https://techdocs.f5.com/en-us/bigip-17-5-0/big-ip-asm-implementations/logging-application-security-events.html
+    - F5 DevCentral "Implementing BIG-IP WAF logging and visibility
+      with ELK" (raw sample line with the full Splunk profile):
+      https://community.f5.com/kb/technicalarticles/implementing-big-ip-waf-logging-and-visibility-with-elk/285542
+    - Graylog Illuminate F5 BIG-IP content pack (parser regex confirms
+      field order): https://go2docs.graylog.org/illuminate-current/content_packs/f5_big-ip_content_pack.html
+    - F5 KB K37655278 "BIG-IP ASM event logging":
+      https://my.f5.com/manage/s/article/K37655278
+    - F5 KB K72018845 "How to block ASM request based on the violation
+      rating" — confirms violation_rating 1..5 scale and that 4..5 are
+      blocking-grade:
+      https://my.f5.com/manage/s/article/K72018845
+    - F5 iRules ASM::violation_data — canonical request_status set
+      "passed" / "blocked" / "alarmed":
+      https://clouddocs.f5.com/api/irules/ASM__violation_data.html
+
+  Real F5 ASM "Splunk" profile sample line (verbatim from DevCentral
+  ELK guide, line wrapped here for readability — wire is one line):
+    Aug 25 03:07:19 localhost.localdomain ASM:unit_hostname="bigip1",
+    management_ip_address="192.168.41.200",management_ip_address_2="N/A",
+    http_class_name="/Common/log_to_elk_policy",
+    web_application_name="/Common/log_to_elk_policy",
+    policy_name="/Common/log_to_elk_policy",
+    policy_apply_date="2020-08-10 06:50:39",
+    violations="HTTP protocol compliance failed",
+    support_id="5666478231990524056",request_status="blocked",
+    response_code="0",ip_client="10.43.0.86",route_domain="0",
+    method="GET",protocol="HTTP",query_string="name='",
+    x_forwarded_for_header_value="N/A",sig_ids="N/A",sig_names="N/A",
+    date_time="2020-08-25 03:07:19",severity="Error",
+    attack_type="Non-browser Client,HTTP Parser Attack",
+    geo_location="N/A",ip_address_intelligence="N/A",username="N/A",
+    session_id="0",src_port="39348",dest_port="80",
+    dest_ip="10.43.0.201",
+    sub_violations="HTTP protocol compliance failed:Bad HTTP version",
+    virus_name="N/A",violation_rating="5",websocket_direction="N/A",
+    websocket_message_type="N/A",device_id="N/A",staged_sig_ids="N/A"
+
+  SIEM rule mapping: vendor-agnostic WAF rule family (32
+  rules from a reference SIEM ruleset) keyed on the literal
+  F5 `attack_type` token and the src_zone (內/外) axis derived from
+  ip_client. Single event carries both src (ip_client) + dst (dest_ip /
+  unit_hostname) — exercises both 內部主機 and 外部主機 axis rules.
+  request_status=blocked vs alarmed drives 已阻擋 vs 未阻擋 rule split.
+  Mass-blocked aggregation (130015/130070 「伺服器主機觸發大量已阻擋
+  事件」) is Wazuh-side time-window aggregation — catalog only needs to
+  emit enough blocked events on the same dest_ip within 1 min.
+
+  Rule coverage matrix (scenario × 內/外 host axis):
+    SQL-Injection 攻擊            內部 130021/130082  外部 130005/130079
+    XSS 攻擊                      內部 130035/130091  外部 130108/130145
+    密碼暴力破解                  內部 130019/130038  外部 130081/130131
+    弱點掃描 by_name              內部 130065/130146  外部 130002/130126
+    弱點掃描 by_自訂字串4         內部 130139/130147  外部 130049/130086
+    緩衝區溢位                    內部 130078/130095  外部 130054/130125
+  Cross-cut:
+    伺服器主機觸發大量已阻擋      130015/130070
+    資安設備偵測內對內伺服器高風險未阻擋  130003/130056
+    資安設備偵測內對外高風險未阻擋        130014/130124
+    資安設備偵測外對內高風險未阻擋        130121/130127
+
+format: key_value   # ASM:key="value",key="value",...  (F5-native, not CEF)
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: web_resources_activity
+  category_uid: 6
+  class_uid: 6004
+
+detections:
+  wazuh:
+    # F5 ASM "Splunk" profile is NOT CEF — Wazuh built-in `cef` decoder
+    # will NOT parse this. Needs the community / custom `f5-asm` decoder
+    # family (handles the `ASM:` prefix + quoted KV body). CEF appears
+    # only when an upstream ArcSight SmartConnector reformats the event.
+    - decoder: f5-asm
+    # Attack-type rules (each scenario × 內/外 軸 都覆蓋)
+    - rule_id: 130005   # WAF_外部主機嘗試SQL-Injection攻擊
+      level: 7
+    - rule_id: 130079   # WAF_外部主機嘗試SQL-Injection攻擊
+      level: 7
+    - rule_id: 130021   # WAF_內部主機嘗試SQL-Injection攻擊
+      level: 7
+    - rule_id: 130082   # WAF_內部主機嘗試SQL-Injection攻擊
+      level: 7
+    - rule_id: 130108   # WAF_外部主機嘗試XSS攻擊
+      level: 7
+    - rule_id: 130145   # WAF_外部主機嘗試XSS攻擊
+      level: 7
+    - rule_id: 130035   # WAF_內部主機嘗試XSS攻擊
+      level: 7
+    - rule_id: 130091   # WAF_內部主機嘗試XSS攻擊
+      level: 7
+    - rule_id: 130081   # WAF_外部主機嘗試密碼暴力破解
+      level: 7
+    - rule_id: 130131   # WAF_外部主機嘗試密碼暴力破解
+      level: 7
+    - rule_id: 130019   # WAF_內部主機嘗試密碼暴力破解
+      level: 7
+    - rule_id: 130038   # WAF_內部主機嘗試密碼暴力破解
+      level: 7
+    - rule_id: 130002   # WAF_外部主機執行弱點掃描攻擊 by_name 1m.10
+      level: 7
+    - rule_id: 130126   # WAF_外部主機執行弱點掃描攻擊 by_name 1m.5
+      level: 7
+    - rule_id: 130049   # WAF_外部主機執行弱點掃描攻擊 by_自訂字串4 1m.5
+      level: 7
+    - rule_id: 130086   # WAF_外部主機執行弱點掃描攻擊 by_自訂字串4 1m.10
+      level: 7
+    - rule_id: 130065   # WAF_內部主機執行弱點掃描攻擊 by_name 1m.5
+      level: 7
+    - rule_id: 130146   # WAF_內部主機執行弱點掃描攻擊 by_name 1m.5
+      level: 7
+    - rule_id: 130139   # WAF_內部主機執行弱點掃描攻擊 by_自訂字串4 1m.5
+      level: 7
+    - rule_id: 130147   # WAF_內部主機執行弱點掃描攻擊 by_自訂字串4 1m.5
+      level: 7
+    - rule_id: 130054   # WAF_外部主機疑似進行緩衝區溢位攻擊
+      level: 7
+    - rule_id: 130125   # WAF_外部主機疑似進行緩衝區溢位攻擊
+      level: 7
+    - rule_id: 130078   # WAF_內部主機疑似進行緩衝區溢位攻擊
+      level: 7
+    - rule_id: 130095   # WAF_內部主機疑似進行緩衝區溢位攻擊
+      level: 7
+    # Cross-cut aggregation / 高風險未阻擋
+    - rule_id: 130015   # WAF_伺服器主機觸發大量已阻擋事件
+      level: 7
+    - rule_id: 130070   # WAF_伺服器主機觸發大量已阻擋事件
+      level: 7
+    - rule_id: 130003   # WAF_資安設備偵測內對內伺服器高風險未阻擋
+      level: 7
+    - rule_id: 130056   # WAF_資安設備偵測內對內伺服器高風險未阻擋
+      level: 7
+    - rule_id: 130014   # WAF_資安設備偵測內對外高風險未阻擋
+      level: 7
+    - rule_id: 130124   # WAF_資安設備偵測內對外高風險未阻擋
+      level: 7
+    - rule_id: 130121   # WAF_資安設備偵測外對內高風險未阻擋
+      level: 7
+    - rule_id: 130127   # WAF_資安設備偵測外對內高風險未阻擋
+      level: 7
+  sigma:
+    - rule: f5_asm_violation
+      ref: https://github.com/SigmaHQ/sigma  # community contrib pending
+  elk_detection:
+    - kibana_rule_id: f5-asm-attack-blocked
+      severity: high
+    - kibana_rule_id: f5-asm-high-rating-unblocked
+      severity: critical
+
+mythos_alignment:
+  risk_refs: [R1, R4]
+  pa_refs: [PA1]
+  ttx_class: rapid
+
+regression:
+  # 1000 events with 6 attack_types × 2 軸 × 2 request_status(blocked/
+  # alarmed) covers all 32 rules. Mass-blocked aggregation (130015/130070)
+  # needs >= 5 blocked events on the same dest_ip within 1 min — fanout=5
+  # protected_dest_pool keeps this dense.
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 3000
+
+params:
+  unit_hostname:
+    default: "bigip-asm-lab-01"
+  device_id:
+    default: "f5-asm-lab-01.lab.local"
+  policy_name:
+    default: "/Common/asm_blocking_policy_prod"
+  http_class_name:
+    default: "/Common/asm_blocking_policy_prod"
+  web_application_name:
+    default: "/Common/asm_blocking_policy_prod"
+  management_ip_address:
+    default: "10.0.30.10"
+  # External attackers — drives 外部主機 axis rules
+  external_attacker_pool:
+    default:
+      - "203.0.113.45"
+      - "198.51.100.77"
+      - "45.142.213.18"
+      - "194.165.16.99"
+      - "172.93.179.115"
+  # Internal sources — drives 內部主機 axis rules
+  internal_source_pool:
+    default: "10.0.20.0/24"
+  # Protected web servers behind the WAF
+  protected_dest_pool:
+    default:
+      - "10.0.50.10"
+      - "10.0.50.11"
+      - "10.0.50.12"
+      - "10.0.50.13"
+      - "10.0.50.14"
+
+fields:
+  - name: pri
+    type: fixed
+    value: 134   # local0.info — F5 ASM default facility/severity
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  - name: date_time
+    type: datetime
+    format: "%Y-%m-%d %H:%M:%S"
+
+  - name: policy_apply_date
+    type: fixed
+    value: "2026-04-15 09:30:12"
+
+  # src_zone drives 內 vs 外 axis. 60% external (typical perimeter
+  # exposure), 40% internal (insider threat / pivoted-attacker scenarios).
+  - name: src_zone
+    type: weighted_choice
+    choices:
+      external: 0.60
+      internal: 0.40
+
+  - name: external_src
+    type: choice
+    choices: ${params.external_attacker_pool}
+
+  - name: internal_src
+    type: cidr
+    cidr: ${params.internal_source_pool}
+
+  - name: ip_client
+    type: template
+    template: "{% if src_zone == 'external' %}{{external_src}}{% else %}{{internal_src}}{% endif %}"
+
+  - name: dest_ip
+    type: choice
+    choices: ${params.protected_dest_pool}
+
+  - name: src_port
+    type: int_range
+    min: 1024
+    max: 65535
+
+  - name: dest_port
+    type: weighted_choice
+    choices:
+      "443": 0.75
+      "80":  0.25
+
+  - name: protocol
+    type: template
+    template: "{% if dest_port == '443' %}HTTPS{% else %}HTTP{% endif %}"
+
+  - name: geo_location
+    type: weighted_choice
+    choices:
+      "RU": 0.18
+      "CN": 0.22
+      "US": 0.25
+      "BR": 0.12
+      "RO": 0.08
+      "N/A": 0.15
+
+  # attack_type — drives which ArcSight scenario rule fires. Values are
+  # the literal F5 attack_type tokens emitted in the wire format (per
+  # F5 TechDocs "Event Messages and Attack Types" and the iRule
+  # ATTACK_TYPE_* enum). Multiple types are comma-joined on the wire,
+  # but for catalog generation we pick one canonical token per event.
+  - name: attack_type
+    type: weighted_choice
+    choices:
+      "SQL-Injection":              0.25
+      "Cross Site Scripting (XSS)": 0.20
+      "Vulnerability Scan":         0.18
+      "Brute Force Attack":         0.15
+      "Buffer Overflow":            0.10
+      "Path Traversal":             0.07
+      "Other Application Activity": 0.05   # forces 130003/130014/130056/130121/130124/130127
+
+  # violations — F5 wire-format literal violation_name strings. These
+  # are the human-readable strings F5 writes into the `violations="..."`
+  # field, derived from the VIOLATION_* enum. Drawn from F5 iRule
+  # ASM::violation_data docs + DevCentral samples.
+  - name: violations
+    type: template
+    template: |-
+      {%- if attack_type == 'SQL-Injection' or attack_type == 'Cross Site Scripting (XSS)' or attack_type == 'Buffer Overflow' or attack_type == 'Path Traversal' or attack_type == 'Vulnerability Scan' -%}
+      Attack signature detected
+      {%- elif attack_type == 'Brute Force Attack' -%}
+      Brute Force: Maximum login attempts are exceeded
+      {%- else -%}
+      HTTP protocol compliance failed
+      {%- endif %}
+
+  # sig_names — attack-signature human-readable strings paired with
+  # sig_ids. These are real F5 attack-signature names from
+  # signatures.f5.com / Picus ASM signature DB.
+  - name: sig_names
+    type: template
+    template: |-
+      {%- if attack_type == 'SQL-Injection' -%}
+      "SQL-INJ ' OR 1=1 -- (Parameter)"
+      {%- elif attack_type == 'Cross Site Scripting (XSS)' -%}
+      "XSS script tag (Parameter)"
+      {%- elif attack_type == 'Buffer Overflow' -%}
+      "Buffer overflow attempt (Header)"
+      {%- elif attack_type == 'Path Traversal' -%}
+      "Directory traversal (../../etc/passwd) (URI)"
+      {%- elif attack_type == 'Vulnerability Scan' -%}
+      "Automated client access ""sqlmap"""
+      {%- elif attack_type == 'Brute Force Attack' -%}
+      "N/A"
+      {%- else -%}
+      "N/A"
+      {%- endif %}
+
+  # sig_ids — F5 attack-signature numeric ids paired with sig_names.
+  # These are real F5 signature ids drawn from the public ASM signature
+  # database (signatures.f5.com K-articles).
+  - name: sig_ids
+    type: template
+    template: |-
+      {%- if attack_type == 'SQL-Injection' -%}
+      200001475
+      {%- elif attack_type == 'Cross Site Scripting (XSS)' -%}
+      200000091
+      {%- elif attack_type == 'Buffer Overflow' -%}
+      200002041
+      {%- elif attack_type == 'Path Traversal' -%}
+      200001112
+      {%- elif attack_type == 'Vulnerability Scan' -%}
+      200021069
+      {%- else -%}
+      N/A
+      {%- endif %}
+
+  # severity — F5 ASM emits severity as a STRING enum (not CEF 0..10).
+  # Values per F5 TechDocs "Event Messages and Attack Types":
+  #   Informational | Notice | Warning | Error | Critical
+  - name: severity
+    type: weighted_choice
+    choices:
+      "Critical":      0.30
+      "Error":         0.40
+      "Warning":       0.20
+      "Notice":        0.07
+      "Informational": 0.03
+
+  # request_status — drives 已阻擋 vs 未阻擋 ArcSight rule split.
+  # Canonical F5 values per iRule ASM::violation_data docs:
+  #   "passed" | "blocked" | "alarmed"
+  # (Note: F5 uses "alarmed", NOT "alerted" — the previous catalog had
+  # this wrong.)
+  - name: request_status
+    type: weighted_choice
+    choices:
+      "blocked": 0.70
+      "alarmed": 0.20   # detect-only / transparent mode
+      "passed":  0.10   # below blocking threshold
+
+  - name: response_code
+    type: template
+    template: "{% if request_status == 'blocked' %}0{% else %}200{% endif %}"
+
+  - name: method
+    type: weighted_choice
+    choices:
+      "POST":   0.55
+      "GET":    0.35
+      "PUT":    0.05
+      "DELETE": 0.05
+
+  - name: query_string
+    type: weighted_choice
+    choices:
+      "id=1' OR '1'='1":                          0.20
+      "q=<script>alert(1)</script>":              0.15
+      "cmd=cat%20/etc/passwd":                    0.13
+      "file=../../etc/shadow":                    0.10
+      "coupon=' UNION SELECT NULL--":             0.12
+      "filter[id]=1%20AND%20SLEEP(5)":            0.10
+      "":                                          0.10
+      "user=admin&pwd=admin123":                  0.10
+
+  # F5 ASM support_id — a 64-bit decimal request correlation key.
+  # Real F5 boxes emit 18..20-digit decimal strings; we generate a
+  # uuid4 and reuse it as opaque correlator since the engine doesn't
+  # have a numeric-of-fixed-width faker.
+  - name: support_id
+    type: faker
+    method: hex_16
+
+  - name: session_id
+    type: faker
+    method: hex_16
+
+  - name: x_forwarded_for_header_value
+    type: weighted_choice
+    choices:
+      "N/A":             0.50
+      "203.0.113.45":    0.15
+      "198.51.100.77":   0.15
+      "45.142.213.18":   0.10
+      "194.165.16.99":   0.10
+
+  # violation_rating — F5 1..5 scale (per K72018845 / K000137152):
+  #   1..2 likely false positive | 3 investigate | 4..5 likely attack
+  - name: violation_rating
+    type: weighted_choice
+    choices:
+      "1": 0.05  # informational / likely FP
+      "2": 0.10
+      "3": 0.20  # ambiguous
+      "4": 0.35  # likely attack (blocking when policy enforces)
+      "5": 0.30  # confirmed attack (always blocked)
+
+  - name: unit_hostname
+    type: param
+    param: unit_hostname
+
+  - name: device_id
+    type: param
+    param: device_id
+
+  - name: management_ip_address
+    type: param
+    param: management_ip_address
+
+  - name: policy_name
+    type: param
+    param: policy_name
+
+  - name: http_class_name
+    type: param
+    param: http_class_name
+
+  - name: web_application_name
+    type: param
+    param: web_application_name
+
+  # software_version — real BIG-IP 16.x release strings (verified via
+  # F5 TechDocs Release Notes). Weighted toward 16.1.4 since that ships
+  # the OWASP Top 10 2021 alignment update.
+  - name: software_version
+    type: weighted_choice
+    choices:
+      "16.1.4":  0.50
+      "16.1.3":  0.30
+      "15.1.10": 0.20
+
+  # username — real F5 logs frequently emit "N/A" when there is no
+  # session-mapped user; only authenticated requests have a value.
+  - name: username
+    type: weighted_choice
+    choices:
+      "N/A":   0.70
+      "guest": 0.10
+      "admin": 0.10
+      "user1": 0.10
+
+  # ip_address_intelligence — F5 IPI category string. Real emitted
+  # values per F5 docs (or "N/A" when no IPI hit).
+  - name: ip_address_intelligence
+    type: weighted_choice
+    choices:
+      "N/A":              0.60
+      "Scanners":         0.15
+      "Anonymous Proxy":  0.10
+      "BotNets":          0.10
+      "Web Attacks":      0.05
+
+# Wire format: F5 ASM "Splunk" remote-logging profile — single-line
+# RFC3164 syslog with the body framed as `ASM:key="value",key="value",...`
+# Field order below matches the Splunk add-on / LogRhythm spec /
+# DevCentral ELK sample. Newlines in this template are for editor
+# readability only — Jinja `{%- ... -%}` and the YAML `|-` chomping
+# render this as a single physical line.
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{unit_hostname}} ASM:unit_hostname="{{unit_hostname}}",management_ip_address="{{management_ip_address}}",management_ip_address_2="N/A",http_class_name="{{http_class_name}}",web_application_name="{{web_application_name}}",policy_name="{{policy_name}}",policy_apply_date="{{policy_apply_date}}",violations="{{violations}}",support_id="{{support_id}}",request_status="{{request_status}}",response_code="{{response_code}}",ip_client="{{ip_client}}",route_domain="0",method="{{method}}",protocol="{{protocol}}",query_string="{{query_string}}",x_forwarded_for_header_value="{{x_forwarded_for_header_value}}",sig_ids="{{sig_ids}}",sig_names={{sig_names}},date_time="{{date_time}}",severity="{{severity}}",attack_type="{{attack_type}}",geo_location="{{geo_location}}",ip_address_intelligence="{{ip_address_intelligence}}",username="{{username}}",session_id="{{session_id}}",src_port="{{src_port}}",dest_port="{{dest_port}}",dest_ip="{{dest_ip}}",sub_violations="N/A",virus_name="N/A",violation_rating="{{violation_rating}}",websocket_direction="N/A",websocket_message_type="N/A",device_id="{{device_id}}",staged_sig_ids="N/A",software_version="{{software_version}}"

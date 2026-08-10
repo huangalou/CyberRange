@@ -1,0 +1,362 @@
+vendor: trendmicro
+product: apex-one
+version: "14.x"
+log_type: webrep.malicious_url-native
+description: |
+  Trend Micro Apex One 14.x Web Reputation Service (WRS) event in NATIVE
+  (non-CEF) wire form — sibling catalog to `web-reputation.yaml` which
+  covers the CEF Syslog Forwarder path. This catalog models the event as
+  it appears at source: the Apex One on-prem Security Agent local log
+  file (under `PCCSRV\Log\WebReputation\` on the Apex One Server) which
+  most real SOC deployments ship via a forwarder (Wazuh agent, NXLog,
+  Filebeat, fluent-bit) — NOT via the Apex Central Syslog Forwarder.
+
+  Sibling catalog (same WRS event, CEF wire form):
+    catalog/trendmicro/apex-one/14.x/web-reputation.yaml
+
+  IMPORTANT — Apex Central Syslog Forwarder does NOT emit native format
+  for Web Reputation events. Per the official "Supported Log Types and
+  Formats" table (URL below, fetched 2026-05-14), every Web-Security
+  family log type ("Web Violations") supports CEF=Yes but Apex Central
+  Format=No. LogRhythm's Apex One ingestion doc independently confirms
+  "Only CEF format supported" for the syslog forwarder path. Therefore
+  a "native syslog" delivery of WRS events does not exist at the
+  Apex Central layer — the only realistic native delivery is forwarding
+  the Apex One agent's local log file:
+
+    device path:
+      C:\Program Files (x86)\Trend Micro\OfficeScan\PCCSRV\Log\WebReputation\
+                                          ↓
+      forwarder (Wazuh agent / NXLog / Filebeat / fluent-bit)
+                                          ↓
+      Wazuh manager (custom `trendmicro-webrep` decoder)
+                                          ↓
+      rule 130036 (SIEM rule mapping)
+
+  Wire form modeled here: the Apex Central "Detailed Web Reputation
+  Information" data model serialized as `key=value` pairs with leading
+  RFC3164 syslog header (the conventional form Wazuh agent / NXLog ship
+  when tailing the file and re-emitting via syslog). The CEF Web
+  Security Logs spec confirms the underlying field semantics; we strip
+  the CEF wrapper and use the Apex Central native field names (Endpoint,
+  URL, Risk Level, Process, Action, Detections, Source IP, Endpoint IP,
+  Policy, Description) from the Detailed Web Reputation Information
+  page rather than CEF extension keys (dvchost, request, cs2, src, dst,
+  cs1, cnt, deviceProcessName, act).
+
+  Source-of-truth for native field model (all fetched 2026-05-14):
+    - Apex Central Online Help — Supported Log Types and Formats
+      (authoritative confirmation that Web Violations is CEF-only at
+      the Apex Central Syslog Forwarder layer):
+      https://docs.trendmicro.com/en-us/documentation/article/apex-central-online-help-syslog-log-types-for
+    - Apex One Service Pack 1 — Viewing Web Reputation Logs
+      (authoritative on-prem agent column list: Date/Time, Endpoint,
+      Domain, URL, Risk Level, Description, Process, Action):
+      https://docs.trendmicro.com/en-us/documentation/article/trend-micro-apex-one-service-pack-1-online-help-viewing-web-reputati
+    - Apex Central Online Help — Detailed Web Reputation Information
+      (authoritative native field vocabulary — 42-field data model
+      with Received, Generated, Product Entity, Product, Endpoint,
+      Source IP, Endpoint IP, Endpoint Port, Policy/Rule, URL,
+      Detections, C&C Risk Level, Threat Type, Detection Severity,
+      Attack Phase, ...):
+      https://docs.trendmicro.com/en-us/documentation/article/apex-central-online-help-detailed-web-reputat
+    - LogRhythm Syslog - Trend Micro Apex One (independent confirmation
+      "Only CEF format supported" for syslog forwarder path):
+      https://docs.logrhythm.com/devices/docs/syslog-trend-micro-apex-one
+    - Apex Central Configuring Syslog Forwarding (UI confirms
+      "Apex Central format: Sets the syslog Facility code to 'Local0'
+      and the Severity code to 'Notice'" — the wire envelope this
+      catalog targets when the forwarder path WERE supported):
+      https://docs.trendmicro.com/en-us/documentation/article/trend-micro-apex-central-patch-7-syslog-forwarding
+    - Apex One Web Reputation Risk Level vocabulary
+      (Dangerous / Highly suspicious / Suspicious — shared with CEF
+      sibling):
+      https://servicecentral-prod.trendmicro.com/en-us/documentation/article/trend-micro-apex-one-service-pack-1-online-help-web-reputation
+
+  Open question (documented, not invented): Trend Micro does not publish
+  a verbatim raw sample of the agent-local PCCSRV WRS log file format.
+  Real deployments use admin-customized NXLog/Wazuh templates to flatten
+  the binary `.dat` log file into a key=value line. The serialization
+  here follows the convention shared by every Trend Micro third-party
+  parser doc (Sekoia / Rapid7 / Splunk SC4S): RFC3164 header + product
+  prefix + key=value extensions using the Apex Central UI column names.
+  If a downstream Wazuh deployment uses different key names, adjust the
+  custom `trendmicro-webrep` decoder rather than this catalog.
+
+  SIEM rule mapping: identical to CEF sibling — target of
+  rule 130036「AV_TrendMicro_伺服器連線惡意網址_全區_2.0」, server-only
+  scope (workstation events out of scope). The wire form is different
+  but the field semantics map 1:1.
+
+format: key_value   # RFC3164 + ApexOne: <native key=value pairs>
+transport: [udp_syslog, tcp_syslog, file, beats]
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+detections:
+  wazuh:
+    # Wazuh built-in `cef` decoder will NOT parse this — only the CEF
+    # sibling triggers it. Native path requires a custom decoder family
+    # (`trendmicro-webrep`) modeled on the field vocabulary below.
+    - decoder: trendmicro-webrep
+    - rule_id: 130036  # AV_TrendMicro_伺服器連線惡意網址
+      level: 7
+  sigma:
+    - rule: trendmicro_apex_one_web_reputation_native
+      ref: https://github.com/SigmaHQ/sigma  # community contrib pending
+  elk_detection:
+    - kibana_rule_id: trendmicro-webrep-native-malicious-url
+      severity: high
+
+mythos_alignment:
+  # Identical to CEF sibling — wire form differs but threat scenario
+  # is the same.
+  # R2 Initial Access via web (drive-by, malicious URL click)
+  # R3 C2 Egress — server reaching out to malicious infra
+  # PA10 Automated Response (Apex One blocks the request)
+  risk_refs: [R2, R3]
+  pa_refs: [PA10]
+  ttx_class: rapid
+
+regression:
+  # 500 events × server-only → all should resolve to a SRV-* / WEB-* /
+  # DB-* / APP-* hostname and exercise rule 130036 every time. Wire form
+  # is native so requires the `trendmicro-webrep` decoder family to be
+  # deployed (Wazuh ruleset Phase 2 task).
+  baseline_alert_count: 500
+  baseline_ttd_ms: 4000
+
+params:
+  syslog_host:
+    default: "apex-one-server.lab.local"
+  apex_one_product:
+    default: "ApexOne"
+  apex_central_host:
+    default: "TW-APEXCENTRAL-01"
+  apex_central_domain:
+    default: "APEXTMCM"
+  apex_central_dntdom:
+    default: "OSCEDomain1"
+  server_pool:
+    default:
+      - "SRV-FILE01"
+      - "SRV-DC01"
+      - "WEB-PRD-02"
+      - "DB-MSSQL-01"
+      - "APP-ERP-03"
+  server_subnet:
+    default: "10.0.50.0/24"
+  malicious_remote_pool:
+    default:
+      - "45.142.213.18"
+      - "194.165.16.99"
+      - "185.234.218.43"
+      - "103.224.182.247"
+      - "172.93.179.115"
+  user_pool:
+    default: ["alice", "svc_iis", "svc_app", "admin_b"]
+
+fields:
+  # local0.notice = 134 (16*8 + 5 = 16*8+5=133; Trend Micro doc says
+  # local0+notice but local0=16, notice=5 → PRI = 16*8 + 5 = 133).
+  # Apex Central UI explicitly says "Local0 / Notice".
+  - name: pri
+    type: fixed
+    value: 133
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  # "Generated" timestamp in Apex Central data model — local time of the
+  # endpoint at detection (no GMT suffix in native form, unlike CEF rt=).
+  - name: generated_ts
+    type: datetime
+    format: "%Y-%m-%d %H:%M:%S"
+
+  # "Received" timestamp — when Apex Central got the event from the
+  # managed product. Modeled as same as Generated for lab simplicity.
+  - name: received_ts
+    type: datetime
+    format: "%Y-%m-%d %H:%M:%S"
+
+  # Affected endpoint (server-only per ArcSight rule 130036 scope).
+  - name: endpoint
+    type: choice
+    choices: ${params.server_pool}
+
+  - name: endpoint_ip
+    type: cidr
+    cidr: ${params.server_subnet}
+
+  - name: user_name
+    type: choice
+    choices: ${params.user_pool}
+
+  # Destination — remote malicious host
+  - name: source_ip
+    type: choice
+    choices: ${params.malicious_remote_pool}
+
+  - name: domain
+    type: weighted_choice
+    choices:
+      "malware-cdn.attacker.tld":      0.20
+      "c2.evilcorp.tld":               0.18
+      "phish-login.microsoft-365.io":  0.15
+      "fake-update.bank-sec.tld":      0.13
+      "downloads.payload-staging.tld": 0.12
+      "ad-fraud.tracker.tld":          0.12
+      "exploit-kit.malv4d.tld":        0.10
+
+  - name: request_path
+    type: weighted_choice
+    choices:
+      "/payload.exe":                     0.20
+      "/admin/console.php":               0.15
+      "/dl/setup.msi":                    0.13
+      "/feed/cmd?id=42":                  0.12
+      "/login.php?next=oauth_grant":      0.12
+      "/checkin?h=ENDPOINT":              0.10
+      "/static/jquery-3.6.1.min.js":      0.08
+      "/img/tracker.gif":                 0.10
+
+  # Protocol — native column is "Protocol" (string, not the CEF numeric
+  # code). Apex Central UI shows "HTTP" / "HTTPS" / "FTP" etc.
+  - name: protocol
+    type: weighted_choice
+    choices:
+      "HTTPS":   0.65
+      "HTTP":    0.30
+      "Unknown": 0.05
+
+  - name: url_scheme
+    type: template
+    template: "{% if protocol == 'HTTPS' %}https{% else %}http{% endif %}"
+
+  - name: url
+    type: template
+    template: "{{url_scheme}}://{{domain}}{{request_path}}"
+
+  - name: endpoint_port
+    type: template
+    template: "{% if protocol == 'HTTPS' %}443{% else %}80{% endif %}"
+
+  # Risk Level — Apex One vocab (Dangerous / Highly suspicious /
+  # Suspicious) per the Web Reputation Risk Level documented vocab.
+  # This is the native column name (UI label = "Risk Level").
+  - name: risk_level
+    type: weighted_choice
+    choices:
+      "Dangerous":         0.50
+      "Highly suspicious": 0.30
+      "Suspicious":        0.20
+
+  # Detection Severity (native column) — Apex Central vocab
+  # "High / Medium / Low" as strings (NOT the CEF numeric 100..900).
+  - name: detection_severity
+    type: weighted_choice
+    choices:
+      "High":   0.55
+      "Medium": 0.35
+      "Low":    0.10
+
+  # Action — native column emits human-readable strings (NOT CEF act=
+  # numeric 0..8). Apex Central UI vocab: "Blocked / Warned / Monitored".
+  - name: action
+    type: weighted_choice
+    choices:
+      "Blocked":   0.75
+      "Monitored": 0.15
+      "Warned":    0.10
+
+  # Traffic Direction — native UI emits "Outbound" / "Inbound" / "None"
+  # as strings (NOT CEF numeric 0/1/2). Server reaching out = Outbound.
+  - name: traffic_direction
+    type: weighted_choice
+    choices:
+      "Outbound": 0.92
+      "Unknown":  0.08
+
+  # Threat Type — native column vocab maps to the same threat
+  # categories as CEF reason letter (A..G) but in human-readable form.
+  - name: threat_type
+    type: weighted_choice
+    choices:
+      "Ransomware":              0.30
+      "C&C Callback":            0.25
+      "Social Engineering":      0.20
+      "Unknown Threat":          0.15
+      "Advanced Persistent Threat": 0.05
+      "Vulnerability Attack":    0.03
+      "Lateral Movement":        0.02
+
+  # Process — full path (same convention as CEF sibling).
+  - name: process_name
+    type: weighted_choice
+    choices:
+      "C:\\Program Files\\Internet Explorer\\iexplore.exe":              0.15
+      "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe": 0.25
+      "C:\\Windows\\System32\\svchost.exe":                              0.20
+      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe":       0.15
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe":   0.10
+      "C:\\Windows\\System32\\curl.exe":                                 0.08
+      "C:\\Windows\\System32\\bitsadmin.exe":                            0.07
+
+  # Description — native column is a human sentence (Apex Central UI
+  # Detailed Web Reputation Information: "Detailed description of the
+  # incident by Trend Micro").
+  - name: description
+    type: weighted_choice
+    choices:
+      "Blocked URL classified as Dangerous by Trend Micro Smart Protection Network": 0.50
+      "Blocked URL associated with known C&C infrastructure":                         0.20
+      "Blocked URL associated with phishing campaign":                                0.15
+      "Blocked URL associated with ransomware payload delivery":                      0.15
+
+  # Policy/Rule — native column "Policy/Rule"
+  - name: policy_rule
+    type: weighted_choice
+    choices:
+      "Server Web Reputation Policy":  0.45
+      "Critical Asset Web Policy":     0.30
+      "External Server Policy":        0.15
+      "Default Web Reputation Policy": 0.10
+
+  # Detections — total count (native column). Most WRS events cnt=1.
+  - name: detections
+    type: weighted_choice
+    choices:
+      "1":  0.70
+      "3":  0.15
+      "10": 0.10
+      "25": 0.05
+
+  # Reputation Score — 0..100 lower=riskier (Apex One scale).
+  - name: reputation_score
+    type: int_range
+    min: 1
+    max: 49
+
+  - name: log_id
+    type: faker
+    method: uuid4
+
+  - name: product_entity
+    type: weighted_choice
+    choices:
+      "Apex One Server (TW-PRD)":  0.60
+      "Apex One Server (TW-DR)":   0.30
+      "Apex One Server (TW-DEV)":  0.10
+
+# Template emits Apex One agent local log file in flattened key=value
+# form (the conventional NXLog/Wazuh re-emit format). Wire envelope is
+# RFC3164 syslog header (Local0/Notice per Apex Central UI doc) + product
+# prefix + key=value pairs using Apex Central native field names from the
+# "Detailed Web Reputation Information" data model — NOT CEF extension
+# keys. Threat scenario maps 1:1 to CEF sibling (rule 130036 target).
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{params.syslog_host}} ApexOne[{{params.apex_one_product}}]: Generated="{{generated_ts}}" Received="{{received_ts}}" ProductEntity="{{product_entity}}" Product="Apex One" Endpoint="{{endpoint}}" EndpointIP={{endpoint_ip}} EndpointPort={{endpoint_port}} SourceIP={{source_ip}} User="{{params.apex_central_domain}}\\{{user_name}}" Domain="{{domain}}" URL="{{url}}" Protocol={{protocol}} TrafficDirection={{traffic_direction}} RiskLevel="{{risk_level}}" DetectionSeverity={{detection_severity}} ThreatType="{{threat_type}}" Action={{action}} Description="{{description}}" Policy="{{policy_rule}}" Process="{{process_name}}" ReputationScore={{reputation_score}} Detections={{detections}} LogID={{log_id}} ApexCentralHost={{params.apex_central_host}} Domain_Hierarchy={{params.apex_central_dntdom}}

@@ -1,0 +1,150 @@
+vendor: paloalto
+product: panos
+version: "10.0"
+log_type: file-forwarding-cef
+description: |
+  PAN-OS 10.0 File Forwarding log (sometimes called "File" or "File
+  Submission" log) emitted in CEF. Generated when a File Blocking or
+  WildFire Analysis Security Profile forwards a file to WildFire or
+  logs a hit without forwarding.
+
+  Per-dispatch customization via cef_extension_overrides /
+  cef_header_overrides; see `traffic-cef.yaml` for architecture.
+
+  Source-of-truth:
+    - PAN-OS 10.0 CEF Configuration Guide:
+        https://docs.paloaltonetworks.com/content/dam/techdocs/en_US/pdf/cef/pan-os-10-0-cef-configuration-guide.pdf
+
+format: cef
+transport: [udp_syslog, tcp_syslog, file, beats]
+
+ocsf:
+  class: security_finding
+  category_uid: 2
+  class_uid: 2004
+
+cef_header:
+  device_vendor:  "Palo Alto Networks"
+  device_product: "PAN-OS"
+  device_version: "10.0.0"
+  signature_id:   "file"
+  name:           "FILE"
+  severity:       4
+
+cef_mapping:
+  - { pa_field: receive_time,        cef_key: rt }
+  - { pa_field: serial,              cef_key: deviceExternalId }
+  - { pa_field: src_ip,              cef_key: src }
+  - { pa_field: dst_ip,              cef_key: dst }
+  - { pa_field: rule_name,           cef_key: PanOSRuleName }
+  - { pa_field: src_user,            cef_key: suser }
+  - { pa_field: application,         cef_key: app }
+  - { pa_field: virtual_system,      cef_key: PanOSVsys }
+  - { pa_field: src_zone,            cef_key: PanOSSrcZone }
+  - { pa_field: dst_zone,            cef_key: PanOSDstZone }
+  - { pa_field: session_id,          cef_key: externalId }
+  - { pa_field: src_port,            cef_key: spt }
+  - { pa_field: dst_port,            cef_key: dpt }
+  - { pa_field: protocol,            cef_key: proto }
+  - { pa_field: action,              cef_key: act }
+  - { pa_field: file_name,           cef_key: fname }
+  - { pa_field: file_type,           cef_key: fileType }
+  - { pa_field: file_size,           cef_key: fsize }
+  - { pa_field: file_hash,           cef_key: fileHash }
+  - { pa_field: direction,           cef_key: PanOSDirection }
+  - { pa_field: src_country,         cef_key: PanOSSrcLocation }
+  - { pa_field: dst_country,         cef_key: PanOSDstLocation }
+
+params:
+  hostname: { default: "PA-VM-01.example.local" }
+  serial:   { default: "001234567890" }
+  src_cidr: { default: "10.50.0.0/24" }
+  dst_pool:
+    default:
+      - "151.101.1.140"
+      - "104.18.32.7"
+      - "104.244.42.193"
+      - "203.0.113.99"
+
+fields:
+  - { name: pri, type: fixed, value: 134 }
+  - { name: rfc3164_ts, type: datetime, format: "%b %d %Y %H:%M:%S" }
+  - { name: hostname, type: param, param: hostname }
+
+  - { name: receive_time, type: datetime, format: "%b %d %Y %H:%M:%S" }
+  - { name: serial, type: param, param: serial }
+  - name: src_ip
+    type: cidr
+    cidr: ${params.src_cidr}
+  - name: dst_ip
+    type: choice
+    choices: ${params.dst_pool}
+  - name: rule_name
+    type: weighted_choice
+    choices: { "outbound-web": 0.40, "dmz-to-inside": 0.30, "block-malicious": 0.20, "any-allow": 0.10 }
+  - name: src_user
+    type: weighted_choice
+    choices:
+      "":                  0.60
+      'CORP\alice':        0.15
+      'CORP\bob':          0.15
+      'CORP\svc-deploy':   0.10
+  - name: application
+    type: weighted_choice
+    choices: { "web-browsing": 0.40, "ssl": 0.30, "smtp": 0.20, "ftp": 0.10 }
+  - { name: virtual_system, type: fixed, value: "vsys1" }
+  - name: src_zone
+    type: weighted_choice
+    choices: { trust: 0.70, dmz: 0.30 }
+  - name: dst_zone
+    type: fixed
+    value: "untrust"
+  - { name: session_id, type: int_range, min: 100000, max: 9999999 }
+  - { name: src_port, type: int_range, min: 1024, max: 65535 }
+  - name: dst_port
+    type: weighted_choice
+    choices: { "443": 0.50, "80": 0.30, "25": 0.10, "21": 0.10 }
+  - { name: protocol, type: fixed, value: "tcp" }
+  - name: action
+    type: weighted_choice
+    choices: { "forward": 0.60, "block": 0.20, "alert": 0.15, "continue": 0.05 }
+  - name: file_name
+    type: weighted_choice
+    choices:
+      "invoice.pdf":      0.20
+      "screenshot.png":   0.15
+      "malware.exe":      0.15
+      "update.dll":       0.10
+      "report.docx":      0.10
+      "data.zip":         0.10
+      "macro.xlsm":       0.10
+      "installer.msi":    0.10
+  - name: file_type
+    type: weighted_choice
+    choices:
+      "PE":           0.30
+      "PDF":          0.20
+      "ZIP":          0.15
+      "PNG":          0.10
+      "MSOffice":     0.10
+      "DLL":          0.10
+      "MSI":          0.05
+  - { name: file_size, type: int_range, min: 1024, max: 50000000 }
+  - name: file_hash
+    type: weighted_choice
+    choices:
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef": 0.34
+      "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210": 0.33
+      "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef": 0.33
+  - name: direction
+    type: weighted_choice
+    choices: { "client-to-server": 0.70, "server-to-client": 0.30 }
+  - name: src_country
+    type: weighted_choice
+    choices: { TW: 0.70, US: 0.20, JP: 0.10 }
+  - name: dst_country
+    type: weighted_choice
+    choices: { US: 0.55, TW: 0.20, IE: 0.10, NL: 0.05, DE: 0.05, JP: 0.05 }
+
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} CEF:0|{{cef_header.device_vendor}}|{{cef_header.device_product}}|{{cef_header.device_version}}|{{cef_header.signature_id}}|{{cef_header.name}}|{{cef_header.severity}}|{{cef_extensions}}

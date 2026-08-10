@@ -1,0 +1,116 @@
+# 完整新版 docker-compose.yml(對照原檔的 diff 集中於 logstash service 新增 + filebeat ports 移除 5044)
+# 用法:scp 過去後 diff 一次,確認沒問題再 mv 覆蓋
+name: soc-elk
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${STACK_VERSION}
+    container_name: <es-container>
+    restart: unless-stopped
+    environment:
+      - node.name=${NODE_NAME}
+      - cluster.name=${CLUSTER_NAME}
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - ES_JAVA_OPTS=-Xms${ES_HEAP_SIZE} -Xmx${ES_HEAP_SIZE}
+      - ingest.geoip.downloader.enabled=false
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -u \"elastic:$${ELASTIC_PASSWORD}\" http://localhost:9200/_cluster/health | grep -E '\"status\":\"(green|yellow)\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:${STACK_VERSION}
+    container_name: <kibana-container>
+    restart: unless-stopped
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      - SERVERNAME=elk.example.com
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_SYSTEM_PASSWORD}
+      - NODE_OPTIONS=--max-old-space-size=2048
+      - XPACK_REPORTING_ROLES_ENABLED=false
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=${KIBANA_ENCRYPTED_SAVED_OBJECTS_KEY}
+      - XPACK_SECURITY_ENCRYPTIONKEY=${KIBANA_SECURITY_ENCRYPTION_KEY}
+      - XPACK_REPORTING_ENCRYPTIONKEY=${KIBANA_REPORTING_ENCRYPTION_KEY}
+    volumes:
+      - kibana_data:/usr/share/kibana/data
+    ports:
+      - "5601:5601"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5601/api/status | grep -E '\"level\":\"available\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:${STACK_VERSION}
+    container_name: <filebeat-container>
+    restart: unless-stopped
+    user: root
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+    volumes:
+      - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - filebeat_data:/usr/share/filebeat/data
+    ports:
+      # 5044 已移到 logstash;filebeat 維持只吃 syslog
+      - "1514:9514/tcp"
+      - "514:9514/udp"
+    command: ["filebeat", "-e", "--strict.perms=false"]
+
+  # ───────────── 新增 logstash service(2026-05-08) ─────────────
+  # 用途:接 5044/Beats lumberjack input,forward 到同一個 incoming-* index。
+  # CyberRange catalog 的 transport: [beats] 之前是空頭支票,這個 service 是
+  # 它的真正入口。CyberRange engine 目前沒 native Beats client,實際 Beats
+  # shipper 仍需另起 filebeat agent 才會用到。
+  logstash:
+    image: docker.elastic.co/logstash/logstash:${STACK_VERSION}
+    container_name: <logstash-container>
+    restart: unless-stopped
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - LS_JAVA_OPTS=-Xms${LOGSTASH_HEAP_SIZE:-512m} -Xmx${LOGSTASH_HEAP_SIZE:-512m}
+      - PIPELINE_WORKERS=2
+      - XPACK_MONITORING_ENABLED=false
+    volumes:
+      - ./logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - ./logstash/pipeline/cyberrange.conf:/usr/share/logstash/pipeline/cyberrange.conf:ro
+      - logstash_data:/usr/share/logstash/data
+    ports:
+      - "5044:5044"   # Beats input
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9600/_node/stats?pretty | grep -E '\"status\":\"green\"' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+volumes:
+  es_data:
+  kibana_data:
+  filebeat_data:
+  logstash_data:

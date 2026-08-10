@@ -1,0 +1,497 @@
+vendor: apache
+product: httpd
+version: "2.4"
+log_type: access.combined-cef
+description: |
+  Apache HTTP Server 2.4 access log AFTER an upstream emitter has
+  re-shaped it as ArcSight Common Event Format (CEF). This is the wire
+  form that arrives at SIEMs running ArcSight ESM / ArcSight Logger or
+  any CEF-only ingest path (Splunk Connect for Syslog, Microsoft Sentinel
+  CEF-via-AMA, IBM QRadar CEF DSM, Securonix, etc).
+
+  Sibling catalog (same Apache event, NATIVE NCSA combined wire form):
+    catalog/apache/httpd/2.4/access-combined.yaml
+
+  IMPORTANT — Apache httpd does NOT emit CEF natively. The default
+  `combined` LogFormat (see sibling) only produces the NCSA extended
+  combined line. CEF appears only after one of these upstream re-emitters
+  has parsed the native access log and re-shaped it:
+
+    1. ArcSight SmartConnector for Apache HTTP Server Access Multiple
+       File (the canonical CEF emitter — its 8.3.0 Configuration Guide
+       § "Device Event Mapping to ArcSight Fields" page 16 defines the
+       authoritative ArcSight ESM field map this catalog implements).
+    2. Apache `LogFormat ... cef` custom directive — admin-authored
+       template that emits CEF directly from httpd by composing
+       `CEF:0|Apache|apache|...` strings using mod_log_config tokens.
+       Two production-quality variants are widely cited (Razlee Audit
+       docs / OpenText ArcSight community thread 159002); this catalog
+       implements the HTTP variant.
+    3. Custom rsyslog / syslog-ng / NXLog / fluent-bit relay running an
+       admin-authored template that wraps the parsed Apache combined
+       body in a CEF header.
+
+  This sibling exists because real SOC deployments receive the SAME
+  Apache access event in BOTH wire forms depending on the path the log
+  took to reach the SIEM:
+
+    apache  →  CustomLog file → filebeat/rsyslog → native combined
+                                                   over TCP/5044/514
+                                                   (sibling catalog)
+
+    apache  →  ArcSight SmartConnector OR
+               apache LogFormat "...cef" directive
+                                  →  CEF on TCP/UDP 514  →
+                                     Wazuh built-in `cef` decoder
+                                     / ArcSight ESM (THIS CATALOG)
+
+  Source-of-truth (URLs fetched 2026-05-15):
+    - ArcSight SmartConnector for Apache HTTP Server Access Multiple
+      File Configuration Guide 8.3.0, page 16 "Apache HTTP Server
+      Access Multiple File Mappings to ArcSight ESM Fields":
+        https://www.microfocus.com/documentation/arcsight/arcsight-smartconnectors/pdfdoc/apache-http-server-access-multiple-file/apache-http-server-access-multiple-file.pdf
+      Mapping table (verbatim):
+        Agent (Connector) Severity  → High = 400..599; Medium = 300..399; Low = 0..299
+        Application Protocol        → 'http'
+        Destination Process Name    → 'apache'
+        Device Custom Number 1      → Token12 (response time / %T)
+        Device Custom String 3      → Length
+        Device Custom String 4      → Referer
+        Device Custom String 5      → Token13 (vhost / %v)
+        Device Event Class ID       → ReturnCode (HTTP status — %>s)
+        Device Process Name         → 'apache'
+        Device Product              → 'apache'
+        Device Receipt Time         → Date (%t)
+        Device Severity             → ReturnCode (HTTP status — %>s)
+        Device Vendor               → 'Apache'
+        Name                        → Entire (full request line)
+        Request Client Application  → UserAgent
+        Request Method              → Method (%m)
+        Request URL                 → URL (%U + %q)
+        Source Address              → SourceHost (%h / %a)
+        Source User ID              → UserID (%u)
+        Transport Protocol          → 'TCP'
+    - SmartConnector for Apache HTTP Server Syslog Configuration Guide
+      (sibling product, same vendor/product CEF header conventions):
+        https://community.opentext.com/cybersec/threat-detect-response/f/discussions/1589104
+    - OpenText/ArcSight community discussion 159002 "Apache Access logs
+      in CEF over Syslog" — production-grade Apache `LogFormat ... cef`
+      directive plus rendered CEF sample line. Cited as primary source
+      for the wire form this catalog renders (URL fetched 2026-05-15):
+        https://community.opentext.com/cyberres/arcsight/f/discussions/159002/apache-access-logs-in-cef-over-syslog/1889790
+    - Razlee Audit "Configuring CEF output for Apache web server" —
+      independent second source confirming the same LogFormat directive
+      shape (HTTP + HTTPS variants):
+        https://www.razlee.com/manuals/audit/Content/Documents/Audit/Configuring%20CEF%20output%20for.htm
+    - ArcSight Common Event Format (CEF) Implementation Standard
+      (header structure + extension dictionary):
+        https://www.microfocus.com/documentation/arcsight/arcsight-smartconnectors-8.4/pdfdoc/cef-implementation-standard/cef-implementation-standard.pdf
+    - Microsoft Sentinel CEF key → CommonSecurityLog field mapping
+      (confirms standard CEF extension keys this catalog emits are the
+      lingua franca every downstream CEF parser normalizes against):
+        https://learn.microsoft.com/en-us/azure/sentinel/cef-name-mapping
+
+  Authoritative production `LogFormat ... cef` directive (OpenText
+  community 159002 / Razlee Audit, HTTP variant — both sources agree
+  verbatim):
+
+    LogFormat "CEF:0|Apache|apache||%>s|%m %U%q|Unknown|end=%{%b %d %Y %H:%M:%S}t app=HTTP cs2=%H suser=%u shost=%h src=%a dhost=%V dpt=%p dproc=apache request=%U requestMethod=%m fname=%f cs1Label=Virtual Host cs1=%v cn1Label=Response Time cn1=%T out=%B cs4Label=Referer cs4=%{Referer}i dvchost=%v dvc=%A deviceProcessName=apache_access_log requestClientApplication=%{User-Agent}i cs3Label=X-Forwarded-For cs3=%{X-Forwarded-For}i" cef
+
+  CEF header slot mapping (from the directive above):
+    CEF:Version           = 0
+    Device Vendor         = Apache
+    Device Product        = apache              (lowercase — matches both
+                                                 the SmartConnector PDF
+                                                 page 16 "Device Product
+                                                 = 'apache'" mapping AND
+                                                 the OpenText community
+                                                 LogFormat directive)
+    Device Version        = (empty)             (SmartConnector PDF does
+                                                 NOT map Device Version
+                                                 for the Access Multiple
+                                                 File connector — the
+                                                 community directive
+                                                 leaves the slot empty
+                                                 between pipes; catalog
+                                                 emits "2.4" to surface
+                                                 the actual httpd version
+                                                 for SOC pivoting while
+                                                 staying within the same
+                                                 slot semantics)
+    Device Event Class ID = %>s (HTTP status)   (PDF page 16:
+                                                 "Device Event Class ID
+                                                 → ReturnCode")
+    Name                  = %m %U%q             (request line summary —
+                                                 PDF page 16: "Name →
+                                                 Entire")
+    Severity              = Unknown / %>s       (community variants
+                                                 differ — HTTP variant
+                                                 emits "Unknown" literal,
+                                                 HTTPS variant emits the
+                                                 status code itself.
+                                                 SmartConnector PDF
+                                                 derives "Agent Severity"
+                                                 by status range. We map
+                                                 the status range here
+                                                 in `cef_severity` so
+                                                 ArcSight ESM
+                                                 agentSeverity matches
+                                                 PDF mapping; rule
+                                                 authors can also pivot
+                                                 on the same value.)
+
+  Real CEF wire-format sample (composed strictly from the authoritative
+  LogFormat directive cited above; equivalent to the OpenText community
+  159002 sample form):
+
+    <134>May 15 10:38:14 web-prd-01 apache: CEF:0|Apache|apache|2.4|200|GET /index.html|Low|end=May 15 2026 10:38:14 app=HTTP cs2=HTTP/1.1 suser=- shost=203.0.113.45 src=203.0.113.45 dhost=www.example.com dpt=80 dproc=apache request=/index.html requestMethod=GET fname=/var/www/html/index.html cs1Label=Virtual Host cs1=www.example.com cn1Label=Response Time cn1=125 out=2326 cs4Label=Referer cs4=https://www.google.com/ dvchost=www.example.com dvc=10.0.10.20 deviceProcessName=apache_access_log requestClientApplication=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 cs3Label=X-Forwarded-For cs3=-
+
+format: cef
+transport: [udp_syslog, tcp_syslog, file, beats]
+
+ocsf:
+  class: http_activity
+  category_uid: 4
+  class_uid: 4002
+
+# ──────────────── DetectOps v2 metadata ────────────────
+# Apache combined access log is baseline web visibility — most CEF lines do NOT
+# trigger alerts. Detection rules layer on top of `requestMethod`, `request`,
+# `cs4` (Referer), `requestClientApplication` (UA), and `cs3` (X-Forwarded-For)
+# pivoting on attack patterns. Sigma overlay matches the native sibling.
+detections:
+  wazuh:
+    # Wazuh built-in `cef` decoder handles the header + extension parsing;
+    # no custom apache-cef decoder needed because the SmartConnector /
+    # LogFormat directive already normalized the body into named extensions.
+    - decoder: cef
+  sigma:
+    - rule: web_apache_threats_keywords
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/web
+  elk_detection: []  # TBD
+
+mythos_alignment:
+  # Same alignment as native sibling — baseline web visibility (R6) plus
+  # active web-attack detection sitting on top (R1).
+  risk_refs: [R6]
+  pa_refs: []
+  ttx_class: weeks
+
+regression:
+  baseline_alert_count: 0
+  baseline_ttd_ms: 5000
+
+params:
+  # Syslog facility.severity for the wrapping <PRI> — local0.info (16*8+6=134)
+  # is the typical default when rsyslog / NXLog forwards an Apache CEF stream.
+  pri:
+    default: 134
+  syslog_host:
+    default: "web-prd-01"
+  device_vendor:
+    default: "Apache"
+  device_product:
+    default: "apache"  # SmartConnector PDF p16: Device Product = 'apache' (lowercase)
+  device_version:
+    default: "2.4"
+  device_process_name:
+    default: "apache_access_log"
+  vhost:
+    default: "www.example.com"
+  # dvc — IP address of the Apache host. Apache's %A token resolves to the
+  # local server IP that served the connection.
+  device_ip:
+    default: "10.0.10.20"
+  client_pool:
+    default:
+      - "203.0.113.45"
+      - "198.51.100.22"
+      - "172.58.21.7"
+      - "84.246.85.131"
+      - "180.149.227.3"
+      - "10.0.0.55"
+
+fields:
+  - name: pri
+    type: param
+    param: pri
+
+  # RFC3164 syslog timestamp on the wrapping syslog header. CEF body
+  # carries its own `end=` timestamp (CEF canonical date format
+  # "MMM dd yyyy HH:mm:ss" per ArcSight CEF Implementation Standard).
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  # `end=` CEF extension — canonical ArcSight date format.
+  # Matches the `end=%{%b %d %Y %H:%M:%S}t` token in the community LogFormat
+  # directive. SmartConnector PDF p16 maps "Device Receipt Time → Date".
+  - name: cef_end
+    type: datetime
+    format: "%b %d %Y %H:%M:%S"
+
+  - name: syslog_host
+    type: param
+    param: syslog_host
+
+  # CEF header — Device Event Class ID = HTTP status (%>s).
+  # SmartConnector PDF p16: "Device Event Class ID → ReturnCode".
+  # CEF wire form requires this slot non-empty; even baseline 200 OK
+  # responses populate it with the numeric status.
+  - name: status
+    type: weighted_choice
+    choices:
+      "200": 0.55
+      "301": 0.05
+      "304": 0.10
+      "401": 0.05
+      "403": 0.05
+      "404": 0.10
+      "500": 0.05
+      "502": 0.05
+
+  # CEF severity — ArcSight Agent Severity per PDF p16:
+  #   High   = HTTP 400..599
+  #   Medium = HTTP 300..399
+  #   Low    = HTTP 0..299
+  # The community LogFormat HTTP variant emits the literal token "Unknown" in
+  # this slot; we honor the PDF authoritative mapping instead because Wazuh
+  # `cef` decoder + ArcSight ESM both pivot agentSeverity off this field.
+  # Rendered as the textual ArcSight severity bucket — downstream parsers
+  # tolerate either textual ("High") or numeric (0..10) per CEF Implementation
+  # Standard. The textual form matches the PDF authoritative mapping verbatim.
+  - name: cef_severity
+    type: template
+    template: "{% set s = status | int %}{% if s >= 400 %}High{% elif s >= 300 %}Medium{% else %}Low{% endif %}"
+
+  - name: method
+    type: weighted_choice
+    choices: { GET: 0.70, POST: 0.20, PUT: 0.03, DELETE: 0.02, HEAD: 0.05 }
+
+  # Request URL — %U (URL path) + %q (query string). PDF p16: "Request URL →
+  # URL". The community LogFormat directive emits `request=%U` only (no %q in
+  # HTTP variant; HTTPS variant prepends scheme/host). We render path+query
+  # combined so SQLi / LFI / open-redirect rules pivoting on `request=` can
+  # match the same shape as the native sibling.
+  - name: request_path
+    type: weighted_choice
+    choices:
+      "/":                          0.20
+      "/index.html":                0.10
+      "/api/v1/users":              0.10
+      "/api/v1/login":              0.10
+      "/admin/login.php":           0.05
+      "/wp-login.php":              0.05
+      "/.env":                      0.03
+      "/phpmyadmin/":               0.03
+      "/static/app.js":             0.10
+      "/favicon.ico":               0.10
+      "/api/v1/orders?id=1' OR 1=1--": 0.04
+      "/?cmd=cat%20/etc/passwd":    0.05
+      "/health":                    0.05
+
+  # CEF Name slot — PDF p16: "Name → Entire". Real ArcSight SmartConnector
+  # populates this with the request line summary `<METHOD> <URL>`.
+  - name: name_summary
+    type: template
+    template: "{{method}} {{request_path}}"
+
+  # %H — request protocol scheme. Community LogFormat directive emits this
+  # in `app=` (HTTP variant) and also `cs2=` (community convention).
+  # PDF p16: "Application Protocol → 'http'" (fixed string for connector).
+  # We render the actual scheme to differentiate http/https where applicable
+  # while preserving the literal `HTTP` for the `app=` slot per directive.
+  - name: app_protocol
+    type: fixed
+    value: "HTTP"
+
+  - name: protocol_version
+    type: weighted_choice
+    choices:
+      "HTTP/1.1": 0.80
+      "HTTP/2.0": 0.15
+      "HTTP/1.0": 0.05
+
+  # %u — authenticated user. SmartConnector PDF p16: "Source User ID → UserID".
+  # CEF extension key per community directive is `suser=%u`. Apache emits
+  # literal `-` when no auth user is present.
+  - name: source_user
+    type: weighted_choice
+    choices: { "-": 0.85, "alice": 0.05, "bob": 0.05, "admin": 0.05 }
+
+  # %a — client IP. SmartConnector PDF p16: "Source Address → SourceHost".
+  # CEF extension keys per community directive: `src=%a` AND `shost=%h`.
+  # We populate both with the same value (Apache's %h and %a resolve to
+  # the same IP when HostnameLookups Off — default).
+  - name: client_ip
+    type: choice
+    choices: ${params.client_pool}
+
+  # %V — vhost / dhost. CEF `dhost=%V` per community directive.
+  - name: dhost_vhost
+    type: param
+    param: vhost
+
+  # %v — canonical server name (vhost). CEF `cs1=%v` per community directive,
+  # `cs1Label=Virtual Host`. SmartConnector PDF p16: Token13 → "Device Custom
+  # String 5" but the community LogFormat puts vhost in cs1; this catalog
+  # follows the LogFormat directive (real wire form) over the PDF Token13
+  # numbering since the LogFormat is what physically renders.
+  - name: cs1_vhost
+    type: param
+    param: vhost
+
+  # %p — server port. CEF `dpt=%p` per community directive.
+  - name: dst_port
+    type: weighted_choice
+    choices:
+      "80":  0.55
+      "443": 0.40
+      "8080": 0.03
+      "8443": 0.02
+
+  # %f — local filename Apache resolved the request to (DocumentRoot + URI).
+  # CEF `fname=%f` per community directive.
+  - name: fname_local
+    type: template
+    template: "/var/www/html{{request_path.split('?')[0]}}"
+
+  # %T — request handling time in seconds (integer). CEF `cn1=%T`,
+  # `cn1Label=Response Time` per community directive. SmartConnector PDF p16:
+  # "Device Custom Number 1 → Token12" — Token12 is %T in Apache's default
+  # `full` LogFormat ordering, so PDF and community directive agree.
+  - name: cn1_response_time
+    type: int_range
+    min: 1
+    max: 5000
+
+  # %B — response body bytes (always numeric, includes 0 — unlike %b in NCSA
+  # which emits `-` on zero). CEF `out=%B` per community directive.
+  # SmartConnector PDF p16: "Device Custom String 3 → Length" — Length maps
+  # to %b/%B at the connector layer; community directive prefers `out=` for
+  # the standard CEF extension. We emit `out=` per the directive.
+  - name: out_bytes
+    type: weighted_choice
+    choices:
+      "0":      0.05    # %B emits 0 on zero bytes (NOT `-` like %b)
+      "326":    0.10
+      "1024":   0.15
+      "2326":   0.10
+      "5120":   0.15
+      "12480":  0.15
+      "45120":  0.15
+      "180224": 0.10
+      "524288": 0.05
+
+  # %{Referer}i — request Referer header. CEF `cs4=%{Referer}i`,
+  # `cs4Label=Referer` per community directive. SmartConnector PDF p16:
+  # "Device Custom String 4 → Referer" — matches.
+  - name: cs4_referer
+    type: weighted_choice
+    choices:
+      "-":                                       0.50
+      "https://www.google.com/":                 0.20
+      "https://example.com/login":               0.10
+      "https://example.com/dashboard":           0.10
+      "https://t.co/abc":                        0.05
+      "https://github.com/":                     0.05
+
+  # %{User-Agent}i — request User-Agent header. CEF
+  # `requestClientApplication=%{User-Agent}i` per community directive.
+  # SmartConnector PDF p16: "Request Client Application → UserAgent".
+  # NB: ArcSight prefers the long key `requestClientApplication` over a
+  # `cs*` slot for this — it's a first-class CEF Extension Dictionary key.
+  - name: request_client_application
+    type: weighted_choice
+    choices:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36": 0.45
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15": 0.20
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15": 0.10
+      "curl/8.4.0":                                                                  0.10
+      "python-requests/2.31.0":                                                      0.05
+      "sqlmap/1.7.12":                                                                0.03
+      "Mozilla/5.00 (Nikto/2.5.0)":                                                   0.02
+      "Go-http-client/1.1":                                                           0.05
+
+  # %{X-Forwarded-For}i — XFF header for proxy-fronted Apache. CEF
+  # `cs3=%{X-Forwarded-For}i`, `cs3Label=X-Forwarded-For` per community
+  # directive. Apache emits literal `-` when header is absent.
+  - name: cs3_xff
+    type: weighted_choice
+    choices:
+      "-":                          0.70
+      "203.0.113.45":               0.10
+      "198.51.100.22, 10.0.0.5":    0.10
+      "203.0.113.45, 198.51.100.1": 0.10
+
+  # %v / %A duplication — dvchost=%v (vhost name) and dvc=%A (server IP).
+  - name: dvc_ip
+    type: param
+    param: device_ip
+
+# CEF template — strict layout per ArcSight CEF Implementation Standard:
+#   <PRI>RFC3164-TS HOST APP: CEF:Version|DeviceVendor|DeviceProduct|DeviceVersion|SignatureID|Name|Severity|Extension
+# Header pipes are field separators; extensions are space-separated key=value
+# pairs. Inline comments below trace every slot back to either PDF page 16
+# of the SmartConnector Configuration Guide (PDF p16) or the OpenText
+# community 159002 LogFormat directive (cmty 159002).
+#
+# Header slots:
+#   Version (0)         — ArcSight CEF Implementation Standard
+#   Device Vendor       — "Apache"           (PDF p16: Device Vendor)
+#   Device Product      — "apache"           (PDF p16: Device Product, lowercase)
+#   Device Version      — "2.4"              (rendered for SOC pivoting;
+#                                             SmartConnector leaves this empty)
+#   DeviceEventClassId  — HTTP status %>s    (PDF p16: Device Event Class ID
+#                                             → ReturnCode)
+#   Name                — "<method> <url>"   (PDF p16: Name → Entire)
+#   Severity            — High/Medium/Low    (PDF p16: Agent Severity by
+#                                             HTTP status range)
+#
+# Extension slots (cmty 159002 directive verbatim, plus PDF p16 mapping):
+#   end                          ← Date / %t            (cmty 159002 / PDF p16)
+#   app                          ← "HTTP"               (cmty 159002 directive)
+#   cs2 / cs2Label="Protocol"    ← %H protocol version  (cmty 159002 — note:
+#                                                        cmty omits cs2Label
+#                                                        but Sentinel/Splunk
+#                                                        parsers expect it,
+#                                                        we add it per CEF
+#                                                        Implementation
+#                                                        Standard convention)
+#   suser                        ← %u                   (PDF p16: Source User ID;
+#                                                        cmty 159002: suser=%u)
+#   shost                        ← %h                   (cmty 159002)
+#   src                          ← %a                   (PDF p16: Source Address;
+#                                                        cmty 159002: src=%a)
+#   dhost                        ← %V                   (cmty 159002)
+#   dpt                          ← %p                   (cmty 159002)
+#   dproc                        ← "apache"             (PDF p16: Destination
+#                                                        Process Name; cmty
+#                                                        159002: dproc=apache)
+#   request                      ← %U + %q              (PDF p16: Request URL;
+#                                                        cmty 159002: request=%U)
+#   requestMethod                ← %m                   (PDF p16: Request Method;
+#                                                        cmty 159002:
+#                                                        requestMethod=%m)
+#   fname                        ← %f                   (cmty 159002)
+#   cs1 / cs1Label="Virtual Host" ← %v                  (cmty 159002)
+#   cn1 / cn1Label="Response Time" ← %T                 (PDF p16: DCN1→Token12;
+#                                                        cmty 159002)
+#   out                          ← %B                   (cmty 159002)
+#   cs4 / cs4Label="Referer"     ← %{Referer}i          (PDF p16: DCS4→Referer;
+#                                                        cmty 159002)
+#   dvchost                      ← %v                   (cmty 159002)
+#   dvc                          ← %A                   (cmty 159002)
+#   deviceProcessName            ← "apache_access_log"  (cmty 159002)
+#   requestClientApplication     ← %{User-Agent}i       (PDF p16: Request
+#                                                        Client Application;
+#                                                        cmty 159002)
+#   cs3 / cs3Label="X-Forwarded-For" ← %{X-Forwarded-For}i (cmty 159002)
+#
+# Application Protocol "http" (PDF p16) and Transport Protocol "TCP" (PDF p16)
+# are connector-injected fixed values; cmty 159002 directive emits `app=HTTP`
+# explicitly so we follow the directive form (uppercase) rather than the
+# connector-derived lowercase form. Downstream CEF parsers are case-insensitive
+# on extension values.
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{syslog_host}} apache: CEF:0|{{params.device_vendor}}|{{params.device_product}}|{{params.device_version}}|{{status}}|{{name_summary}}|{{cef_severity}}|end={{cef_end}} app={{app_protocol}} cs2Label=Protocol cs2={{protocol_version}} suser={{source_user}} shost={{client_ip}} src={{client_ip}} dhost={{dhost_vhost}} dpt={{dst_port}} dproc=apache request={{request_path}} requestMethod={{method}} fname={{fname_local}} cs1Label=Virtual Host cs1={{cs1_vhost}} cn1Label=Response Time cn1={{cn1_response_time}} out={{out_bytes}} cs4Label=Referer cs4={{cs4_referer}} dvchost={{dhost_vhost}} dvc={{dvc_ip}} deviceProcessName={{params.device_process_name}} requestClientApplication={{request_client_application}} cs3Label=X-Forwarded-For cs3={{cs3_xff}}

@@ -1,0 +1,421 @@
+vendor: kaspersky
+product: ksc
+version: "13.x"
+log_type: av.detection
+description: |
+  Kaspersky Security Center (KSC) 13.x threat-detection event forwarded to
+  a SIEM as **CEF over RFC3164 syslog**. CEF is what every real SIEM
+  integration in the wild ships (QRadar/ArcSight/Splunk all use CEF per
+  Kaspersky's own SIEM export wizard; LEEF is the QRadar-specific
+  alternative; native RFC 5424 structured-data form `[event@23668 ...]` is
+  what comes out when the admin picks "Syslog format" instead of CEF, and
+  is the only mode that can carry application-specific events — but it is
+  rarely what SIEM teams ingest).
+
+  KSC's `siem_conversion_rules.xml` interprets internal events
+  (GNRL_EV_VIRUS_FOUND, GNRL_EV_OBJECT_BLOCKED, GNRL_EV_OBJECT_CURED,
+  GNRL_EV_OBJECT_DELETED, GNRL_EV_OBJECT_QUARANTINED, GNRL_EV_OBJECT_NOTCURED,
+  GNRL_EV_SUSPICIOUS_OBJECT_FOUND, GNRL_EV_ATTACK_DETECTED, etc.) into the
+  CEF header `DeviceEventClassId` slot. The header fields are frozen:
+  vendor `KasperskyLab`, product `SecurityCenter`, product-version
+  `11.0.0.1131` (KSC build, NOT the KES agent version — KES version
+  travels in `cs3`). Header severity is 1..10; observed `4` for ordinary
+  AV events, higher for blocks/ransomware-class verdicts.
+
+  Source-of-truth for wire format:
+    - Wazuh issue #5307 — verbatim raw KSC CEF line for
+      GNRL_EV_VIRUS_FOUND_AND_BLOCKED, including the embedded multi-line
+      `msg=Event type: ... Application: ... Component: ... Result\Description:`
+      block plus the cs1..cs10 extensions:
+      https://github.com/wazuh/wazuh/issues/5307
+    - Wazuh issue #12072 — verbatim raw KSC CEF for
+      GNRL_EV_ATTACK_DETECTED + Sekoia/Graylog wrapper:
+      https://github.com/wazuh/wazuh/issues/12072
+    - tread-lightly/KSC_decoders_and_rules_for_Wazuh (community Wazuh
+      decoder + rules) — confirms `event@23668` prematch, lists every
+      `et=` code KSC actually emits and provides full RFC5424 sample:
+      https://github.com/tread-lightly/KSC_decoders_and_rules_for_Wazuh
+    - Kaspersky Online Help "Converting events to the CEF or LEEF format"
+      (KSC 13.0 / 15.1) — declares the conversion-rule architecture and
+      lists supported SIEMs (QRadar via LEEF; ArcSight + Splunk via CEF):
+      https://support.kaspersky.com/KSC/15.1/en-US/298793.htm
+      https://support.kaspersky.com/ksc/13.0/89277
+    - Splunk Community "Kaspersky GNRL_EV_VIRUS_FOUND action value" —
+      confirms GNRL_EV_VIRUS_FOUND is followed by one of GNRL_EV_OBJECT_CURED
+      / GNRL_EV_OBJECT_DELETED / GNRL_EV_OBJECT_QUARANTINED /
+      GNRL_EV_OBJECT_NOTCURED to indicate the action taken:
+      https://community.splunk.com/t5/Archive/Kaspersky-GNRL-EV-VIRUS-FOUND-quot-action-quot-value/m-p/431818
+    - Kaspersky Threats database — verdict naming
+      (Trojan-Ransom.Win32.Wanna.*, Trojan-Ransom.Win32.Lockbit.*,
+      HEUR:Trojan.Win32.Generic, PDM:* heuristic prefix, not-a-virus:*):
+      https://threats.kaspersky.com/en/threat/Trojan-Ransom.Win32.Lockbit.gen/
+      https://threats.kaspersky.com/en/class/Trojan-Ransom/
+    - Securelist "New malware classification system" — the canonical
+      `<Type>.<Platform>.<Family>.<Variant>` schema:
+      https://securelist.com/new-malware-classification-system/29875/
+
+  Real verbatim wire sample (from Wazuh issue #5307, line-folded for
+  readability; on the wire it is a single line with literal `\r\n` inside
+  the `msg=` value):
+    CEF:0|KasperskyLab|SecurityCenter|11.0.0.1131|GNRL_EV_VIRUS_FOUND_AND_BLOCKED|Dangerous link blocked|4|
+    msg=Event type: Dangerous link blocked\r\nApplication: Google Chrome\r\n
+    Component: Web Threat Protection\r\nResult\Description: Blocked\r\n
+    Result\Threat level: High\r\nObject: https://.../favicon.ico\r\n
+    Database release date: 22/06/2020 09:14:00
+    rt=1592928663000 cs9=SERVER01 cs9Label=GroupName dhost=SERVER01 dst=192.168.1.2
+    cs2=KES cs2Label=ProductName cs3=11.0.0.0 cs3Label=ProductVersion
+    cs10=Web Threat Protection cs10Label=TaskName cs5=https://.../favicon.ico cs5Label=ObjectName
+    cs1=https://.../favicon.ico cs1Label=VirusName duser=PEPITO
+    cs6=70 cs6Label=DetectionType cs7={"engine":3,"method":5} cs7Label=ExtraAttrib
+
+  SIEM rule mapping: covers all 8 AV_Kaspersky rules from
+  a reference SIEM ruleset. Rules are 全區 only (no 來源/目的 axis
+  split). `host_class` drives workstation vs server rule family
+  (workstation 4 + server 4 = 8 total).
+
+  Rule coverage matrix:
+    單一主機偵測大量病毒          130090
+    單一主機偵測勒索病毒          130055
+    單一主機偵測病毒(已刪除)      130044
+    單一主機偵測病毒(未刪除)      130018
+    伺服器主機偵測大量病毒        130080
+    伺服器主機偵測病毒(已刪除)    130134
+    伺服器主機偵測病毒(未刪除)    130074
+    伺服器主機感染勒索軟體病毒    130109
+
+format: cef
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+detections:
+  wazuh:
+    # Wazuh built-in `cef` decoder parses the header + extensions, but the
+    # KES.event.code field that downstream rules match on lives inside
+    # DeviceEventClassId — communities ship a `Kaspersky` decoder family
+    # (e.g. tread-lightly/KSC_decoders_and_rules_for_Wazuh) that extracts
+    # it. Without that decoder the 8 rule_ids below still fire on the
+    # generic CEF parse via DeviceEventClassId regex.
+    - decoder: cef
+    - rule_id: 130090  # AV_Kaspersky_單一主機偵測大量病毒
+      level: 7
+    - rule_id: 130055  # AV_Kaspersky_單一主機偵測勒索病毒
+      level: 7
+    - rule_id: 130044  # AV_Kaspersky_單一主機偵測病毒(已刪除)
+      level: 7
+    - rule_id: 130018  # AV_Kaspersky_單一主機偵測病毒(未刪除)
+      level: 7
+    - rule_id: 130080  # AV_Kaspersky_伺服器主機偵測大量病毒
+      level: 7
+    - rule_id: 130134  # AV_Kaspersky_伺服器主機偵測病毒(已刪除)
+      level: 7
+    - rule_id: 130074  # AV_Kaspersky_伺服器主機偵測病毒(未刪除)
+      level: 7
+    - rule_id: 130109  # AV_Kaspersky_伺服器主機感染勒索軟體病毒
+      level: 7
+  sigma:
+    - rule: kaspersky_ksc_av_detection
+      ref: https://github.com/SigmaHQ/sigma  # community contrib pending
+  elk_detection:
+    - kibana_rule_id: cef-av-malware-detected
+      severity: high
+    - kibana_rule_id: cef-av-ransomware-detected
+      severity: critical
+
+mythos_alignment:
+  risk_refs: [R1, R4]
+  pa_refs: [PA10]
+  ttx_class: rapid
+
+regression:
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 4000
+
+params:
+  workstation_pool:
+    default:
+      - "DESKTOP-WIN10-A1"
+      - "DESKTOP-WIN11-B2"
+      - "LAPTOP-USR-23"
+      - "LAPTOP-CONS-04"
+      - "DESKTOP-MKT-09"
+  server_pool:
+    default:
+      - "SRV-FILE01"
+      - "SRV-DC01"
+      - "WEB-PRD-02"
+      - "DB-MSSQL-01"
+      - "APP-ERP-03"
+  internal_subnet:
+    default: "10.0.20.0/24"
+  server_subnet:
+    default: "10.0.50.0/24"
+  user_pool:
+    default: ["alice", "bob", "svc_backup", "contractor_a", "admin_b"]
+
+fields:
+  - name: pri
+    type: fixed
+    value: 134
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  # CEF `rt=` is epoch milliseconds in real samples (1592928663000).
+  - name: cef_rt_epoch_ms
+    type: datetime
+    format: "epoch"
+
+  - name: host_class
+    type: weighted_choice
+    choices:
+      workstation: 0.60
+      server:      0.40
+
+  - name: workstation_host
+    type: choice
+    choices: ${params.workstation_pool}
+
+  - name: server_host
+    type: choice
+    choices: ${params.server_pool}
+
+  - name: shost
+    type: template
+    template: "{% if host_class == 'server' %}{{server_host}}{% else %}{{workstation_host}}{% endif %}"
+
+  - name: workstation_ip
+    type: cidr
+    cidr: ${params.internal_subnet}
+
+  - name: server_ip
+    type: cidr
+    cidr: ${params.server_subnet}
+
+  - name: dst_ip
+    type: template
+    template: "{% if host_class == 'server' %}{{server_ip}}{% else %}{{workstation_ip}}{% endif %}"
+
+  - name: user_name
+    type: choice
+    choices: ${params.user_pool}
+
+  # KSC DeviceEventClassId values from siem_conversion_rules.xml.
+  # GNRL_EV_VIRUS_FOUND = detected only (action TBD); the *_AND_* variants
+  # carry the action; ransomware detections often arrive as
+  # GNRL_EV_OBJECT_BLOCKED with a Trojan-Ransom.* verdict; *_CURED/_DELETED/
+  # _QUARANTINED encode the action taken (Splunk Community thread,
+  # README of tread-lightly/KSC_decoders_and_rules_for_Wazuh).
+  - name: event_class_id
+    type: weighted_choice
+    choices:
+      "GNRL_EV_VIRUS_FOUND":              0.18
+      "GNRL_EV_VIRUS_FOUND_AND_BLOCKED":  0.10
+      "GNRL_EV_OBJECT_CURED":             0.15
+      "GNRL_EV_OBJECT_DELETED":           0.15
+      "GNRL_EV_OBJECT_QUARANTINED":       0.10
+      "GNRL_EV_OBJECT_NOTCURED":          0.10
+      "GNRL_EV_OBJECT_BLOCKED":           0.10
+      "GNRL_EV_SUSPICIOUS_OBJECT_FOUND":  0.07
+      "GNRL_EV_VIRUS_FOUND_AND_PASSED":   0.05
+
+  # Human-readable event name (Kaspersky's English UI string, slot 6 of
+  # CEF header). Real samples observed: "Dangerous link blocked",
+  # "Malicious object detected", "Object disinfected", "Network attack
+  # detected". Kept literal so decoders can pattern-match.
+  - name: event_name
+    type: weighted_choice
+    choices:
+      "Malicious object detected":   0.35
+      "Object disinfected":          0.15
+      "Object deleted":              0.15
+      "Object quarantined":          0.10
+      "Object not disinfected":      0.10
+      "Dangerous link blocked":      0.08
+      "Suspicious object detected":  0.07
+
+  # Header severity (CEF spec 0..10). Real Kaspersky samples cluster on
+  # 4/7/8 for AV events; ransomware/blocked verdicts go higher.
+  - name: severity
+    type: weighted_choice
+    choices:
+      "4":  0.20
+      "7":  0.35
+      "8":  0.25
+      "9":  0.15
+      "10": 0.05
+
+  # Kaspersky verdict names — canonical
+  # `<Type>.<Platform>.<Family>.<Variant>` (Securelist 2007 classification
+  # system, still in use). `HEUR:` prefix = heuristic engine; `PDM:` =
+  # proactive defence (behavioral); `not-a-virus:` = riskware/PUA.
+  # All families below have live entries at threats.kaspersky.com.
+  - name: threat_name
+    type: weighted_choice
+    choices:
+      "HEUR:Trojan.Win32.Generic":              0.15
+      "Trojan-Ransom.Win32.Lockbit.gen":        0.10
+      "Trojan-Ransom.Win32.Wanna.m":            0.08
+      "Trojan-Ransom.Win32.Gen.gen":            0.08
+      "Trojan-Ransom.Win32.Conti.a":            0.07
+      "Trojan-Banker.Win32.Emotet.amwl":        0.08
+      "HEUR:Backdoor.Win32.Cobalt.gen":         0.07
+      "PDM:Trojan.Win32.Generic":               0.07
+      "Email-Worm.Win32.Mydoom.l":              0.05
+      "not-a-virus:HEUR:AdWare.Script.Pusher.gen": 0.05
+      "not-a-virus:RiskTool.Win64.BitcoinMiner.aj": 0.05
+      "Trojan-Dropper.Win32.Agent.bagym":       0.08
+      "HEUR:Exploit.Script.Generic":            0.07
+
+  - name: file_path
+    type: weighted_choice
+    choices:
+      "C:\\\\Users\\\\Public\\\\Downloads\\\\invoice_2026.exe":            0.18
+      "C:\\\\Users\\\\alice\\\\AppData\\\\Local\\\\Temp\\\\update.exe":    0.15
+      "C:\\\\inetpub\\\\wwwroot\\\\uploads\\\\shell.aspx":                 0.13
+      "C:\\\\ProgramData\\\\Kaspersky Lab\\\\quarantine\\\\threat.bin":    0.10
+      "D:\\\\Share\\\\HR\\\\readme_decrypt.txt":                           0.12
+      "/var/tmp/.cache/payload.sh":                                        0.10
+      "C:\\\\Windows\\\\Temp\\\\7z_extract\\\\payload.dll":                0.12
+      "C:\\\\Users\\\\bob\\\\Desktop\\\\fake_invoice.pdf.exe":             0.10
+
+  - name: file_name
+    type: weighted_choice
+    choices:
+      "invoice_2026.exe":     0.18
+      "update.exe":           0.15
+      "shell.aspx":           0.13
+      "threat.bin":           0.10
+      "readme_decrypt.txt":   0.12
+      "payload.sh":           0.10
+      "payload.dll":          0.12
+      "fake_invoice.pdf.exe": 0.10
+
+  - name: file_sha256
+    type: faker
+    method: sha256
+
+  - name: file_md5
+    type: faker
+    method: md5
+
+  # KSC Component / TaskName — the KES module that produced the detection.
+  # Strings are literal from real Wazuh issue samples
+  # (Web Threat Protection / Network Threat Protection / File Threat
+  # Protection / Behavior Detection / Mail Threat Protection) and from
+  # threats.kaspersky.com / KES Online Help.
+  - name: component
+    type: weighted_choice
+    choices:
+      "File Threat Protection":     0.45
+      "Behavior Detection":         0.18
+      "Web Threat Protection":      0.15
+      "Mail Threat Protection":     0.10
+      "Network Threat Protection":  0.07
+      "AMSI Protection":            0.05
+
+  # Result\Description string inside msg= block. Maps to KSC's English UI
+  # outcome vocabulary. "Disinfected" / "Deleted" / "Quarantined" /
+  # "Blocked" / "Not disinfected" appear in the real samples and in the
+  # GNRL_EV_OBJECT_* event-class structure.
+  - name: result_description
+    type: weighted_choice
+    choices:
+      "Disinfected":      0.25
+      "Deleted":          0.20
+      "Quarantined":      0.15
+      "Blocked":          0.15
+      "Not disinfected":  0.10
+      "Skipped":          0.08
+      "Detected":         0.07
+
+  # Result\Threat level — KSC UI string (Low/Medium/High/Critical).
+  - name: threat_level
+    type: weighted_choice
+    choices:
+      "Low":      0.10
+      "Medium":   0.25
+      "High":     0.50
+      "Critical": 0.15
+
+  # Object\Type string from msg= block. Real samples: "Web page" for URL
+  # detections, "File" for filesystem detections, "Network packet" for
+  # GNRL_EV_ATTACK_DETECTED.
+  - name: object_type
+    type: weighted_choice
+    choices:
+      "File":            0.65
+      "Web page":        0.20
+      "Network packet":  0.10
+      "Process":         0.05
+
+  # cs6Label=DetectionType — integer code from real samples ("70" observed).
+  # Kept as 0..255 since the literal table is not in public docs.
+  - name: detection_type
+    type: int_range
+    min: 1
+    max: 255
+
+  # cs7Label=ExtraAttrib — JSON blob in real samples:
+  # {"engine":3,"method":5}. "engine" encodes which engine fired
+  # (3=heuristic, 1=signature, 2=KSN cloud rep — observed mapping but not
+  # officially documented). Kept as compact JSON.
+  - name: engine_code
+    type: weighted_choice
+    choices:
+      "1": 0.30   # signature (observed)
+      "2": 0.20   # KSN cloud reputation (observed)
+      "3": 0.30   # heuristic (observed)
+      "4": 0.10   # behavioral
+      "5": 0.10   # ML static
+
+  - name: method_code
+    type: int_range
+    min: 0
+    max: 9
+
+  # KES agent version travels in cs3 (NOT in the CEF header — header
+  # version is the KSC product version 11.0.0.1131, which is fixed).
+  - name: kes_version
+    type: weighted_choice
+    choices:
+      "11.11.0.452":  0.30
+      "11.10.0.399":  0.25
+      "11.9.0.351":   0.20
+      "11.7.0.669":   0.10
+      "12.0.0.465":   0.10   # KES for Linux
+      "11.0.0.0":     0.05   # legacy
+
+  # Database release date inside msg= block. Format from real sample:
+  # DD/MM/YYYY HH:MM:SS.
+  - name: db_date
+    type: datetime
+    format: "%d/%m/%Y %H:%M:%S"
+
+  # KSC administration group (gn= / cs9). Real samples: "Managed devices",
+  # custom group names. "Управляемые устройства" appears in RU
+  # localization; English deployments use "Managed devices".
+  - name: group_name
+    type: weighted_choice
+    choices:
+      "Managed devices":           0.55
+      "Workstations":              0.20
+      "Servers":                   0.15
+      "Roaming":                   0.05
+      "Unassigned devices":        0.05
+
+# Wire format: CEF over RFC3164 syslog. CEF header is pipe-delimited,
+# extensions are space-delimited key=value. The `msg=` extension carries
+# Kaspersky's signature embedded multi-line key:value block (Event type /
+# Application / Component / Result\Description / Result\Threat level /
+# Object / Database release date / SHA256 / MD5), with literal `\r\n`
+# separators on the wire. `rt=` is epoch milliseconds (13-digit). cs1..cs10
+# extensions appear UNORDERED in real samples — engine emits them in a
+# consistent order for decoder regex matching but downstream parsers
+# must not assume order.
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{shost}} CEF:0|KasperskyLab|SecurityCenter|11.0.0.1131|{{event_class_id}}|{{event_name}}|{{severity}}|msg=Event type:     {{event_name}}\r\nApplication:     Kaspersky Endpoint Security for Windows\r\nComponent:     {{component}}\r\nResult\Description:     {{result_description}}\r\nResult\Threat level:     {{threat_level}}\r\nObject:     {{file_path}}\r\nObject\Type:     {{object_type}}\r\nDatabase release date:     {{db_date}}\r\nSHA256:     {{file_sha256}}\r\nMD5:     {{file_md5}} rt={{cef_rt_epoch_ms}}000 cs9={{group_name}} cs9Label=GroupName dhost={{shost}} dst={{dst_ip}} cs2=KES cs2Label=ProductName cs3={{kes_version}} cs3Label=ProductVersion cs10={{component}} cs10Label=TaskName cs5={{file_path}} cs5Label=ObjectName cs1={{threat_name}} cs1Label=VirusName duser={{user_name}} cs6={{detection_type}} cs6Label=DetectionType cs7={"engine":{{engine_code}},"method":{{method_code}}} cs7Label=ExtraAttrib fileHash={{file_sha256}}

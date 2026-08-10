@@ -1,0 +1,45 @@
+{
+  "catalog_path": "catalog/microsoft/windows/2022/sysmon-network-connect-teampcp.yaml",
+  "catalog_sha": "0f6c6b8fdaf10ab24a93882ad8bd5697889e17e9",
+  "decoder": "sysmon_event_3",
+  "fixtures": [
+    {
+      "name": "sysmon-exfil-litellm",
+      "sample_file": "sample-sysmon-exfil-litellm.log",
+      "phase2_observe": {
+        "_comment": "觀察用,非 pass-fail;若 decoder 抽到這些 fields 算 bonus,不抽也 OK",
+        "event_data.DestinationHostname": "models.litellm.cloud",
+        "event_data.DestinationPort": "443"
+      },
+      "phase3_must_fire": [132020],
+      "phase3_min_level": 12
+    },
+    {
+      "name": "sysmon-beacon-checkmarx",
+      "sample_file": "sample-sysmon-beacon-checkmarx.log",
+      "phase2_observe": {
+        "event_data.DestinationHostname": "checkmarx.zone",
+        "event_data.DestinationIp": "172.67.182.93"
+      },
+      "phase3_must_fire": [132020],
+      "phase3_min_level": 12
+    },
+    {
+      "name": "sysmon-wav-stage-telnyx",
+      "sample_file": "sample-sysmon-wav-stage-telnyx.log",
+      "phase2_observe": {
+        "_comment": "raw-IP scenario — DestinationHostname 留 '-',IOC 命中靠 132021 DestinationIp 軸",
+        "event_data.DestinationIp": "83.142.209.203",
+        "event_data.DestinationPort": "8080"
+      },
+      "phase3_must_fire": [132021],
+      "phase3_min_level": 12
+    }
+  ],
+  "notes": [
+    "Sibling 1 of TeamPCP batch sprint(5 sibling 中第 1)。",
+    "Catalog 50 events 中 IOC 全命中(沒有 negative case),預期 live-fire 132020+132021 合計 fire 45-50/50(weighted_choice 容差 ±5%)。",
+    "axis-ownership invariant:本 rule 持 hostname/IP 軸;url 軸由 fortigate rule 132010 持有;path 軸由 auditd 132030 持有;argv 軸由 auditd 132040 持有。",
+    "Step 2 伴生 SOC 側若 wazuh-logtest phase 2 沒抽到 event_data.DestinationHostname(命名與 Wazuh sysmon ruleset 對不上),改用 raw JSON match 或調整 field path。"
+  ]
+}

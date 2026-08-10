@@ -1,0 +1,32 @@
+{
+  "description": "Detect vendor from message content, invoke entry pipeline, reroute _index to vendor-YYYY.MM.dd. Source-of-truth on the ELK ingest host (no Logstash). Tail-calls a shared enrichment pipeline for ECS network.direction across all vendor flows. | v2 (2026-05-16, CyberRange Live-fire): added Sophos Central + FortiWeb + Windows Security JSON routing + cef-other / syslog-other catch-alls so ArcSight-derived detection rules see CyberRange catalog events.",
+  "processors": [
+    { "set": { "if": "ctx.message != null && (ctx.message.contains('devname=FGT') || ctx.message.contains('devname=\"FGT'))", "field": "_router", "value": "fortigate" } },
+    { "set": { "if": "ctx.message != null && ctx.message.contains('CEF:0|CompanionApp')", "field": "_router", "value": "soc-app" } },
+    { "set": { "if": "ctx.message != null && ctx.message.contains('CEF:0|fail2ban')", "field": "_router", "value": "fail2ban" } },
+    { "set": { "if": "ctx.message != null && ctx.message.contains('CEF:0|Nginx')", "field": "_router", "value": "nginx-cef" } },
+    { "set": { "if": "ctx.message != null && ctx.message.contains('\"producer\":{\"modsecurity\":')", "field": "_router", "value": "modsec-audit" } },
+
+    { "set": { "if": "ctx._router == null && ctx.message != null && ctx.message.contains('CEF:0|sophos|sophos central|')", "field": "_router", "value": "cef-other" } },
+    { "set": { "if": "ctx._router == null && ctx.message != null && ctx.message.contains('device_id=FV-') && ctx.message.contains('type=attack')", "field": "_router", "value": "cef-other" } },
+    { "set": { "if": "ctx._router == null && ctx.message != null && ctx.message =~ /CEF:0\\|/", "field": "_router", "value": "cef-other" } },
+    { "set": { "if": "ctx._router == null && ctx.message != null && ctx.message.contains('Microsoft-Windows-Security-Auditing')", "field": "_router", "value": "syslog-other" } },
+    { "set": { "if": "ctx._router == null && ctx.message != null", "field": "_router", "value": "syslog-other" } },
+
+    { "pipeline": { "if": "ctx._router == 'modsec-audit'", "name": "modsec-audit-to-ecs", "ignore_failure": true } },
+    { "pipeline": { "if": "ctx._router == 'fortigate'", "name": "fortigate-entry", "ignore_failure": true } },
+    { "pipeline": { "if": "ctx._router == 'soc-app'", "name": "soc-app-entry", "ignore_failure": true } },
+    { "pipeline": { "if": "ctx._router == 'fail2ban'", "name": "fail2ban-entry", "ignore_failure": true } },
+    { "pipeline": { "if": "ctx._router == 'nginx-cef'", "name": "nginx-cef-entry", "ignore_failure": true } },
+
+    { "date_index_name": { "if": "ctx._router == 'fortigate'",   "field": "@timestamp", "index_name_prefix": "fortigate-",   "date_rounding": "d", "index_name_format": "yyyy.MM.dd" } },
+    { "date_index_name": { "if": "ctx._router == 'soc-app'",    "field": "@timestamp", "index_name_prefix": "soc-app-",    "date_rounding": "d", "index_name_format": "yyyy.MM.dd" } },
+    { "date_index_name": { "if": "ctx._router == 'fail2ban'",    "field": "@timestamp", "index_name_prefix": "fail2ban-",    "date_rounding": "d", "index_name_format": "yyyy.MM.dd" } },
+    { "date_index_name": { "if": "ctx._router == 'nginx-cef'",   "field": "@timestamp", "index_name_prefix": "nginx-cef-",   "date_rounding": "d", "index_name_format": "yyyy.MM.dd" } },
+    { "date_index_name": { "if": "ctx._router == 'cef-other'",   "field": "@timestamp", "index_name_prefix": "cef-other-",   "date_rounding": "d", "index_name_format": "yyyy.MM.dd" } },
+    { "date_index_name": { "if": "ctx._router == 'syslog-other'","field": "@timestamp", "index_name_prefix": "syslog-other-","date_rounding": "d", "index_name_format": "yyyy.MM.dd" } },
+
+    { "remove": { "field": "_router", "ignore_missing": true } },
+    { "pipeline": { "name": "enrich-ecs-tenant", "ignore_failure": true, "tag": "call-shared-enrich" } }
+  ]
+}

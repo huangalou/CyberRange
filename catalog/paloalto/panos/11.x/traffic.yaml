@@ -1,0 +1,734 @@
+vendor: paloalto
+product: panos
+version: "11.x"
+log_type: traffic
+description: |
+  Palo Alto Networks PAN-OS 11.x TRAFFIC log — native CSV emitted by a
+  Syslog Server Profile that has NO Custom Log Format set (i.e. the
+  default PAN-OS field layout). This is the on-prem firewall wire
+  format that a generic SIEM (Wazuh, ELK / Filebeat, QRadar without
+  the LEEF DSM, Splunk panw add-on, Graylog panw pipeline) ingests.
+
+  Sibling catalogs:
+    catalog/paloalto/panos/11.x/threat.yaml       — native CSV THREAT
+    catalog/paloalto/panos/11.x/threat-leef.yaml  — LEEF 2.0 THREAT (QRadar)
+
+  Wire grammar:
+    <PRI>BSD_TS HOSTNAME CSV_BODY
+
+    - PRI defaults to 190 (local7.info = 23*8 + 6), matching the
+      out-of-the-box Syslog Server Profile facility on PAN-OS 11.x
+      when the operator leaves "Facility" at its default. Real-world
+      lines from a PA-5220 ship with `<190>`. Customers who set the
+      profile to LOG_USER / LOG_LOCAL0 should override `pri`.
+    - BSD timestamp uses RFC 3164 `Mmm dd HH:MM:SS` (no year). PAN-OS
+      itself writes the device-local TZ; CyberRange writes UTC values
+      with no TZ marker (BSD has no TZ field anyway) — receivers that
+      reconstruct year from arrival time will tag this correctly.
+    - HOSTNAME is the firewall hostname as configured in PAN-OS
+      `Device > Setup > Management > General Settings > Hostname`.
+      Real deployments usually use the FQDN (`hostname.domain.tld`),
+      so we default to an FQDN-shaped literal.
+    - CSV body is **117 comma-separated fields** for PAN-OS 11.x,
+      with a trailing comma (i.e. the line ends `,...,last_value,`).
+      Empty fields render as nothing between commas (`,,`).
+      Embedded commas only appear inside the `Characteristic of App`
+      column (col 110) which is wrapped in double quotes per RFC 4180.
+    - No backslash escaping in PAN-OS CSV — embedded `"` would be
+      doubled (`""`) per RFC 4180, but PAN-OS strips control bytes
+      before emit so this almost never appears in practice.
+
+  Field-order source:
+    - Real PA-5220 wire sample (anonymised) supplied by an operator
+      on 2026-05-19; column count = 117, verified with csv.reader.
+    - Cross-checked against the PAN-OS 11.1 Admin Guide — Traffic Log
+      Fields reference:
+      https://docs.paloaltonetworks.com/pan-os/11-1/pan-os-admin/monitoring/use-syslog-for-monitoring/syslog-field-descriptions/traffic-log-fields
+    - Splunk Add-on for Palo Alto Networks `pan:traffic` sourcetype
+      (positional regex):
+      https://splunkbase.splunk.com/app/2757
+
+  Engine notes:
+    - `datetime` fields render `datetime.now(UTC).strftime(fmt)`. The
+      catalog has four time fields — ReceiveTime / GeneratedTime /
+      FUTURE_USE(col 22) / StartTime / HighResTimestamp — they each
+      call `now()` independently, so values may drift by sub-µs
+      between fields. This is invisible at PAN-OS's 1-second
+      resolution; only `HighResolutionTimestamp` (col 103) has
+      microsecond precision and may differ from the col 2/7 seconds
+      stamp by a few µs. SIEM parsers tolerate this.
+    - `HighResolutionTimestamp` is emitted as `+00:00` (UTC). PAN-OS
+      devices write their local TZ (e.g. `+08:00` in Taiwan). To
+      simulate a specific deployment, override `hires_tz` after the
+      engine grows TZ-aware datetimes; today the literal `+00:00` is
+      hard-coded in the template (kept honest with engine UTC values
+      rather than lying about the offset).
+    - `Rule UUID` is rendered via `faker: uuid4`, which the engine
+      upper-cases — PAN-OS writes the UUID lowercase. We accept the
+      cosmetic mismatch (no SIEM parser anchors on case) until
+      generator.py gains a lowercase variant. The wire shape
+      (8-4-4-4-12 hex) is correct.
+
+format: csv
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: network_activity
+  category_uid: 4
+  class_uid: 4001
+
+detections:
+  wazuh:
+    # Wazuh ships an out-of-the-box PAN-OS decoder family
+    # (0420-paloalto_decoders.xml) that matches the CSV body starting
+    # at "Type" (col 4). The PRI+BSD header is stripped by Wazuh's
+    # RFC3164 pre-decoder.
+    - decoder: paloalto
+    - rule_id: 63103              # paloalto, allowed (sev 3)
+      level: 3
+  sigma:
+    - rule: net_paloalto_traffic_allow
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/network/firewall
+  elk_detection:
+    - kibana_rule_id: panw-traffic-baseline
+      severity: low
+
+mythos_alignment:
+  # Traffic logs are the bread-and-butter "what flowed where" data
+  # source for perimeter analytics — Mythos R4 (visibility into east-
+  # west / north-south flows) and PA10 (perimeter telemetry coverage).
+  risk_refs: [R4]
+  pa_refs: [PA10]
+  ttx_class: rapid
+
+regression:
+  baseline_alert_count: 0           # baseline traffic should not alert
+  baseline_ttd_ms: 5000
+
+params:
+  # ─── identity (override per deployment) ───
+  hostname:     { default: "PA-VM-01.example.local" }
+  device_name:  { default: "PA-VM-01" }
+  serial:       { default: "001234567890" }
+  vsys:         { default: "vsys1" }
+  vsys_name:    { default: "VSYS-DEFAULT" }
+  log_action:   { default: "default" }
+  # ─── network shape ───
+  src_cidr:     { default: "10.50.0.0/24" }
+  dst_pool:
+    default:
+      - "172.217.0.10"
+      - "151.101.1.140"
+      - "104.18.32.7"
+      - "203.0.113.99"
+      - "8.8.8.8"
+
+fields:
+  # ──────────── syslog header ────────────
+  - name: pri
+    type: fixed
+    value: 190                                  # local7.info — PAN default
+  - name: bsd_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+  - name: hostname
+    type: param
+    param: hostname
+
+  # ──────────── CSV body (117 fields) ────────────
+  # col 1 — FUTURE_USE (always "1" on PAN-OS 11.x)
+  - name: f01_future_use
+    type: fixed
+    value: 1
+
+  # col 2 — ReceiveTime
+  - name: f02_receive_time
+    type: datetime
+    format: "%Y/%m/%d %H:%M:%S"
+
+  # col 3 — SerialNumber
+  - name: f03_serial
+    type: param
+    param: serial
+
+  # col 4 — Type
+  - name: f04_type
+    type: fixed
+    value: "TRAFFIC"
+
+  # col 5 — Subtype (start | end | drop | deny)
+  - name: f05_subtype
+    type: weighted_choice
+    choices: { end: 0.70, start: 0.15, drop: 0.10, deny: 0.05 }
+
+  # col 6 — FUTURE_USE (config version — varies per device, 4-digit-ish)
+  - name: f06_future_use
+    type: int_range
+    min: 1000
+    max: 9999
+
+  # col 7 — GeneratedTime
+  - name: f07_generated_time
+    type: datetime
+    format: "%Y/%m/%d %H:%M:%S"
+
+  # col 8 — SourceAddress
+  - name: f08_src_ip
+    type: cidr
+    cidr: ${params.src_cidr}
+
+  # col 9 — DestinationAddress
+  - name: f09_dst_ip
+    type: choice
+    choices: ${params.dst_pool}
+
+  # col 10 — NATSourceIP
+  - name: f10_nat_src_ip
+    type: fixed
+    value: "0.0.0.0"
+
+  # col 11 — NATDestinationIP
+  - name: f11_nat_dst_ip
+    type: fixed
+    value: "0.0.0.0"
+
+  # col 12 — RuleName
+  - name: f12_rule_name
+    type: weighted_choice
+    choices:
+      "outbound-web":   0.40
+      "default-allow":  0.20
+      "dmz-to-inside":  0.15
+      "guest-internet": 0.15
+      "mgmt-allow":     0.10
+
+  # col 13 — SourceUser
+  - name: f13_src_user
+    type: weighted_choice
+    choices: { "": 0.7, "lab\\alice": 0.15, "lab\\bob": 0.10, "lab\\svc-app": 0.05 }
+
+  # col 14 — DestinationUser
+  - name: f14_dst_user
+    type: fixed
+    value: ""
+
+  # col 15 — Application
+  - name: f15_application
+    type: weighted_choice
+    choices:
+      ssl:           0.30
+      web-browsing:  0.30
+      dns-base:      0.15
+      ms-rdp:        0.05
+      ssh:           0.05
+      smtp:          0.05
+      "ping":        0.05
+      ntp:           0.05
+
+  # col 16 — VirtualSystem
+  - name: f16_vsys
+    type: param
+    param: vsys
+
+  # col 17 — SourceZone
+  - name: f17_src_zone
+    type: weighted_choice
+    choices: { trust: 0.6, dmz: 0.2, guest: 0.1, mgmt: 0.1 }
+
+  # col 18 — DestinationZone
+  - name: f18_dst_zone
+    type: weighted_choice
+    choices: { untrust: 0.7, dmz: 0.15, trust: 0.1, mgmt: 0.05 }
+
+  # col 19 — InboundInterface
+  - name: f19_in_iface
+    type: weighted_choice
+    choices: { "ethernet1/1": 0.5, "ethernet1/2": 0.3, "ethernet1/16": 0.2 }
+
+  # col 20 — OutboundInterface
+  - name: f20_out_iface
+    type: weighted_choice
+    choices: { "ethernet1/3": 0.4, "ethernet1/4": 0.3, "ethernet1/18.1": 0.3 }
+
+  # col 21 — LogAction (= name of the Syslog Server Profile / forwarding rule)
+  - name: f21_log_action
+    type: param
+    param: log_action
+
+  # col 22 — FUTURE_USE (timestamp echo — usually equal to ReceiveTime on the wire)
+  - name: f22_future_use
+    type: datetime
+    format: "%Y/%m/%d %H:%M:%S"
+
+  # col 23 — SessionID
+  - name: f23_session_id
+    type: int_range
+    min: 100000
+    max: 9999999
+
+  # col 24 — RepeatCount
+  - name: f24_repeat_count
+    type: fixed
+    value: 1
+
+  # col 25 — SourcePort
+  - name: f25_src_port
+    type: int_range
+    min: 1024
+    max: 65535
+
+  # col 26 — DestinationPort
+  - name: f26_dst_port
+    type: weighted_choice
+    choices: { "443": 0.55, "80": 0.20, "53": 0.10, "22": 0.05, "3389": 0.05, "25": 0.05 }
+
+  # col 27 — NATSourcePort
+  - name: f27_nat_src_port
+    type: fixed
+    value: 0
+
+  # col 28 — NATDestinationPort
+  - name: f28_nat_dst_port
+    type: fixed
+    value: 0
+
+  # col 29 — Flags (hex bitfield — PAN-OS uses 0x… patterns)
+  - name: f29_flags
+    type: weighted_choice
+    choices:
+      "0x47a":      0.30           # captured-bytes + NAT + URL filtered
+      "0x80800000": 0.20           # symmetric-return + reverse-x-forwarded
+      "0x400000":   0.20           # captive portal redirect
+      "0x100000":   0.15           # decrypted ssl
+      "0x0":        0.15
+
+  # col 30 — IPProtocol
+  - name: f30_proto
+    type: weighted_choice
+    choices: { tcp: 0.85, udp: 0.13, icmp: 0.02 }
+
+  # col 31 — Action
+  - name: f31_action
+    type: weighted_choice
+    choices:
+      allow:       0.80
+      deny:        0.10
+      drop:        0.05
+      reset-both:  0.03
+      reset-client: 0.01
+      reset-server: 0.01
+
+  # col 32 — Bytes (total)
+  - name: f32_bytes
+    type: int_range
+    min: 100
+    max: 1000000
+
+  # col 33 — BytesSent
+  - name: f33_bytes_sent
+    type: int_range
+    min: 50
+    max: 500000
+
+  # col 34 — BytesReceived
+  - name: f34_bytes_received
+    type: int_range
+    min: 50
+    max: 500000
+
+  # col 35 — Packets
+  - name: f35_packets
+    type: int_range
+    min: 2
+    max: 2000
+
+  # col 36 — StartTime
+  - name: f36_start_time
+    type: datetime
+    format: "%Y/%m/%d %H:%M:%S"
+
+  # col 37 — ElapsedTime (seconds)
+  - name: f37_elapsed
+    type: int_range
+    min: 0
+    max: 3600
+
+  # col 38 — Category (URLCategory; "any-alert" is a common policy default)
+  - name: f38_url_category
+    type: weighted_choice
+    choices:
+      "any":                         0.25
+      "any-alert":                   0.20
+      "computer-and-internet-info":  0.15
+      "business-and-economy":        0.15
+      "social-networking":           0.10
+      "search-engines":              0.10
+      "content-delivery-networks":   0.05
+
+  # col 39 — FUTURE_USE
+  - name: f39_future_use
+    type: fixed
+    value: ""
+
+  # col 40 — SequenceNumber (PAN 64-bit log sequence — 19-digit decimal)
+  - name: f40_seqno
+    type: int_range
+    min: 1000000000000000000
+    max: 9999999999999999999
+
+  # col 41 — ActionFlags (hex bitfield, top bit = "logged" → 0x8000…)
+  - name: f41_action_flags
+    type: weighted_choice
+    choices: { "0x8000000000000000": 0.95, "0x0": 0.05 }
+
+  # col 42 — SourceLocation
+  - name: f42_src_location
+    type: weighted_choice
+    choices:
+      "10.0.0.0-10.255.255.255":      0.70
+      "172.16.0.0-172.31.255.255":    0.15
+      "192.168.0.0-192.168.255.255":  0.15
+
+  # col 43 — DestinationLocation
+  - name: f43_dst_location
+    type: weighted_choice
+    choices:
+      "10.0.0.0-10.255.255.255":      0.40
+      "US": 0.20
+      "JP": 0.10
+      "TW": 0.10
+      "SG": 0.05
+      "DE": 0.05
+      "GB": 0.05
+      "AU": 0.05
+
+  # col 44 — FUTURE_USE
+  - name: f44_future_use
+    type: fixed
+    value: ""
+
+  # col 45 — PacketsSent
+  - name: f45_pkts_sent
+    type: int_range
+    min: 1
+    max: 1000
+
+  # col 46 — PacketsReceived
+  - name: f46_pkts_received
+    type: int_range
+    min: 1
+    max: 1000
+
+  # col 47 — SessionEndReason
+  - name: f47_session_end_reason
+    type: weighted_choice
+    choices:
+      "aged-out":              0.45
+      "tcp-fin":               0.25
+      "tcp-rst-from-client":   0.10
+      "tcp-rst-from-server":   0.10
+      "policy-deny":           0.05
+      "threat":                0.03
+      "unknown":               0.02
+
+  # col 48-51 — Device Group Hierarchy Level 1..4
+  - name: f48_dg_h1
+    type: fixed
+    value: 0
+  - name: f49_dg_h2
+    type: fixed
+    value: 0
+  - name: f50_dg_h3
+    type: fixed
+    value: 0
+  - name: f51_dg_h4
+    type: fixed
+    value: 0
+
+  # col 52 — VsysName
+  - name: f52_vsys_name
+    type: param
+    param: vsys_name
+
+  # col 53 — DeviceName
+  - name: f53_device_name
+    type: param
+    param: device_name
+
+  # col 54 — ActionSource
+  - name: f54_action_source
+    type: weighted_choice
+    choices: { "from-policy": 0.85, "from-application": 0.10, "unknown": 0.05 }
+
+  # col 55-56 — Source/Destination VM UUID
+  - name: f55_src_vm_uuid
+    type: fixed
+    value: ""
+  - name: f56_dst_vm_uuid
+    type: fixed
+    value: ""
+
+  # col 57 — Tunnel ID / IMSI
+  - name: f57_tunnel_id_imsi
+    type: fixed
+    value: 0
+
+  # col 58 — Monitor Tag / IMEI
+  - name: f58_monitor_tag_imei
+    type: fixed
+    value: ""
+
+  # col 59 — Parent Session ID
+  - name: f59_parent_session_id
+    type: fixed
+    value: 0
+
+  # col 60 — Parent Start Time
+  - name: f60_parent_start_time
+    type: fixed
+    value: ""
+
+  # col 61 — Tunnel Type
+  - name: f61_tunnel_type
+    type: weighted_choice
+    choices: { "N/A": 0.92, "IPSec": 0.04, "GRE": 0.02, "GTP-U": 0.02 }
+
+  # col 62-65 — SCTP fields
+  - name: f62_sctp_assoc_id
+    type: fixed
+    value: 0
+  - name: f63_sctp_chunks
+    type: fixed
+    value: 0
+  - name: f64_sctp_chunks_sent
+    type: fixed
+    value: 0
+  - name: f65_sctp_chunks_received
+    type: fixed
+    value: 0
+
+  # col 66 — Rule UUID
+  - name: f66_rule_uuid
+    type: faker
+    method: uuid4                            # NOTE: engine upper-cases; real PAN is lower
+
+  # col 67 — HTTP/2 Connection (count)
+  - name: f67_http2_conn
+    type: fixed
+    value: 0
+
+  # col 68 — App Flap Count
+  - name: f68_app_flap_count
+    type: fixed
+    value: 0
+
+  # col 69-102 — long tail of mostly-empty 11.x columns:
+  #   PolicyID, LinkSwitches, SDWAN×4, DynamicUserGroup, XFFAddress,
+  #   SrcDevice×6 (cat/profile/model/vendor/osfamily/osver),
+  #   SrcHostname, SrcMAC,
+  #   DstDevice×6, DstHostname, DstMAC,
+  #   ContainerID, PodNamespace, PodName, SrcEDL, DstEDL,
+  #   HostID, UserDeviceSerial,
+  #   SrcDynAddrGroup, DstDynAddrGroup,
+  #   SessionOwner / OffloadedFlag
+  # — empty by default on a vanilla PAN-OS 11.x without IoT / SDWAN / EDL.
+  - name: f69_policy_id
+    type: fixed
+    value: ""
+  - name: f70_link_switches
+    type: fixed
+    value: ""
+  - name: f71_sdwan_cluster
+    type: fixed
+    value: ""
+  - name: f72_sdwan_device_type
+    type: fixed
+    value: ""
+  - name: f73_sdwan_cluster_type
+    type: fixed
+    value: ""
+  - name: f74_sdwan_site
+    type: fixed
+    value: ""
+  - name: f75_dyn_user_group
+    type: fixed
+    value: ""
+  - name: f76_xff_address
+    type: fixed
+    value: ""
+  - name: f77_src_device_category
+    type: fixed
+    value: ""
+  - name: f78_src_device_profile
+    type: fixed
+    value: ""
+  - name: f79_src_device_model
+    type: fixed
+    value: ""
+  - name: f80_src_device_vendor
+    type: fixed
+    value: ""
+  - name: f81_src_device_os_family
+    type: fixed
+    value: ""
+  - name: f82_src_device_os_version
+    type: fixed
+    value: ""
+  - name: f83_src_hostname
+    type: fixed
+    value: ""
+  - name: f84_src_mac
+    type: fixed
+    value: ""
+  - name: f85_dst_device_category
+    type: fixed
+    value: ""
+  - name: f86_dst_device_profile
+    type: fixed
+    value: ""
+  - name: f87_dst_device_model
+    type: fixed
+    value: ""
+  - name: f88_dst_device_vendor
+    type: fixed
+    value: ""
+  - name: f89_dst_device_os_family
+    type: fixed
+    value: ""
+  - name: f90_dst_device_os_version
+    type: fixed
+    value: ""
+  - name: f91_dst_hostname
+    type: fixed
+    value: ""
+  - name: f92_dst_mac
+    type: fixed
+    value: ""
+  - name: f93_container_id
+    type: fixed
+    value: ""
+  - name: f94_pod_namespace
+    type: fixed
+    value: ""
+  - name: f95_pod_name
+    type: fixed
+    value: ""
+  - name: f96_src_edl
+    type: fixed
+    value: ""
+  - name: f97_dst_edl
+    type: fixed
+    value: ""
+  - name: f98_host_id
+    type: fixed
+    value: ""
+  - name: f99_user_device_serial
+    type: fixed
+    value: ""
+  - name: f100_src_dyn_addr_group
+    type: fixed
+    value: ""
+  - name: f101_dst_dyn_addr_group
+    type: fixed
+    value: ""
+  - name: f102_session_owner_offload
+    type: fixed
+    value: ""
+
+  # col 103 — HighResolutionTimestamp (PAN-OS 11.x adds this)
+  - name: f103_hires_ts
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S.%f+00:00"     # UTC; six-digit µs (PAN uses ms; close enough)
+
+  # col 104-105 — 5G NSSAI SST / SD (empty unless mobile carrier deploy)
+  - name: f104_nssai_sst
+    type: fixed
+    value: ""
+  - name: f105_nssai_sd
+    type: fixed
+    value: ""
+
+  # col 106 — Application Category
+  - name: f106_app_category
+    type: weighted_choice
+    choices:
+      "encrypted-tunnel":     0.30
+      "general-internet":     0.30
+      "business-systems":     0.15
+      "collaboration":        0.10
+      "networking":           0.10
+      "media":                0.05
+
+  # col 107 — Application Subcategory
+  - name: f107_app_subcategory
+    type: weighted_choice
+    choices:
+      "networking":     0.25
+      "web-browsing":   0.25
+      "email":          0.10
+      "infrastructure": 0.10
+      "encrypted":      0.10
+      "voip-video":     0.10
+      "file-sharing":   0.10
+
+  # col 108 — Application Technology
+  - name: f108_app_technology
+    type: weighted_choice
+    choices:
+      "browser-based":   0.45
+      "client-server":   0.25
+      "network-protocol": 0.20
+      "peer-to-peer":    0.10
+
+  # col 109 — Application Risk (1..5)
+  - name: f109_app_risk
+    type: weighted_choice
+    choices: { "1": 0.10, "2": 0.20, "3": 0.30, "4": 0.30, "5": 0.10 }
+
+  # col 110 — Application Characteristic (comma-separated; template wraps in "")
+  - name: f110_app_characteristic
+    type: weighted_choice
+    choices:
+      "used-by-malware,able-to-transfer-file,has-known-vulnerability,tunnel-other-application,pervasive-use": 0.30
+      "able-to-transfer-file,has-known-vulnerability,pervasive-use": 0.25
+      "used-by-malware,has-known-vulnerability": 0.15
+      "pervasive-use,tunnel-other-application": 0.15
+      "pervasive-use": 0.15
+
+  # col 111 — Application Container (parent app; usually empty for non-decoded)
+  - name: f111_app_container
+    type: fixed
+    value: ""
+
+  # col 112 — Tunneled Application
+  - name: f112_tunneled_app
+    type: weighted_choice
+    choices: { ssl: 0.7, "": 0.2, "web-browsing": 0.1 }
+
+  # col 113 — Application SaaS
+  - name: f113_app_saas
+    type: weighted_choice
+    choices: { "no": 0.85, "yes": 0.15 }
+
+  # col 114 — Application Sanctioned State
+  - name: f114_app_sanctioned
+    type: weighted_choice
+    choices: { "no": 0.90, "yes": 0.10 }
+
+  # col 115 — Offload Flag (0/1)
+  - name: f115_offload
+    type: weighted_choice
+    choices: { "0": 0.85, "1": 0.15 }
+
+  # col 116 — Non-Proxy / HA-Cluster marker (PAN-internal; sample shows literal "NonProxyTraffic")
+  - name: f116_cluster_marker
+    type: weighted_choice
+    choices: { "NonProxyTraffic": 0.95, "": 0.05 }
+
+# ─────────────── template ───────────────
+# Body grammar: 117 comma-separated columns + trailing comma (col 117
+# is the trailing empty per the verified PA-5220 sample). Column 110
+# (`Characteristic of App`) is the only column that may contain commas
+# in its value, so it is wrapped in double quotes per RFC 4180.
+template: |-
+  <{{pri}}>{{bsd_ts}} {{hostname}} {{f01_future_use}},{{f02_receive_time}},{{f03_serial}},{{f04_type}},{{f05_subtype}},{{f06_future_use}},{{f07_generated_time}},{{f08_src_ip}},{{f09_dst_ip}},{{f10_nat_src_ip}},{{f11_nat_dst_ip}},{{f12_rule_name}},{{f13_src_user}},{{f14_dst_user}},{{f15_application}},{{f16_vsys}},{{f17_src_zone}},{{f18_dst_zone}},{{f19_in_iface}},{{f20_out_iface}},{{f21_log_action}},{{f22_future_use}},{{f23_session_id}},{{f24_repeat_count}},{{f25_src_port}},{{f26_dst_port}},{{f27_nat_src_port}},{{f28_nat_dst_port}},{{f29_flags}},{{f30_proto}},{{f31_action}},{{f32_bytes}},{{f33_bytes_sent}},{{f34_bytes_received}},{{f35_packets}},{{f36_start_time}},{{f37_elapsed}},{{f38_url_category}},{{f39_future_use}},{{f40_seqno}},{{f41_action_flags}},{{f42_src_location}},{{f43_dst_location}},{{f44_future_use}},{{f45_pkts_sent}},{{f46_pkts_received}},{{f47_session_end_reason}},{{f48_dg_h1}},{{f49_dg_h2}},{{f50_dg_h3}},{{f51_dg_h4}},{{f52_vsys_name}},{{f53_device_name}},{{f54_action_source}},{{f55_src_vm_uuid}},{{f56_dst_vm_uuid}},{{f57_tunnel_id_imsi}},{{f58_monitor_tag_imei}},{{f59_parent_session_id}},{{f60_parent_start_time}},{{f61_tunnel_type}},{{f62_sctp_assoc_id}},{{f63_sctp_chunks}},{{f64_sctp_chunks_sent}},{{f65_sctp_chunks_received}},{{f66_rule_uuid}},{{f67_http2_conn}},{{f68_app_flap_count}},{{f69_policy_id}},{{f70_link_switches}},{{f71_sdwan_cluster}},{{f72_sdwan_device_type}},{{f73_sdwan_cluster_type}},{{f74_sdwan_site}},{{f75_dyn_user_group}},{{f76_xff_address}},{{f77_src_device_category}},{{f78_src_device_profile}},{{f79_src_device_model}},{{f80_src_device_vendor}},{{f81_src_device_os_family}},{{f82_src_device_os_version}},{{f83_src_hostname}},{{f84_src_mac}},{{f85_dst_device_category}},{{f86_dst_device_profile}},{{f87_dst_device_model}},{{f88_dst_device_vendor}},{{f89_dst_device_os_family}},{{f90_dst_device_os_version}},{{f91_dst_hostname}},{{f92_dst_mac}},{{f93_container_id}},{{f94_pod_namespace}},{{f95_pod_name}},{{f96_src_edl}},{{f97_dst_edl}},{{f98_host_id}},{{f99_user_device_serial}},{{f100_src_dyn_addr_group}},{{f101_dst_dyn_addr_group}},{{f102_session_owner_offload}},{{f103_hires_ts}},{{f104_nssai_sst}},{{f105_nssai_sd}},{{f106_app_category}},{{f107_app_subcategory}},{{f108_app_technology}},{{f109_app_risk}},"{{f110_app_characteristic}}",{{f111_app_container}},{{f112_tunneled_app}},{{f113_app_saas}},{{f114_app_sanctioned}},{{f115_offload}},{{f116_cluster_marker}},

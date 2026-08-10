@@ -1,0 +1,318 @@
+vendor: kubernetes
+product: k8s-audit
+version: "1.x"
+log_type: k8s.audit.daemonset_create.teampcp
+description: |
+  Kubernetes API-server audit log Event for TeamPCP-style "package
+  compromise → cluster compromise" lateral movement. Models the
+  privileged DaemonSet creation that the LiteLLM 1.82.x payload
+  performs once it harvests a K8s service-account token from the
+  victim pod: pod name pattern `node-setup-*`, container name
+  `kamikaze` or `provisioner`, hostNetwork+hostPID+privileged+
+  SYS_ADMIN, hostPath / mount.
+
+  Schema v3 third canonical example: cloud-native side complementing
+  Sysmon EID 3 (Windows network) + auditd file-create (Linux FS).
+  Reference: see the CTI advisory (Datadog Security Labs) cited in the
+  `cti:` block below.
+
+  ──────────────── Wire-format fidelity (audit.k8s.io/v1) ────────────────
+  Source-of-truth (URLs fetched 2026-05-15):
+    - Canonical Event struct (Go source — authoritative schema):
+        https://github.com/kubernetes/kubernetes/blob/master/staging/src/k8s.io/apiserver/pkg/apis/audit/v1/types.go
+      Event fields (lowercase JSON tag):
+        kind, apiVersion (inherited from TypeMeta) + level, auditID,
+        stage, requestURI, verb, user, impersonatedUser,
+        authenticationMetadata, sourceIPs, userAgent, objectRef,
+        responseStatus, requestObject, responseObject,
+        requestReceivedTimestamp, stageTimestamp, annotations.
+      Level enum: None | Metadata | Request | RequestResponse
+      Stage enum: RequestReceived | ResponseStarted | ResponseComplete | Panic
+      ObjectReference: resource, namespace, name, uid, apiGroup,
+        apiVersion, resourceVersion, subresource.
+    - Auditing tasks doc (real Event JSON example for verb=create):
+        https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
+    - metav1.Status (responseStatus type):
+        https://github.com/kubernetes/apimachinery/blob/master/pkg/apis/meta/v1/types.go
+      Real events emit metadata{}, status (Success|Failure), code; for
+      failures also message + reason.
+    - metav1.MicroTime serialization — RFC3339 with microsecond
+      precision (`.%fZ` in Python strftime), NOT nanosecond. The
+      kubernetes.io docs sometimes show 9-digit nano examples, but
+      the actual JSON marshaller in apimachinery truncates to 6.
+    - Falco k8s_audit rules — community detection canon:
+        https://github.com/falcosecurity/rules/tree/main/rules
+
+  Real audit Event for DaemonSet create (verb=create) carries a full
+  `authorization.k8s.io/{decision,reason}` annotation pair populated
+  by the RBAC authorizer — almost every SOC k8s detection rule
+  pivots on annotations["authorization.k8s.io/decision"] == "allow"
+  to filter out denied attempts. This template emits both.
+
+  ──────────────── Dual-emit (Sprint 1 batch Sibling 4 forward-ready) ────────────────
+  Real TeamPCP attack produces TWO audit events per privileged-DaemonSet
+  takeover, on different audit axes:
+    Line 1 — DaemonSet create:
+      attacker direct (compromised SA via stolen K8s SA token),
+      objectRef.resource=daemonsets, verb=create,
+      user.username=system:serviceaccount:<ns>:compromised-sa,
+      userAgent=Python-urllib/*
+    Line 2 — Pod create (controller-spawn):
+      kube-controller-manager auto-creates Pod to satisfy DaemonSet
+      replica, objectRef.resource=pods, verb=create,
+      user.username=system:serviceaccount:kube-system:daemon-set-controller,
+      userAgent=kube-controller-manager/v1.28.x,
+      objectRef.name=<ds-name>-<5char-hash>,
+      requestObject.spec.serviceAccountName=compromised-sa (Pod inherits
+        DaemonSet's serviceAccountName — the smoking gun on pod axis)
+
+  Existing companion-SOC-stack rules `k8s-lateral-anomaly.xml` 112501/112502/
+  112510 all target the **pods axis** (objectRef.resource=^pods$),
+  not daemonsets. So this catalog emits BOTH lines:
+    - line 1 = attacker-direct daemonsets audit (no current rule
+      coverage; future-ready for daemonset-axis rules)
+    - line 2 = controller-spawn pods audit (covered by existing
+      112501 name pattern + 112502 kamikaze container)
+
+  This dual-emit preserves catalog fidelity to the real attack while
+  also producing fixtures that fire the deployed 112501/112502 rules
+  in wazuh-logtest. See `regression.axis_alignment` for the mapping.
+
+format: json
+transport: [beats, file]   # k8s audit usually fluentd/fluentbit → ES, not syslog
+
+ocsf:
+  class: api_activity
+  category_uid: 6
+  class_uid: 6003
+
+# ──────────────── DetectOps v2 metadata ────────────────
+# Detection pivots (all gated on annotations["authorization.k8s.io/
+# decision"] == "allow" to ignore RBAC-denied attempts):
+#   (a) objectRef.name matches `node-setup-*`
+#   (b) requestObject.spec.template.spec.containers[].name in
+#       {kamikaze, provisioner}
+#   (c) requestObject.spec.template.spec.containers[]
+#       .securityContext.privileged == true AND volumes[]
+#       .hostPath.path == "/"
+#   (d) user.username starts with `system:serviceaccount:` AND
+#       verb=create AND objectRef.resource=daemonsets AND
+#       requestObject.spec.template.spec.hostNetwork=true
+# Any one alone is enough; combination → critical severity.
+# Falco field map (community canon):
+#   ka.verb                     ← verb
+#   ka.target.resource          ← objectRef.resource
+#   ka.target.namespace         ← objectRef.namespace
+#   ka.user.name                ← user.username
+#   ka.req.pod.containers.privileged   ← requestObject.spec.template
+#                                         .spec.containers[]
+#                                         .securityContext.privileged
+#   ka.req.pod.host_network     ← requestObject.spec.template.spec
+#                                   .hostNetwork
+#   ka.req.pod.host_pid         ← requestObject.spec.template.spec
+#                                   .hostPID
+#   ka.req.pod.volumes.hostpath ← requestObject.spec.template.spec
+#                                   .volumes[].hostPath.path
+detections:
+  wazuh:
+    # 對齊既有 config/wazuh_manager/rules/k8s-lateral-anomaly.xml
+    # (companion SOC stack forward-ready,0 K8s 環境,rule 已 active 但無 live event 流入)
+    # 所有既有 rule 對 pods 軸,本 catalog dual-emit 第 2 行(pod controller-spawn)命中。
+    # 第 1 行(daemonset attacker-direct)目前無 rule 對應,留 future-ready。
+    - decoder: json                        # Wazuh 內建 json decoder 自動 flatten
+    - rule_id: 112501                      # active — Pod node-setup-* create
+      level: 14
+      axis: pod_create_line                # 命中 line 2(K8s controller spawn,name 仍含 node-setup-)
+    - rule_id: 112502                      # active — container kamikaze
+      level: 15
+      axis: pod_create_line                # 命中 line 2 with kamikaze container（destructive case）
+    - rule_id: 112503                      # commented — container provisioner
+      level: 14
+      axis: pod_create_line
+      enabled: false                       # legit storage provisioner 衝突,需 baseline 後 enable
+    - rule_id: 112504                      # active — secrets API + Python-urllib UA
+      level: 13
+      axis: out_of_scope                   # 本 catalog 不模擬 secrets API access,標 not-applicable
+    - rule_id: 112510                      # active — multi-signal 30min correlation
+      level: 15
+      axis: correlation                    # logtest single-event 不觸發,需 live deploy + frequency
+  sigma:
+    - rule: k8s_create_privileged_daemonset_via_sa
+      ref: TBD                              # placeholder — write custom Sigma covering R-5
+    - rule: k8s_node_setup_pod_naming
+      ref: TBD                              # specifically for the `node-setup-*` IOC
+  elk_detection:
+    - kibana_rule_id: k8s-teampcp-node-setup-daemonset
+      severity: critical
+    - kibana_rule_id: k8s-privileged-hostpath-mount
+      severity: high
+
+mythos_alignment:
+  # R1 Accelerated Threat Exploitation — TeamPCP shows mass-compromised
+  #   PyPI packages reaching K8s clusters within hours. R10 Threat
+  #   Detection Lagging Intelligence — most SOCs still under-instrument
+  #   K8s audit, this is the canonical "advisory drives detection" case.
+  risk_refs: [R1, R10]
+  # PA1 Point Agents at Code (k8s admission controllers / runtime agents)
+  # PA5 Continuous Patching (when LiteLLM is patched, must verify the
+  #   k8s lateral-movement detection still fires on this catalog)
+  pa_refs: [PA1, PA5]
+  ttx_class: rapid
+
+regression:
+  # Forward-ready 驗收(2026-05-20):0 K8s 環境無 live-fire 條件,baseline 只能跑
+  # logtest path。dual-emit per render 產 2 line(daemonset + pod),line 1 daemonset
+  # 不命中既有 rule(pods 軸),line 2 pod 命中 112501 + (kamikaze case: 112502)。
+  # provisioner case 因 112503 commented 只 fire 112501。
+  baseline_alert_count: 100                          # 預期值(K8s deploy 後 live-fire 100%)
+  baseline_alert_count_logtest_provisioner: 1        # provisioner case fire 112501 lvl 14 (112503 commented)
+  baseline_alert_count_logtest_kamikaze: 1           # kamikaze case fire 112502 lvl 15 (取代 112501,Wazuh single-rule-per-event)
+  baseline_ttd_ms: 5000                              # k8s audit ingest typically 3-5s lag
+  wazuh_single_rule_per_event: true                  # non-chained rule 只 fire 最高 level 那一條
+                                                     # — 與 Sibling 1 chain-rule pattern 行為差異
+  dual_emit_lines_per_event: 2                       # line 1 daemonset axis + line 2 pod axis
+  live_fire_pending: true
+  blocking_condition: "0 K8s environment + no fluentbit ingest path on .18 ELK"
+  axis_alignment:
+    rule_set: "config/wazuh_manager/rules/k8s-lateral-anomaly.xml"
+    pod_axis_rules_active: [112501, 112502, 112510]
+    pod_axis_rules_commented: [112503]               # provisioner — legit storage provisioner 衝突
+    daemonset_axis_rules: []                         # 既有 rule set 不偵測 daemonsets 軸
+    secrets_axis_rules_out_of_scope: [112504]        # 本 catalog 不模擬 secrets API access
+
+# ──────────────── v3: CTI advisory provenance + IOCs ────────────────
+cti:
+  source: datadog-security-labs
+  source_url: https://securitylabs.datadoghq.com/articles/litellm-compromised-pypi-teampcp-supply-chain-campaign/
+  advisory_id: PYSEC-2026-2
+  ingested_at: "2026-05-07"
+  related_campaign: teampcp
+  cve_refs: []
+  iocs:
+    # K8s axis IOCs are partly structural (privileged DaemonSet pattern)
+    # and partly string (pod/container names). The structural pattern is
+    # encoded in the template; string IOCs go into http_fingerprints +
+    # package_versions for cross-catalog symmetry.
+    http_fingerprints:
+      - { header: User-Agent, value: "Python-urllib*" }
+    package_versions:
+      - { ecosystem: pypi, name: litellm, versions: ["1.82.7", "1.82.8"] }
+      - { ecosystem: pypi, name: telnyx,  versions: ["4.87.1", "4.87.2"] }
+    # No domains/ips/file_paths — sibling Sysmon (network) + auditd (FS)
+    # catalogs own those IOC axes.
+
+# ──────────────── v3: VulnOps reverse-lookup ────────────────
+vulnops:
+  cve_refs: []
+  affects:
+    - { vendor: pypi, product: litellm, version_range: "1.82.7,1.82.8" }
+    - { vendor: pypi, product: telnyx,  version_range: "4.87.1,4.87.2" }
+  patch_signal:
+    - "litellm 1.82.7 / 1.82.8 quarantined on PyPI"
+  regression_critical: true   # P0: cluster-wide compromise vector
+
+params:
+  cluster_name:     { default: "lab-cluster" }
+  victim_namespace: { default: "default" }
+  victim_sa:        { default: "compromised-sa" }
+  pod_cidr:         { default: "10.244.0.0/16" }
+
+fields:
+  # metav1.MicroTime — RFC3339 with microsecond precision. Both
+  # requestReceivedTimestamp and stageTimestamp use this. In real
+  # events stageTimestamp is a few-hundred-µs later; we render the
+  # same value here (single-event granularity is fine for SIEM
+  # detection — both rules pivot on the auditID, not on the delta).
+  - name: ts_iso
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S.%fZ"
+
+  - name: audit_id
+    type: faker
+    method: uuid4
+
+  # ServiceAccount UID — UserInfo.UID per authentication/v1. Real
+  # API-server-issued SA tokens always carry the SA UID; omitting
+  # it is a fidelity gap that breaks rules matching on user.uid.
+  - name: sa_uid
+    type: faker
+    method: uuid4
+
+  # node-setup-{8 hex chars} per Datadog Security Labs advisory
+  - name: pod_suffix
+    type: faker
+    method: hex_8
+
+  - name: pod_name
+    type: template
+    template: "node-setup-{{pod_suffix|lower}}"
+
+  - name: container_name
+    type: weighted_choice
+    choices:
+      kamikaze:    0.5
+      provisioner: 0.5
+
+  # Source IP from cluster pod CIDR — looks like the request comes from
+  # within the cluster (compromised pod or kubelet running with stolen SA).
+  - name: source_ip
+    type: cidr
+    cidr: ${params.pod_cidr}
+
+  # Attacker uses Python stdlib http client from the compromised pod
+  # (LiteLLM is a Python process). Real k8s clients (kubectl,
+  # kube-controller-manager) emit different UAs — pivoting on
+  # `Python-urllib/*` is itself a detection signal.
+  - name: user_agent
+    type: weighted_choice
+    choices:
+      "Python-urllib/3.11": 0.4
+      "Python-urllib/3.12": 0.6
+
+  # ──────────────── Dual-emit Pod event fields ────────────────
+  # K8s controller-manager auto-creates Pod from DaemonSet spec.
+  # These fields populate the second emitted line (pod_create_line).
+  - name: controller_sa_uid                      # kube-system:daemon-set-controller SA UID
+    type: faker
+    method: uuid4
+
+  - name: pod_audit_id                           # separate auditID for the pod create event
+    type: faker
+    method: uuid4
+
+  # K8s worker node name where DaemonSet replica lands. Real clusters
+  # have many; we use a small pool to keep fixtures realistic.
+  - name: node_name
+    type: weighted_choice
+    choices:
+      "node-worker-1": 0.4
+      "node-worker-2": 0.3
+      "node-worker-3": 0.3
+
+# K8s audit JSON Event — dual-line emit (line-delimited Beats ingest into
+# Elasticsearch). Two audit events per render reflect the real TeamPCP attack:
+#
+# Line 1 — DaemonSet create (attacker-direct):
+#   - compromised SA (system:serviceaccount:<ns>:compromised-sa) POST DS spec
+#   - userAgent = Python-urllib/*  (LiteLLM payload uses Python stdlib http)
+#   - objectRef.resource = daemonsets
+#   - full DaemonSet spec.template.spec.containers (PodSpec inside DS)
+#   - existing companion-SOC-stack rules target pods axis only → this line currently
+#     has no rule coverage (future-ready for daemonset-axis rules)
+#
+# Line 2 — Pod create (controller-spawn):
+#   - kube-controller-manager auto-creates Pod from DS spec
+#   - user = system:serviceaccount:kube-system:daemon-set-controller
+#   - userAgent = kube-controller-manager/v1.28.x ...
+#   - objectRef.resource = pods, name = <ds-name>-<5char hash>
+#   - requestObject.spec.serviceAccountName = compromised-sa (Pod inherits)
+#   - requestObject.metadata.ownerReferences = [DaemonSet ref]
+#   - this line fires existing 112501 (pod node-setup-*) and (for kamikaze
+#     case) 112502; provisioner case fires only 112501 because 112503 is
+#     currently commented out
+#
+# annotations.authorization.k8s.io/{decision,reason} present on both lines
+# (real events always carry these for successful create requests).
+template: |-
+  {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"RequestResponse","auditID":"{{audit_id}}","stage":"ResponseComplete","requestURI":"/apis/apps/v1/namespaces/{{params.victim_namespace}}/daemonsets","verb":"create","user":{"username":"system:serviceaccount:{{params.victim_namespace}}:{{params.victim_sa}}","uid":"{{sa_uid}}","groups":["system:serviceaccount:{{params.victim_namespace}}:{{params.victim_sa}}","system:serviceaccounts","system:serviceaccounts:{{params.victim_namespace}}","system:authenticated"]},"sourceIPs":["{{source_ip}}"],"userAgent":"{{user_agent}}","objectRef":{"resource":"daemonsets","namespace":"{{params.victim_namespace}}","name":"{{pod_name}}","apiGroup":"apps","apiVersion":"v1"},"responseStatus":{"metadata":{},"status":"Success","code":201},"requestObject":{"kind":"DaemonSet","apiVersion":"apps/v1","metadata":{"name":"{{pod_name}}","namespace":"{{params.victim_namespace}}","creationTimestamp":null},"spec":{"selector":{"matchLabels":{"app":"{{pod_name}}"}},"template":{"metadata":{"creationTimestamp":null,"labels":{"app":"{{pod_name}}"}},"spec":{"hostNetwork":true,"hostPID":true,"containers":[{"name":"{{container_name}}","image":"alpine:latest","command":["/bin/sh","-c","mount -o bind / /host && nsenter -t 1 -m -u -i -n -p -- bash"],"resources":{},"securityContext":{"privileged":true,"capabilities":{"add":["SYS_ADMIN"]}},"volumeMounts":[{"name":"host-root","mountPath":"/host"}]}],"volumes":[{"name":"host-root","hostPath":{"path":"/","type":"Directory"}}],"serviceAccountName":"{{params.victim_sa}}"}}},"status":{"currentNumberScheduled":0,"numberMisscheduled":0,"desiredNumberScheduled":0,"numberReady":0}},"requestReceivedTimestamp":"{{ts_iso}}","stageTimestamp":"{{ts_iso}}","annotations":{"authorization.k8s.io/decision":"allow","authorization.k8s.io/reason":"RBAC: allowed by ClusterRoleBinding \"compromised-sa-binding\" of ClusterRole \"cluster-admin\" to ServiceAccount \"{{params.victim_sa}}/{{params.victim_namespace}}\""}}
+  {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"RequestResponse","auditID":"{{pod_audit_id}}","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/{{params.victim_namespace}}/pods","verb":"create","user":{"username":"system:serviceaccount:kube-system:daemon-set-controller","uid":"{{controller_sa_uid}}","groups":["system:serviceaccount:kube-system:daemon-set-controller","system:serviceaccounts","system:serviceaccounts:kube-system","system:authenticated"]},"sourceIPs":["{{source_ip}}"],"userAgent":"kube-controller-manager/v1.28.10 (linux/amd64) kubernetes/abc1234/leader-election","objectRef":{"resource":"pods","namespace":"{{params.victim_namespace}}","name":"{{pod_name}}-{{pod_suffix[:5]|lower}}","apiGroup":"","apiVersion":"v1"},"responseStatus":{"metadata":{},"status":"Success","code":201},"requestObject":{"kind":"Pod","apiVersion":"v1","metadata":{"name":"{{pod_name}}-{{pod_suffix[:5]|lower}}","namespace":"{{params.victim_namespace}}","creationTimestamp":null,"ownerReferences":[{"apiVersion":"apps/v1","kind":"DaemonSet","name":"{{pod_name}}","uid":"{{audit_id}}","controller":true,"blockOwnerDeletion":true}]},"spec":{"hostNetwork":true,"hostPID":true,"containers":[{"name":"{{container_name}}","image":"alpine:latest","command":["/bin/sh","-c","mount -o bind / /host && nsenter -t 1 -m -u -i -n -p -- bash"],"resources":{},"securityContext":{"privileged":true,"capabilities":{"add":["SYS_ADMIN"]}},"volumeMounts":[{"name":"host-root","mountPath":"/host"}]}],"volumes":[{"name":"host-root","hostPath":{"path":"/","type":"Directory"}}],"serviceAccountName":"{{params.victim_sa}}","nodeName":"{{node_name}}"},"status":{"phase":"Pending"}},"requestReceivedTimestamp":"{{ts_iso}}","stageTimestamp":"{{ts_iso}}","annotations":{"authorization.k8s.io/decision":"allow","authorization.k8s.io/reason":"RBAC: allowed by ClusterRoleBinding \"system:daemon-set-controller\" of ClusterRole \"system:controller:daemon-set-controller\" to ServiceAccount \"daemon-set-controller/kube-system\""}}

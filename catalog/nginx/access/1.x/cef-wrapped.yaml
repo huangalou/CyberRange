@@ -1,0 +1,306 @@
+vendor: nginx
+product: nginx-gateway
+version: "1.x"
+log_type: cef.access
+description: |
+  Nginx access log wrapped in ArcSight CEF, as consumed by the
+  companion SOC stack's ELK side `nginx-cef-*` ingest pipeline.
+
+  IMPORTANT — Nginx does NOT emit CEF natively. The Nginx access log
+  module (`ngx_http_log_module`) only knows about the `log_format`
+  directive, which produces plain-text records (the canonical
+  `combined` log layout); no CEF, no syslog framing, no JSON unless
+  the operator writes a `log_format ... escape=json` block. A CEF
+  line for an Nginx event therefore only appears after one of these
+  upstream re-emitters has parsed the native access log line (or the
+  Nginx → syslog stream) and re-shaped it into a CEF body:
+
+    1. NXLog Enterprise / Community Edition `om_cef` output module
+       — vendor-blessed CEF formatter; reads the access log via
+       `im_file`, parses with `xm_csv` or `xm_kvp`, then emits via
+       `om_cef`. Used in HP ArcSight + Micro Focus ArcSight customer
+       deployments.
+    2. syslog-ng OSE/PE `format-cef-extension()` template function
+       — pairs with a custom `template()` block that renders the
+       parsed Nginx fields as a CEF header + key=value extensions.
+       Documented in syslog-ng 4.x admin guide.
+    3. rsyslog `omfwd` + `$template` macro that hand-builds a CEF
+       header from `$msg` regex captures; brittle but common in
+       legacy SOC stacks that pre-date NXLog/syslog-ng adoption.
+    4. Fluent Bit `lua` filter calling `string.format()` to build
+       a CEF line from the already-parsed `nginx` parser fields,
+       then routing via `out_syslog`.
+    5. Application-side emitter (Python / Go agent at the edge gate)
+       that builds CEF directly without ever writing a plain Nginx
+       access log first. This catalog mirrors the wire format produced
+       by the companion SOC stack's own payload-injection test harness
+       (per-scenario SQLi / XSS generators that build CEF directly and
+       frame it with RFC 3164 syslog headers) so the same CEF wire
+       format flows through the same ELK ingest pipeline.
+
+  This catalog is therefore a **wrap-spec** (how an Nginx access
+  event arrives at the SIEM after the chosen wrapper has done its
+  job), not a vendor-spec for an Nginx-native protocol.
+
+  Source-of-truth (fetched 2026-05-15):
+    - The companion SOC stack's own payload-injection test harness
+      (the actual emitter feeding `nginx-cef-*`): a shared CEF-builder
+      + syslog-framer helper driven by per-scenario generators (SQLi,
+      XSS, ...), each pinning the vendor/product/version and extension
+      key set this catalog mirrors.
+    - The companion SOC stack's ELK ingest pipelines that consume this
+      wire form: an entry pipeline (dissects the CEF header the same
+      way as its sibling CEF-wrapped sources) and an ECS-mapping
+      pipeline (src→source.ip, dst→destination.ip, request→
+      url.original, requestMethod→http.request.method,
+      cs1→labels.custom1, out→http.response.bytes,
+      event.module="nginx", event.dataset="nginx.gateway").
+    - Nginx native log module reference (proof CEF is not native):
+        https://nginx.org/en/docs/http/ngx_http_log_module.html
+    - ArcSight CEF Implementation Standard v25 (CEF header grammar,
+      extension dictionary — the keys `src`, `spt`, `dst`, `dpt`,
+      `dhost`, `request`, `requestMethod`, `requestClientApplication`,
+      `cs1`..`cs9`, `cn1`..`cn3`, `out`, `in`, `rt` are normalized
+      against this dictionary):
+        https://www.microfocus.com/documentation/arcsight/
+          arcsight-smartconnectors-8.4/cef-implementation-standard/
+    - NXLog `om_cef` reference (one canonical re-emitter):
+        https://docs.nxlog.co/integrate/cef.html
+    - syslog-ng `format-cef-extension()` admin guide:
+        https://www.syslog-ng.com/technical-documents/doc/syslog-ng-
+          open-source-edition/4.4/administration-guide/
+
+  Real CEF wire-format example (verbatim from the companion SOC
+  stack's SQLi injection test scenario, syslog-framed the same way):
+
+    <133>May 14 11:42:07 injector CEF:0|nginx|nginx-gateway|1.27|web-sqli|possible-sql-injection|7|cs1=403 cs1Label=responseCode cs9=20260514-1142-sqli-run cs9Label=injection_id dhost=victim.example.com dpt=443 dst=203.0.113.10 msg=SQLi pattern in request request=/login.php?user=admin&pass='%20OR%20'1'\='1 requestMethod=GET spt=50000 src=192.0.2.60
+
+  Note the literal `\=` escape in `request=` — CEF extension values
+  must escape `=` per the CEF Implementation Standard. The ECS
+  ingest pipeline reverses this via the `kv` processor's
+  `trim_value` step before copying to `url.original`.
+
+  SIEM rule mapping: this catalog backs the ELK-side
+  detection rules that target `index: nginx-cef-*`. Without this
+  catalog the lagging-intelligence gap (R10) extends to the
+  `nginx-cef-*` index — Kibana SQLi/XSS detection rules see no
+  synthetic data and cannot be regression-tested.
+
+  Wazuh side note: Wazuh's native nginx coverage
+  (`local_nginx_gateway.xml` rules 119000-119010) operates on the
+  plain `combined` access.log via `/var/log/nginx/access.log`
+  location and the built-in 31100 web-accesslog parent rule. Those
+  IDs do NOT fire on this CEF wire form — when a CEF line reaches
+  Wazuh, it is decoded by the built-in `cef` decoder and triggers
+  generic CEF rules (no nginx-specific Wazuh rule_id pivot). The
+  detection list below reflects this: the Wazuh side decodes but
+  the actionable detection lives on the ELK side. The native
+  sibling `catalog/nginx/access/1.x/combined.yaml` (if/when shipped)
+  is the path to exercise rules 119000-119010.
+
+format: cef
+transport: [udp_syslog, tcp_syslog, file, beats]
+
+ocsf:
+  class: web_resources_activity
+  category_uid: 6
+  class_uid: 6004
+
+detections:
+  wazuh:
+    # CEF lines decoded by Wazuh's built-in `cef` decoder. No
+    # nginx-specific Wazuh rule_id fires on this wire form — the
+    # 119000-119010 family is gated on the native access.log path
+    # (location=/var/log/nginx/access.log + 31100 parent rule).
+    - decoder: cef
+  sigma:
+    - rule: nginx_suspicious_requests
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/web/nginx
+  elk_detection:
+    # Detection lives on the ELK side. Index pattern `nginx-cef-*`
+    # via `nginx-cef-entry` → `nginx-cef-to-ecs` pipelines.
+    - kibana_rule_id: nginx-cef-scan-pattern
+      severity: medium
+    # Many WAF.* rules drop down to nginx-cef-* when no upstream WAF
+    # saw the request (perimeter bypass scenario).
+
+mythos_alignment:
+  risk_refs: [R10]   # without this catalog the lagging-intelligence
+                      # gap extends to the nginx-cef-* index
+  pa_refs: [PA1]
+  ttx_class: rapid
+
+regression:
+  # nginx access volume is high; default rules alert only on a small
+  # slice (status>=500, scanner UAs, path traversal patterns).
+  # Baseline ~3% match against synthetic mixed traffic.
+  baseline_alert_count: 30
+  baseline_ttd_ms: 4000
+
+params:
+  syslog_host:
+    default: "injector"   # matches the injection test harness's default
+  victim_domain:
+    default: "victim.example.com"   # RFC 2606 reserved
+  victim_dst:
+    default: "203.0.113.10"          # RFC 5737 TEST-NET-3
+  src_pool:
+    # RFC 5737 TEST-NET-1 — the injection test harness rejects anything
+    # else outside this range
+    default: ["192.0.2.42", "192.0.2.60", "192.0.2.61", "192.0.2.91"]
+  vhost_pool:
+    default: ["victim.example.com", "app.example.lab", "api.example.lab"]
+
+fields:
+  # local0.notice = 16*8+5 = 133, matches the injection test harness's
+  # syslog framer default (facility=16, severity=5). SEPM-style
+  # local6.notice (<51>) would also be acceptable for direct-from-
+  # device emitters; <133> is what the harness emits.
+  - name: pri
+    type: fixed
+    value: 133
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  - name: syslog_host
+    type: param
+    param: syslog_host
+
+  - name: src_ip
+    type: choice
+    choices: ${params.src_pool}
+
+  - name: src_port
+    type: int_range
+    min: 50000
+    max: 60000   # matches the injection test harness's spt range
+
+  - name: dst_ip
+    type: param
+    param: victim_dst
+
+  - name: dst_port
+    type: weighted_choice
+    choices: { "443": 0.85, "80": 0.15 }
+
+  # CEF dhost = HTTP Host header. The injection test harness emits
+  # victim.example.com (RFC 2606 reserved); organic traffic carries
+  # the real vhost.
+  - name: vhost
+    type: choice
+    choices: ${params.vhost_pool}
+
+  - name: http_method
+    type: weighted_choice
+    choices: { GET: 0.75, POST: 0.20, PUT: 0.02, DELETE: 0.01, OPTIONS: 0.02 }
+
+  # CEF `request` = URL path + query string. The injection test
+  # harness uses this as the SQLi/XSS payload carrier — same key the ECS pipeline
+  # copies to url.original.
+  - name: http_url
+    type: weighted_choice
+    choices:
+      "/":                                          0.18
+      "/api/v1/users":                              0.12
+      "/api/v1/login":                              0.10
+      "/static/app.js":                             0.10
+      "/admin/.env":                                0.05
+      "/wp-login.php":                              0.05
+      "/login.php?user=admin&pass=':%20OR%20'1'='1": 0.05
+      "/products?id=1%20UNION%20SELECT%20username,password%20FROM%20users--": 0.05
+      "/search?q=%3Cscript%3Ealert(1)%3C/script%3E": 0.05
+      "/api/v1/orders/123":                         0.10
+      "/static/main.css":                           0.10
+      "/healthz":                                   0.05
+
+  # cs1 = responseCode in the injection test harness's vocabulary. Pipeline
+  # copies to labels.custom1 (NOT to http.response.status_code — open
+  # question, see companion doc).
+  - name: http_status
+    type: weighted_choice
+    choices:
+      "200": 0.65
+      "301": 0.05
+      "404": 0.12
+      "403": 0.05
+      "500": 0.05
+      "502": 0.03
+      "401": 0.05
+
+  # `out` = response body bytes — ECS pipeline copies to
+  # http.response.bytes (long).
+  - name: body_bytes_sent
+    type: int_range
+    min: 100
+    max: 1500000
+
+  - name: http_agent
+    type: weighted_choice
+    choices:
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605": 0.30
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537":       0.30
+      "curl/7.81":            0.10
+      "Nikto/2.5.0":          0.05
+      "sqlmap/1.7":           0.05
+      "python-requests/2.31": 0.10
+      "Go-http-client/2.0":   0.10
+
+  # The harness msg field is human-readable, used by the verifier
+  # for diagnostic display.
+  - name: cef_msg
+    type: weighted_choice
+    choices:
+      "request served":               0.70
+      "SQLi pattern in request":      0.15
+      "XSS pattern in request":       0.10
+      "path traversal pattern":       0.05
+
+  # CEF signature_id — symbolic class id matching the harness:
+  # web-sqli / web-xss / web-scan / web-access (community
+  # convention; not standardized, but pinned to what the ECS
+  # pipeline + Kibana detection rules already key off via
+  # event.code).
+  - name: signature_id
+    type: weighted_choice
+    choices:
+      "web-access":  0.70
+      "web-sqli":    0.10
+      "web-xss":     0.10
+      "web-scan":    0.10
+
+  # CEF `name` (event_name slot in header) — human readable per CEF
+  # spec section "Name".
+  - name: event_name
+    type: template
+    template: "{% if signature_id == 'web-sqli' %}possible-sql-injection{% elif signature_id == 'web-xss' %}possible-cross-site-scripting{% elif signature_id == 'web-scan' %}possible-scanner-activity{% else %}http-request{% endif %}"
+
+  # CEF severity — 0..10. The injection test harness uses 7 for attack
+  # patterns, default 3 for normal access.
+  - name: cef_severity
+    type: template
+    template: "{% if signature_id == 'web-access' %}3{% else %}7{% endif %}"
+
+# CEF wrap-spec template — strict ArcSight CEF v25 header grammar:
+#   CEF:Version|DeviceVendor|DeviceProduct|DeviceVersion|SignatureID|Name|Severity|Extension
+# Extension keys ordered alphabetically (matches the injection test
+# harness's CEF builder — sorted(extension) gives deterministic output).
+# Extension key map (audited against nginx-cef-to-ecs.json):
+#   cs1           ← HTTP response code  → labels.custom1
+#   cs1Label      = "responseCode"
+#   dhost         ← Host header         → destination.domain
+#   dpt           ← upstream port        → destination.port (long)
+#   dst           ← upstream IP          → destination.ip
+#   in            ← request body bytes  → (ECS: not currently mapped)
+#   msg           ← human-readable event description (kept for verifier)
+#   out           ← response body bytes → http.response.bytes (long)
+#   request       ← URL path+query      → url.original
+#                                          (CEF spec key; NOT requestUrl)
+#   requestClientApplication ← User-Agent → (ECS: not currently mapped)
+#   requestMethod ← HTTP method          → http.request.method
+#   rt            ← receipt time (CEF ms epoch or "MMM dd yyyy HH:mm:ss")
+#   spt           ← source ephemeral port → source.port (long)
+#   src           ← client IP            → source.ip
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{syslog_host}} CEF:0|nginx|nginx-gateway|1.27|{{signature_id}}|{{event_name}}|{{cef_severity}}|cs1={{http_status}} cs1Label=responseCode dhost={{vhost}} dpt={{dst_port}} dst={{dst_ip}} msg={{cef_msg}} out={{body_bytes_sent}} request={{http_url}} requestClientApplication={{http_agent}} requestMethod={{http_method}} spt={{src_port}} src={{src_ip}}

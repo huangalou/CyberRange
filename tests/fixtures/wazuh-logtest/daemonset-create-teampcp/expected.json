@@ -1,0 +1,154 @@
+{
+  "catalog_path": "catalog/kubernetes/k8s-audit/1.x/daemonset-create-teampcp.yaml",
+  "catalog_sha": "7a1f2130b879562b46622ff7bcc762af0c4c0bbd",
+  "decoder": "json",
+  "dual_emit": {
+    "lines_per_event": 2,
+    "line_1_axis": "daemonsets (attacker-direct via compromised SA, Python-urllib UA)",
+    "line_2_axis": "pods (controller-spawn by daemon-set-controller, kube-controller-manager UA)"
+  },
+  "fixtures": [
+    {
+      "name": "sample-1-kamikaze-default-ns",
+      "sample_file": "sample-1-kamikaze-default-ns.log",
+      "phase2_observe": {
+        "_comment": "decoded_as=json on both lines; key field shape per axis",
+        "line_1": {
+          "verb": "create",
+          "objectRef.resource": "daemonsets",
+          "objectRef.namespace": "default",
+          "objectRef.name": "node-setup-a1b2c3d4",
+          "user.username": "system:serviceaccount:default:compromised-sa",
+          "userAgent": "Python-urllib/3.11",
+          "container_name": "kamikaze"
+        },
+        "line_2": {
+          "verb": "create",
+          "objectRef.resource": "pods",
+          "objectRef.namespace": "default",
+          "objectRef.name": "node-setup-a1b2c3d4-a1b2c",
+          "user.username": "system:serviceaccount:kube-system:daemon-set-controller",
+          "userAgent_prefix": "kube-controller-manager/",
+          "container_name": "kamikaze",
+          "spec.serviceAccountName": "compromised-sa"
+        }
+      },
+      "phase3_must_fire": [112502],
+      "phase3_min_level": 15,
+      "phase3_axis_breakdown": {
+        "line_1_fire": [],
+        "line_1_reason": "no current rule targets daemonsets axis (future-ready)",
+        "line_2_fire": [112502],
+        "line_2_reason": "Wazuh single-rule-per-event behavior: 112501 (lvl 14) and 112502 (lvl 15) both match line 2, but non-chained rules only fire the highest-level match. 112502 wins."
+      }
+    },
+    {
+      "name": "sample-2-kamikaze-kube-system-ns",
+      "sample_file": "sample-2-kamikaze-kube-system-ns.log",
+      "phase2_observe": {
+        "line_1": {
+          "verb": "create",
+          "objectRef.resource": "daemonsets",
+          "objectRef.namespace": "kube-system",
+          "objectRef.name": "node-setup-e5f6a7b8",
+          "user.username": "system:serviceaccount:kube-system:compromised-sa",
+          "userAgent": "Python-urllib/3.12",
+          "container_name": "kamikaze"
+        },
+        "line_2": {
+          "verb": "create",
+          "objectRef.resource": "pods",
+          "objectRef.namespace": "kube-system",
+          "objectRef.name": "node-setup-e5f6a7b8-e5f6a",
+          "user.username": "system:serviceaccount:kube-system:daemon-set-controller",
+          "userAgent_prefix": "kube-controller-manager/",
+          "container_name": "kamikaze",
+          "spec.serviceAccountName": "compromised-sa"
+        }
+      },
+      "phase3_must_fire": [112502],
+      "phase3_min_level": 15,
+      "phase3_axis_breakdown": {
+        "line_1_fire": [],
+        "line_2_fire": [112502]
+      },
+      "notes": "kube-system namespace 變體 — 既有 rule 不對 namespace 做 axis 區分,fire 行為與 default ns 相同。Wazuh single-rule-per-event:112502 (lvl 15) wins over 112501 (lvl 14)。"
+    },
+    {
+      "name": "sample-3-provisioner-default-ns",
+      "sample_file": "sample-3-provisioner-default-ns.log",
+      "phase2_observe": {
+        "line_1": {
+          "verb": "create",
+          "objectRef.resource": "daemonsets",
+          "objectRef.namespace": "default",
+          "objectRef.name": "node-setup-c1d2e3f4",
+          "user.username": "system:serviceaccount:default:compromised-sa",
+          "userAgent": "Python-urllib/3.11",
+          "container_name": "provisioner"
+        },
+        "line_2": {
+          "verb": "create",
+          "objectRef.resource": "pods",
+          "objectRef.namespace": "default",
+          "objectRef.name": "node-setup-c1d2e3f4-c1d2e",
+          "user.username": "system:serviceaccount:kube-system:daemon-set-controller",
+          "userAgent_prefix": "kube-controller-manager/",
+          "container_name": "provisioner",
+          "spec.serviceAccountName": "compromised-sa"
+        }
+      },
+      "phase3_must_fire": [112501],
+      "phase3_must_not_fire": [112502, 112503],
+      "phase3_min_level": 14,
+      "phase3_axis_breakdown": {
+        "line_1_fire": [],
+        "line_2_fire": [112501],
+        "line_2_no_fire_reason_112503": "112503 (provisioner container) currently commented out in k8s-lateral-anomaly.xml due to legit storage provisioner naming conflict — needs cluster baseline before enable"
+      }
+    },
+    {
+      "name": "sample-4-provisioner-app-ns",
+      "sample_file": "sample-4-provisioner-app-ns.log",
+      "phase2_observe": {
+        "line_1": {
+          "verb": "create",
+          "objectRef.resource": "daemonsets",
+          "objectRef.namespace": "app-prod-1",
+          "objectRef.name": "node-setup-9876fedc",
+          "user.username": "system:serviceaccount:app-prod-1:compromised-sa",
+          "userAgent": "Python-urllib/3.12",
+          "container_name": "provisioner"
+        },
+        "line_2": {
+          "verb": "create",
+          "objectRef.resource": "pods",
+          "objectRef.namespace": "app-prod-1",
+          "objectRef.name": "node-setup-9876fedc-9876f",
+          "user.username": "system:serviceaccount:kube-system:daemon-set-controller",
+          "userAgent_prefix": "kube-controller-manager/",
+          "container_name": "provisioner",
+          "spec.serviceAccountName": "compromised-sa"
+        }
+      },
+      "phase3_must_fire": [112501],
+      "phase3_must_not_fire": [112502, 112503],
+      "phase3_min_level": 14,
+      "phase3_axis_breakdown": {
+        "line_1_fire": [],
+        "line_2_fire": [112501]
+      },
+      "notes": "custom namespace app-prod-1 — 模擬正式環境 tenant ns,證明 rule 對 namespace 無假設"
+    }
+  ],
+  "notes": [
+    "Sibling 4 of TeamPCP batch sprint(5 sibling 中第 4,k8s-audit cloud-native axis)。0 K8s 環境 forward-ready 驗收,無 live-fire 條件,僅 wazuh-logtest path 驗證。",
+    "對齊伴生 SOC repo(<soc-repo>) config/wazuh_manager/rules/k8s-lateral-anomaly.xml 既有 forward-ready rules(112501/112502/112504/112510 active,112503/112505/112506 commented)。本 catalog 不寫新 rule。",
+    "Catalog dual-emit per render 產 2 line:line 1 DaemonSet create(attacker-direct,compromised SA + Python-urllib UA,既有 rule 無 daemonsets 軸覆蓋)+ line 2 Pod create(K8s controller spawn,daemon-set-controller SA + kube-controller-manager UA,既有 rule 命中 pods 軸)。",
+    "Kamikaze case 預期 phase3 fire 112502 lvl 15(取代 112501 lvl 14,Wazuh single-rule-per-event 對 non-chained rule 只 fire 最高 level 那一條)。Provisioner case 預期 fire 112501 lvl 14(112503 commented,112501 為唯一 match)。",
+    "wazuh-logtest 對 multi-line pipe 是 line-by-line process:2 line 各 dispatch 一次,只有 pod line 命中既有 rule。",
+    "Sibling 4 vs Sibling 1-3 行為差異:Sibling 1 用 chain-rule(`<if_sid>` parent + child)讓 132020/132021 都 fire(獨立 sibling chain);既有 k8s 112501/112502 不是 chain,Wazuh 只 fire 最高 level → 實測符合 Wazuh ruleset 行為,非 catalog 設計問題。",
+    "Live-fire 阻塞條件:0 K8s 環境(無 audit log shipping path)+ .18 ELK filebeat.yml 無 k8s ingest pipeline。Catalog regression `live_fire_pending: true` 旗標標記。",
+    "Phase 2 field 抽取是 bonus 觀察,非 pass-fail;phase 3 rule fire 才是過關標準(既有 rule 用 Wazuh 內建 json decoder 自動 flatten + field match,不需 raw match)。"
+  ]
+}

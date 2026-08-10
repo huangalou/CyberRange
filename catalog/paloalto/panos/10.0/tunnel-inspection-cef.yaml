@@ -1,0 +1,123 @@
+vendor: paloalto
+product: panos
+version: "10.0"
+log_type: tunnel-inspection-cef
+description: |
+  PAN-OS 10.0 Tunnel Inspection log emitted in CEF. Generated when
+  Tunnel Inspection policy is matched on GRE / IPsec / GTP-U / VXLAN
+  tunnels and the firewall mirrors / logs the encapsulated session.
+
+  Per-dispatch customization via cef_extension_overrides /
+  cef_header_overrides; see `traffic-cef.yaml`.
+
+  Source-of-truth:
+    - PAN-OS 10.0 CEF Configuration Guide:
+        https://docs.paloaltonetworks.com/content/dam/techdocs/en_US/pdf/cef/pan-os-10-0-cef-configuration-guide.pdf
+
+format: cef
+transport: [udp_syslog, tcp_syslog, file, beats]
+
+ocsf:
+  class: network_activity
+  category_uid: 4
+  class_uid: 4001
+
+cef_header:
+  device_vendor:  "Palo Alto Networks"
+  device_product: "PAN-OS"
+  device_version: "10.0.0"
+  signature_id:   "tunnel"
+  name:           "TUNNEL"
+  severity:       3
+
+cef_mapping:
+  - { pa_field: receive_time,       cef_key: rt }
+  - { pa_field: serial,             cef_key: deviceExternalId }
+  - { pa_field: src_ip,             cef_key: src }
+  - { pa_field: dst_ip,             cef_key: dst }
+  - { pa_field: rule_name,          cef_key: PanOSRuleName }
+  - { pa_field: virtual_system,     cef_key: PanOSVsys }
+  - { pa_field: parent_session_id,  cef_key: externalId }
+  - { pa_field: src_port,           cef_key: spt }
+  - { pa_field: dst_port,           cef_key: dpt }
+  - { pa_field: protocol,           cef_key: proto }
+  - { pa_field: action,             cef_key: act }
+  - { pa_field: tunnel_type,        cef_key: cs1 }
+  - { pa_field: tunnel_id,          cef_key: cn1 }
+  - { pa_field: tunnel_inspection_rule, cef_key: PanOSTunnelInspectionRule }
+  - { pa_field: inner_src_ip,       cef_key: cs2 }
+  - { pa_field: inner_dst_ip,       cef_key: cs3 }
+  - { pa_field: bytes_total,        cef_key: bytes }
+  - { pa_field: bytes_sent,         cef_key: out }
+  - { pa_field: bytes_received,     cef_key: in }
+  - { pa_field: src_zone,           cef_key: PanOSSrcZone }
+  - { pa_field: dst_zone,           cef_key: PanOSDstZone }
+
+params:
+  hostname: { default: "PA-VM-01.example.local" }
+  serial:   { default: "001234567890" }
+  src_cidr: { default: "172.16.0.0/16" }
+  dst_pool:
+    default:
+      - "10.200.1.10"
+      - "10.200.1.20"
+      - "10.200.2.10"
+      - "192.168.50.5"
+
+fields:
+  - { name: pri, type: fixed, value: 134 }
+  - { name: rfc3164_ts, type: datetime, format: "%b %d %Y %H:%M:%S" }
+  - { name: hostname, type: param, param: hostname }
+
+  - { name: receive_time, type: datetime, format: "%b %d %Y %H:%M:%S" }
+  - { name: serial, type: param, param: serial }
+  - name: src_ip
+    type: cidr
+    cidr: ${params.src_cidr}
+  - name: dst_ip
+    type: choice
+    choices: ${params.dst_pool}
+  - name: rule_name
+    type: weighted_choice
+    choices: { "site-to-site-IPsec": 0.40, "gre-tunnel-1": 0.30, "vxlan-inspect": 0.20, "gtp-mobile-core": 0.10 }
+  - { name: virtual_system, type: fixed, value: "vsys1" }
+  - { name: parent_session_id, type: int_range, min: 100000, max: 9999999 }
+  - { name: src_port, type: int_range, min: 1024, max: 65535 }
+  - name: dst_port
+    type: weighted_choice
+    choices: { "4500": 0.40, "500": 0.30, "2152": 0.15, "4789": 0.15 }
+  - name: protocol
+    type: weighted_choice
+    choices: { "udp": 0.60, "esp": 0.20, "gre": 0.15, "tcp": 0.05 }
+  - name: action
+    type: weighted_choice
+    choices: { "allow": 0.90, "drop": 0.10 }
+  - name: tunnel_type
+    type: weighted_choice
+    choices:
+      "IPsec-ESP":  0.40
+      "GRE":        0.25
+      "GTP-U":      0.20
+      "VXLAN":      0.15
+  - { name: tunnel_id, type: int_range, min: 1, max: 65535 }
+  - name: tunnel_inspection_rule
+    type: weighted_choice
+    choices: { "default-inspect": 0.70, "strict-inspect": 0.20, "monitor-only": 0.10 }
+  - name: inner_src_ip
+    type: cidr
+    cidr: "192.168.0.0/16"
+  - name: inner_dst_ip
+    type: cidr
+    cidr: "10.0.0.0/8"
+  - { name: bytes_total,    type: int_range, min: 1024,  max: 50000000 }
+  - { name: bytes_sent,     type: int_range, min: 512,   max: 5000000 }
+  - { name: bytes_received, type: int_range, min: 512,   max: 45000000 }
+  - name: src_zone
+    type: weighted_choice
+    choices: { vpn: 0.60, trust: 0.30, mgmt: 0.10 }
+  - name: dst_zone
+    type: weighted_choice
+    choices: { trust: 0.60, dmz: 0.30, vpn: 0.10 }
+
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} CEF:0|{{cef_header.device_vendor}}|{{cef_header.device_product}}|{{cef_header.device_version}}|{{cef_header.signature_id}}|{{cef_header.name}}|{{cef_header.severity}}|{{cef_extensions}}

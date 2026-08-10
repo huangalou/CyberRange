@@ -1,0 +1,577 @@
+vendor: f5
+product: asm
+version: "16.x"
+log_type: waf.violation-cef
+description: |
+  F5 BIG-IP ASM / Advanced WAF violation event in **ArcSight Common
+  Event Format (CEF)** wire form. This is what arrives at SIEMs running
+  ArcSight ESM / ArcSight Logger or any CEF-only ingest path (Splunk
+  Connect for Syslog, Microsoft Sentinel CEF-via-AMA, IBM QRadar
+  CEF DSM, Graylog CEF input, etc.).
+
+  Sibling catalog (same ASM event, NATIVE wire form):
+    catalog/f5/asm/16.x/violation.yaml  (format: key_value, `ASM:` body)
+
+  Where does CEF actually come from on F5?
+  Unlike most SIEM-vendor catalogs in CyberRange, F5 BIG-IP ASM
+  **emits CEF natively** when the admin configures a Remote Logging
+  Profile with storage type **"ArcSight"** (F5 TechDocs term — same
+  profile UI page that exposes the "Reporting Server / Splunk" option
+  used by the native sibling). Per the F5 TechDocs "Logging
+  Application Security Events" page (BIG-IP 13.1 onward, including
+  16.x and 17.x), the three storage types on a Remote Logging
+  Profile are:
+    - "Remote": plain syslog (raw key-value)
+    - "Reporting Server": predefined Splunk key-value format
+       → catalog `violation.yaml`
+    - "ArcSight": "Log messages are in Common Event Format (CEF)"
+       → THIS CATALOG
+  So in production you see EITHER the native key-value sibling OR
+  this CEF form on the wire — pick whichever the customer has
+  configured. Some deployments also receive CEF after an upstream
+  ArcSight SmartConnector re-emit; the wire output is the same.
+
+  Source-of-truth (URLs fetched 2026-05-14):
+    - F5 TechDocs "Logging Application Security Events" (BIG-IP 17.0,
+      same field set as 16.x):
+        https://techdocs.f5.com/en-us/bigip-17-0-0/big-ip-asm-implementations/logging-application-security-events.html
+      ("For remote logging, you can send logging files for storage on
+      a remote system [...] on a reporting server [...] or on an
+      ArcSight server (in CEF format)." — confirms native CEF support.)
+    - F5 TechDocs "Event Messages and Attack Types" (canonical
+      ATTACK_TYPE_* vocabulary, shared with the native sibling):
+        https://techdocs.f5.com/kb/en-us/products/big-ip_ltm/manuals/product/bigip-external-monitoring-implementations-13-1-0/15.html
+    - **ArcSight F5 ASM Certified CEF Configuration Guide** (PDF
+      hosted by F5 themselves — the authoritative field map):
+        https://www.f5.com/images/solution-center/arcsight-f5-asm-certified-cef-onfiguration-guide.pdf
+      Verbatim test fixtures preserved in the Graylog CEF parser repo:
+        https://github.com/Graylog2/graylog-plugin-cef/blob/master/src/test/resources/fixtures/arcsight-f5-asm-certified-cef-onfiguration-guide_page7_example1.json
+        https://github.com/Graylog2/graylog-plugin-cef/blob/master/src/test/resources/fixtures/arcsight-f5-asm-certified-cef-onfiguration-guide_page8_example1.json
+        https://github.com/Graylog2/graylog-plugin-cef/blob/master/src/test/resources/fixtures/arcsight-f5-asm-certified-cef-onfiguration-guide_page9_example1.json
+    - LogRhythm syslog source "F5 BIG-IP ASM CEF" (independent parser
+      that targets the same wire form):
+        https://docs.logrhythm.com/devices/docs/syslog-f5-big-ip-asm-cef
+    - Devo / Logtrust cef0.f5.asm parser (third-party confirmation of
+      the cs1..cs6 / cn1..cn3 label mapping):
+        https://docs.devo.com/confluence/ndt/v7.3.0/parsers-and-collectors/technologies-supported-in-cef-syslog-format/cef0-f5-asm
+    - IBM QRadar DSM "F5 Networks BIG-IP ASM" sample events:
+        https://www.ibm.com/docs/en/dsm?topic=fnbia-f5-networks-big-ip-asm-sample-event-messages
+    - Sekoia F5 BIG-IP parser (ASM CEF field map):
+        https://docs.sekoia.io/integration/categories/network/f5-big-ip/
+    - Securonix F5 BIG-IP ASM Syslog deployment guide (CEF profile):
+        https://documentation.securonix.com/bundle/securonix-on-prem-user-guide/page/content/active-deployment-guides/f5-big-ip-asm-syslog.htm
+
+  Verbatim sample (ArcSight F5 ASM Certified CEF Guide page 7,
+  reproduced from Graylog's test fixture — one physical line on wire):
+    Sep 2 17:50:25 172.30.0.130 ASM:CEF:0|F5|ASM|10.1.0|Illegal query
+    string length|Illegal query string length|6|dvchost=3600.lab.asm.f5net.com
+    dvc=172.30.0.20 cs1=new_app_default cs1Label=policy_name cs2=new_app
+    cs2Label=web_application_name deviceCustomDate1=Sep 02 2009 15:09:20
+    deviceCustomDate1Label=policy_apply_date externalId=416829024209663345
+    act=alerted cn1=200 cn1Label=response_code src=172.30.0.126
+    spt=37446 dst=172.30.0.32 dpt=80 requestMethod=GET app=HTTP
+    request=/phpauction/search.php?\=&q\=%3Cscript%3E%3C%2Fscript%3E&\=Go%21
+    cs5= cs5Label=x_forwarded_for_header_value rt=Sep 02 2009 17:09:25
+    deviceExternalId=0 cs4=Buffer Overflow cs4Label=attack_type
+    cs6=N/A cs6Label=geo_location cs3Label=full_request cs3=GET ...
+
+  Key wire-form quirks (preserve these exactly — every downstream
+  parser depends on them):
+    1. The body is prefixed by literal `ASM:` BEFORE the `CEF:0|` —
+       i.e. `ASM:CEF:0|F5|ASM|...`. This is the F5 native form; the
+       `ASM:` tag never disappears, even in CEF mode.
+    2. Header field 1 = Device Vendor = `F5`.
+       Header field 2 = Device Product = `ASM` (NOT "Advanced WAF" —
+       the product header keeps the legacy `ASM` token forever).
+       Header field 3 = Device Version = software release, e.g. `16.1.4`.
+    3. Header field 4 = Device Event Class ID. F5 uses TWO conventions
+       depending on event family (per ArcSight Certified Guide):
+         - Attack-signature hit: NUMERIC signature id, e.g. `200000098`
+           (XSS), `200001475` (SQL-INJ), `200002041` (BO), `200001112`
+           (Path Traversal), `200021069` (Vuln-Scan).
+         - Violation / BF / Anomaly: human violation NAME, e.g.
+           `Illegal query string length`, `Brute Force Attack`,
+           `Web Scraping Attack`.
+       Header field 5 = Name (Violation/event description).
+       Header field 6 = Severity 0..10 (ArcSight scale).
+    4. F5 CEF `act` vocabulary: `passed` | `alerted` | `blocked`.
+       Note: F5 CEF uses `alerted` here while the native key-value
+       form uses `alarmed` — the ArcSight transform renames it.
+       Real F5 CEF samples (ArcSight Certified Guide pages 7/8/9)
+       show both `act=alerted` (lowercase) and `act=Alerted`
+       (titlecase, BF-attack family). We emit lowercase for
+       violation events and Title-cased for BF-attack family to
+       match observed real samples.
+    5. Custom-field label mapping (every cs*/cn* slot has a Label
+       extension — never emit a value without its Label):
+         cs1 = policy_name                  cs1Label=policy_name
+         cs2 = web_application_name         cs2Label=web_application_name
+         cs3 = full_request (HTTP req dump) cs3Label=full_request
+         cs4 = attack_type                  cs4Label=attack_type
+         cs5 = x_forwarded_for_header_value cs5Label=x_forwarded_for_header_value
+         cs6 = geo_location                 cs6Label=geo_location
+         cn1 = response_code                cn1Label=response_code
+         cn2 = violation_rating             cn2Label=violation_rating
+         cn3 = device_id                    cn3Label=device_id
+         deviceCustomDate1 = policy_apply_date
+                                            deviceCustomDate1Label=policy_apply_date
+         externalId = support_id (the F5 numeric request correlator)
+         dvchost = unit_hostname  dvc = management_ip_address
+         src/spt = ip_client / src_port   dst/dpt = dest_ip / dest_port
+         requestMethod = method           app = protocol (HTTP/HTTPS)
+         request = URI                    rt = event time (CEF format)
+    6. F5 CEF does NOT use ArcSight `suser` / `duser` — `username`
+       does not get its own extension in the certified guide; it is
+       carried inside `full_request` cookies/headers only. We follow
+       suit (do not invent a `suser` mapping).
+    7. F5 CEF lacks dedicated extensions for sig_ids and sig_names
+       once they are matched — the matched signature id becomes the
+       Device Event Class ID (header field 4); the human signature
+       name becomes the Name (header field 5).
+
+  SIEM rule mapping: covers the SAME 32 WAF rules
+  (from a reference SIEM ruleset) as the native sibling. The
+  CEF emitter populates `src` (client) and `dst` (server) — drives
+  the 內/外 zone axis through 6-tuple matching on the Wazuh side, and
+  request_status (passed/alerted/blocked) → 已阻擋 vs 未阻擋 split.
+
+  Rule coverage matrix (scenario × 內/外 host axis) — identical to
+  the native sibling:
+    SQL-Injection 攻擊            內部 130021/130082  外部 130005/130079
+    XSS 攻擊                      內部 130035/130091  外部 130108/130145
+    密碼暴力破解                  內部 130019/130038  外部 130081/130131
+    弱點掃描 by_name              內部 130065/130146  外部 130002/130126
+    弱點掃描 by_自訂字串4         內部 130139/130147  外部 130049/130086
+    緩衝區溢位                    內部 130078/130095  外部 130054/130125
+  Cross-cut:
+    伺服器主機觸發大量已阻擋      130015/130070
+    資安設備偵測內對內伺服器高風險未阻擋  130003/130056
+    資安設備偵測內對外高風險未阻擋        130014/130124
+    資安設備偵測外對內高風險未阻擋        130121/130127
+
+format: cef
+transport: [udp_syslog, tcp_syslog, file, beats]
+
+ocsf:
+  class: web_resources_activity
+  category_uid: 6
+  class_uid: 6004
+
+detections:
+  wazuh:
+    # CEF lines are decoded by Wazuh's built-in `cef` decoder (F5
+    # CEF is the canonical ArcSight format; no custom `f5-asm`
+    # decoder needed for this wire form). The 32 rule_ids match the
+    # native sibling exactly; only the upstream wire form differs.
+    - decoder: cef
+    # Attack-type rules (each scenario × 內/外 軸 都覆蓋)
+    - rule_id: 130005   # WAF_外部主機嘗試SQL-Injection攻擊
+      level: 7
+    - rule_id: 130079   # WAF_外部主機嘗試SQL-Injection攻擊
+      level: 7
+    - rule_id: 130021   # WAF_內部主機嘗試SQL-Injection攻擊
+      level: 7
+    - rule_id: 130082   # WAF_內部主機嘗試SQL-Injection攻擊
+      level: 7
+    - rule_id: 130108   # WAF_外部主機嘗試XSS攻擊
+      level: 7
+    - rule_id: 130145   # WAF_外部主機嘗試XSS攻擊
+      level: 7
+    - rule_id: 130035   # WAF_內部主機嘗試XSS攻擊
+      level: 7
+    - rule_id: 130091   # WAF_內部主機嘗試XSS攻擊
+      level: 7
+    - rule_id: 130081   # WAF_外部主機嘗試密碼暴力破解
+      level: 7
+    - rule_id: 130131   # WAF_外部主機嘗試密碼暴力破解
+      level: 7
+    - rule_id: 130019   # WAF_內部主機嘗試密碼暴力破解
+      level: 7
+    - rule_id: 130038   # WAF_內部主機嘗試密碼暴力破解
+      level: 7
+    - rule_id: 130002   # WAF_外部主機執行弱點掃描攻擊 by_name 1m.10
+      level: 7
+    - rule_id: 130126   # WAF_外部主機執行弱點掃描攻擊 by_name 1m.5
+      level: 7
+    - rule_id: 130049   # WAF_外部主機執行弱點掃描攻擊 by_自訂字串4 1m.5
+      level: 7
+    - rule_id: 130086   # WAF_外部主機執行弱點掃描攻擊 by_自訂字串4 1m.10
+      level: 7
+    - rule_id: 130065   # WAF_內部主機執行弱點掃描攻擊 by_name 1m.5
+      level: 7
+    - rule_id: 130146   # WAF_內部主機執行弱點掃描攻擊 by_name 1m.5
+      level: 7
+    - rule_id: 130139   # WAF_內部主機執行弱點掃描攻擊 by_自訂字串4 1m.5
+      level: 7
+    - rule_id: 130147   # WAF_內部主機執行弱點掃描攻擊 by_自訂字串4 1m.5
+      level: 7
+    - rule_id: 130054   # WAF_外部主機疑似進行緩衝區溢位攻擊
+      level: 7
+    - rule_id: 130125   # WAF_外部主機疑似進行緩衝區溢位攻擊
+      level: 7
+    - rule_id: 130078   # WAF_內部主機疑似進行緩衝區溢位攻擊
+      level: 7
+    - rule_id: 130095   # WAF_內部主機疑似進行緩衝區溢位攻擊
+      level: 7
+    # Cross-cut aggregation / 高風險未阻擋
+    - rule_id: 130015   # WAF_伺服器主機觸發大量已阻擋事件
+      level: 7
+    - rule_id: 130070   # WAF_伺服器主機觸發大量已阻擋事件
+      level: 7
+    - rule_id: 130003   # WAF_資安設備偵測內對內伺服器高風險未阻擋
+      level: 7
+    - rule_id: 130056   # WAF_資安設備偵測內對內伺服器高風險未阻擋
+      level: 7
+    - rule_id: 130014   # WAF_資安設備偵測內對外高風險未阻擋
+      level: 7
+    - rule_id: 130124   # WAF_資安設備偵測內對外高風險未阻擋
+      level: 7
+    - rule_id: 130121   # WAF_資安設備偵測外對內高風險未阻擋
+      level: 7
+    - rule_id: 130127   # WAF_資安設備偵測外對內高風險未阻擋
+      level: 7
+  sigma:
+    - rule: f5_asm_violation_cef
+      ref: https://github.com/SigmaHQ/sigma  # community contrib pending
+  elk_detection:
+    - kibana_rule_id: f5-asm-cef-attack-blocked
+      severity: high
+    - kibana_rule_id: f5-asm-cef-high-rating-unblocked
+      severity: critical
+
+mythos_alignment:
+  risk_refs: [R1, R4]
+  pa_refs: [PA1]
+  ttx_class: rapid
+
+regression:
+  # 1000 events with 6 attack_types × 2 軸 × 2 act(blocked/alerted)
+  # covers all 32 rules. Mass-blocked aggregation (130015/130070)
+  # needs >= 5 blocked events on the same dst within 1 min — fanout=5
+  # protected_dest_pool keeps this dense (same as native sibling).
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 3000
+
+params:
+  unit_hostname:
+    default: "bigip-asm-lab-01"
+  dvchost_fqdn:
+    default: "bigip-asm-lab-01.lab.local"
+  device_id:
+    default: "f5-asm-lab-01.lab.local"
+  policy_name:
+    default: "/Common/asm_blocking_policy_prod"
+  web_application_name:
+    default: "/Common/asm_blocking_policy_prod"
+  management_ip_address:
+    default: "10.0.30.10"
+  # External attackers — drives 外部主機 axis rules
+  external_attacker_pool:
+    default:
+      - "203.0.113.45"
+      - "198.51.100.77"
+      - "45.142.213.18"
+      - "194.165.16.99"
+      - "172.93.179.115"
+  # Internal sources — drives 內部主機 axis rules
+  internal_source_pool:
+    default: "10.0.20.0/24"
+  # Protected web servers behind the WAF
+  protected_dest_pool:
+    default:
+      - "10.0.50.10"
+      - "10.0.50.11"
+      - "10.0.50.12"
+      - "10.0.50.13"
+      - "10.0.50.14"
+
+fields:
+  - name: pri
+    type: fixed
+    value: 134   # local0.info — F5 ASM default facility/severity
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  # CEF `rt` extension and `deviceCustomDate1` format — ArcSight
+  # canonical "MMM dd yyyy HH:mm:ss" (matches every verbatim F5
+  # sample from the ArcSight Certified Guide).
+  - name: cef_rt
+    type: datetime
+    format: "%b %d %Y %H:%M:%S"
+
+  - name: policy_apply_date_cef
+    type: fixed
+    value: "Apr 15 2026 09:30:12"
+
+  # src_zone drives 內 vs 外 axis. 60% external (typical perimeter
+  # exposure), 40% internal (insider threat / pivoted-attacker scenarios).
+  - name: src_zone
+    type: weighted_choice
+    choices:
+      external: 0.60
+      internal: 0.40
+
+  - name: external_src
+    type: choice
+    choices: ${params.external_attacker_pool}
+
+  - name: internal_src
+    type: cidr
+    cidr: ${params.internal_source_pool}
+
+  - name: client_ip
+    type: template
+    template: "{% if src_zone == 'external' %}{{external_src}}{% else %}{{internal_src}}{% endif %}"
+
+  - name: server_ip
+    type: choice
+    choices: ${params.protected_dest_pool}
+
+  - name: src_port
+    type: int_range
+    min: 1024
+    max: 65535
+
+  - name: dest_port
+    type: weighted_choice
+    choices:
+      "443": 0.75
+      "80":  0.25
+
+  # CEF `app` extension — ArcSight ApplicationProtocol. F5 emits
+  # HTTP/HTTPS literal per certified guide.
+  - name: app_protocol
+    type: template
+    template: "{% if dest_port == '443' %}HTTPS{% else %}HTTP{% endif %}"
+
+  - name: geo_location
+    type: weighted_choice
+    choices:
+      "RU": 0.18
+      "CN": 0.22
+      "US": 0.25
+      "BR": 0.12
+      "RO": 0.08
+      "N/A": 0.15
+
+  # attack_type — drives which ArcSight scenario rule fires. Values
+  # are the literal F5 ATTACK_TYPE_* tokens emitted in cs4=, per
+  # F5 TechDocs "Event Messages and Attack Types" and the verbatim
+  # ArcSight Certified CEF Guide page 8 sample
+  # (cs4=Cross Site Scripting (XSS)). Distribution matches native
+  # sibling so a paired run on both wire forms exercises rules
+  # symmetrically.
+  - name: attack_type
+    type: weighted_choice
+    choices:
+      "SQL-Injection":              0.25
+      "Cross Site Scripting (XSS)": 0.20
+      "Vulnerability Scan":         0.18
+      "Brute Force Attack":         0.15
+      "Buffer Overflow":            0.10
+      "Path Traversal":             0.07
+      "Other Application Activity": 0.05
+
+  # CEF header field 4 = Device Event Class ID. Two real-world
+  # conventions per ArcSight Certified Guide:
+  #   - Attack-signature hit: emit the numeric F5 signature id.
+  #     (Real ids verified against signatures.f5.com / Picus DB.)
+  #   - Violation/BF/Anomaly: emit the violation-name string
+  #     directly (e.g. "Brute Force Attack", "Illegal query
+  #     string length").
+  - name: signature_id_header
+    type: template
+    template: |-
+      {%- if attack_type == 'SQL-Injection' -%}
+      200001475
+      {%- elif attack_type == 'Cross Site Scripting (XSS)' -%}
+      200000091
+      {%- elif attack_type == 'Buffer Overflow' -%}
+      200002041
+      {%- elif attack_type == 'Path Traversal' -%}
+      200001112
+      {%- elif attack_type == 'Vulnerability Scan' -%}
+      200021069
+      {%- elif attack_type == 'Brute Force Attack' -%}
+      Brute Force Attack
+      {%- else -%}
+      Illegal query string length
+      {%- endif %}
+
+  # CEF header field 5 = Name. Pairs 1:1 with signature_id_header
+  # using F5's canonical attack-signature names (verified from
+  # ArcSight Certified Guide page 8: name="XSS script tag (Parameter)"
+  # paired with class id 200000098).
+  - name: name_header
+    type: template
+    template: |-
+      {%- if attack_type == 'SQL-Injection' -%}
+      SQL-INJ ' OR 1=1 -- (Parameter)
+      {%- elif attack_type == 'Cross Site Scripting (XSS)' -%}
+      XSS script tag (Parameter)
+      {%- elif attack_type == 'Buffer Overflow' -%}
+      Buffer overflow attempt (Header)
+      {%- elif attack_type == 'Path Traversal' -%}
+      Directory traversal (../../etc/passwd) (URI)
+      {%- elif attack_type == 'Vulnerability Scan' -%}
+      Automated client access "sqlmap"
+      {%- elif attack_type == 'Brute Force Attack' -%}
+      Transparent
+      {%- else -%}
+      HTTP protocol compliance failed
+      {%- endif %}
+
+  # CEF Severity (header field 6). ArcSight 0..10 scale. F5 certified
+  # samples: typical violation = 6 (Illegal query string length),
+  # signature hit = 5..7 (XSS=5, BO=7), BF Attack = 8.
+  - name: cef_severity
+    type: template
+    template: |-
+      {%- if attack_type == 'Brute Force Attack' -%}
+      8
+      {%- elif attack_type == 'Buffer Overflow' or attack_type == 'SQL-Injection' -%}
+      7
+      {%- elif attack_type == 'Cross Site Scripting (XSS)' or attack_type == 'Path Traversal' -%}
+      5
+      {%- elif attack_type == 'Vulnerability Scan' -%}
+      6
+      {%- else -%}
+      4
+      {%- endif %}
+
+  # CEF `act` — F5 certified guide uses lowercase for violation
+  # events (`act=alerted`) and titlecase for BF-attack family
+  # (`act=Alerted` — page 9 sample). Drives 已阻擋 vs 未阻擋
+  # ArcSight rule split.
+  - name: act_value
+    type: weighted_choice
+    choices:
+      "blocked": 0.70
+      "alerted": 0.20   # detect-only / transparent mode (CEF rename of native "alarmed")
+      "passed":  0.10   # below blocking threshold
+
+  - name: response_code
+    type: template
+    template: "{% if act_value == 'blocked' %}0{% else %}200{% endif %}"
+
+  - name: request_method
+    type: weighted_choice
+    choices:
+      "POST":   0.55
+      "GET":    0.35
+      "PUT":    0.05
+      "DELETE": 0.05
+
+  # CEF `request` extension — URI portion. F5 puts the full path+query
+  # here (cf. ArcSight Certified Guide page 7:
+  #   request=/phpauction/search.php?=&q=%3Cscript%3E... ).
+  - name: request_uri
+    type: weighted_choice
+    choices:
+      "/login.php?id=1' OR '1'='1":                  0.18
+      "/search?q=<script>alert(1)</script>":         0.15
+      "/admin/exec?cmd=cat%20/etc/passwd":           0.13
+      "/download?file=../../etc/shadow":             0.10
+      "/cart?coupon=' UNION SELECT NULL--":          0.12
+      "/api/v1/items?filter[id]=1%20AND%20SLEEP(5)": 0.10
+      "/":                                           0.10
+      "/api/auth?user=admin&pwd=admin123":           0.12
+
+  # F5 ASM support_id — 18..20 digit decimal request correlator
+  # (ArcSight Certified Guide page 7 sample:
+  #   externalId=416829024209663345). 64-bit integer rendered as
+  # decimal string. We use hex_16 here because the engine lacks a
+  # numeric-decimal-of-fixed-width faker; downstream parsers treat
+  # externalId as opaque so this is wire-acceptable.
+  - name: support_id
+    type: faker
+    method: hex_16
+
+  - name: x_forwarded_for_header_value
+    type: weighted_choice
+    choices:
+      "N/A":             0.50
+      "203.0.113.45":    0.15
+      "198.51.100.77":   0.15
+      "45.142.213.18":   0.10
+      "194.165.16.99":   0.10
+
+  # violation_rating — F5 1..5 scale, emitted as cn2 in CEF mode
+  # per cef0.f5.asm parser. Same distribution as native sibling.
+  - name: violation_rating
+    type: weighted_choice
+    choices:
+      "1": 0.05
+      "2": 0.10
+      "3": 0.20
+      "4": 0.35
+      "5": 0.30
+
+  - name: unit_hostname
+    type: param
+    param: unit_hostname
+
+  - name: dvchost_fqdn
+    type: param
+    param: dvchost_fqdn
+
+  - name: device_id
+    type: param
+    param: device_id
+
+  - name: management_ip_address
+    type: param
+    param: management_ip_address
+
+  - name: policy_name
+    type: param
+    param: policy_name
+
+  - name: web_application_name
+    type: param
+    param: web_application_name
+
+  # CEF Device Version (header field 3) — real BIG-IP 16.x release
+  # strings (verified via F5 TechDocs Release Notes). Same vocabulary
+  # as native sibling.
+  - name: software_version
+    type: weighted_choice
+    choices:
+      "16.1.4":  0.50
+      "16.1.3":  0.30
+      "15.1.10": 0.20
+
+# CEF wire format — strict layout per ArcSight CEF spec:
+#   CEF:Version|DeviceVendor|DeviceProduct|DeviceVersion|SignatureID|Name|Severity|Extension
+# Note the F5-specific `ASM:` prefix BEFORE `CEF:0|` (literal token
+# preserved by every parser — LogRhythm, Graylog CEF, ArcSight,
+# QRadar DSM). Extension key order matches the canonical ArcSight
+# Certified F5 ASM CEF Configuration Guide field order (pages 7-8).
+# Inline mapping:
+#   dvchost      ← unit_hostname FQDN
+#   dvc          ← management_ip_address
+#   cs1/cs1Label ← policy_name
+#   cs2/cs2Label ← web_application_name
+#   cs4/cs4Label ← attack_type
+#   cs5/cs5Label ← x_forwarded_for_header_value
+#   cs6/cs6Label ← geo_location
+#   cn1/cn1Label ← response_code
+#   cn2/cn2Label ← violation_rating
+#   cn3/cn3Label ← device_id (string — ArcSight allows numeric-typed
+#                 cn slots to carry stringy ids; cef0.f5.asm parser
+#                 accepts this. Real F5 devices sometimes leave cn3
+#                 blank — we always emit to keep all 32 rules
+#                 covered.)
+#   deviceCustomDate1 ← policy_apply_date
+#   externalId   ← support_id
+#   src / spt    ← client ip / src_port
+#   dst / dpt    ← server ip / dest_port
+#   requestMethod ← HTTP method
+#   app          ← protocol (HTTP/HTTPS)
+#   request      ← URI
+#   rt           ← event time (CEF-format date)
+#   deviceExternalId ← 0 (F5 default per certified guide)
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{unit_hostname}} ASM:CEF:0|F5|ASM|{{software_version}}|{{signature_id_header}}|{{name_header}}|{{cef_severity}}|dvchost={{dvchost_fqdn}} dvc={{management_ip_address}} cs1={{policy_name}} cs1Label=policy_name cs2={{web_application_name}} cs2Label=web_application_name deviceCustomDate1={{policy_apply_date_cef}} deviceCustomDate1Label=policy_apply_date externalId={{support_id}} act={{act_value}} cn1={{response_code}} cn1Label=response_code src={{client_ip}} spt={{src_port}} dst={{server_ip}} dpt={{dest_port}} requestMethod={{request_method}} app={{app_protocol}} request={{request_uri}} cs5={{x_forwarded_for_header_value}} cs5Label=x_forwarded_for_header_value rt={{cef_rt}} deviceExternalId=0 cs4={{attack_type}} cs4Label=attack_type cs6={{geo_location}} cs6Label=geo_location cn2={{violation_rating}} cn2Label=violation_rating cn3={{device_id}} cn3Label=device_id

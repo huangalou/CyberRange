@@ -1,0 +1,345 @@
+vendor: f-secure
+product: policy-manager
+version: "15.x"
+log_type: av.detection
+description: |
+  F-Secure / WithSecure endpoint AV malware-detection event.
+
+  Vendor rebrand: F-Secure rebranded its enterprise products to WithSecure
+  in June 2022. The on-prem console is "Policy Manager" (Business Suite —
+  still uses the legacy `F-Secure` brand inside the CEF header); the
+  cloud-managed endpoint is "Elements EPP / Computer Protection Premium"
+  delivered through the Elements Connector. This catalog keeps the
+  filename path `f-secure/policy-manager/15.x` for backward compatibility
+  with the existing SOC rule-ID scheme but models the **post-rebrand
+  Elements Connector CEF wire format**, because that is the only one
+  Microsoft / WithSecure publish verbatim sample lines for.
+
+  Two real production wire formats coexist (catalog v3 models the second):
+
+    A. Policy Manager 15.x native syslog forwarder — RFC 3164 syslog with
+       a plain-English message body, e.g.
+         "Virus Alert! Malicious code found in file C:\\path\\foo.exe.
+          Infection: Trojan:W32/Agent.gen!A. Action: Disinfected"
+       Configurable facility (default `daemon`) and severity. Body field
+       template referenced verbatim in
+       https://community.withsecure.com/discussion/78570 .
+
+    B. WithSecure Elements Connector — Syslog/CEF/LEEF selectable
+       in the connector UI. CEF mode emits header
+         CEF:0|F-Secure|Computer Protection Premium and EDR||<eventClassId>|<eventName>|<severity>|
+       with empty product-version field, `cs1Label=Infected object`,
+       `cs2Label=Malware`, `details_*` extension namespace, lowercase
+       `act=quarantined|deleted|blocked|none`, and epoch-ms
+       `details_clientTimestamp`. This is the format every modern SIEM
+       integration we found uses (Microsoft Sentinel, Stellar Cyber,
+       Sekoia, Sentinel CEF-via-AMA pipeline).
+
+  Source-of-truth (verbatim sample lines + structure):
+    - github.com/Azure/Azure-Sentinel — `Sample Data/CEF/WithSecureViaConnectorSampleData.txt`
+      (added by WithSecure PR #6069, 50+ verbatim CEF lines covering
+      malware / DataGuard / DeepGuard / AMSI / Tamper Protection / etc.)
+    - learn.microsoft.com/.../sentinel/data-connectors/withsecure-elements-via-connector
+    - support.withsecure.com/userguides — Elements Connector & Policy Manager
+      Administrator's Guide (15.10 / 15.30 / 16.00)
+    - community.withsecure.com/discussion/78570 — virus alert message body template
+    - community.withsecure.com/en/kb/articles/29332 — syslog forwarding KB
+    - docs.sekoia.io/integration/categories/endpoint/withsecure_elements
+      (also confirms the pull-API JSON format used by Elements REST clients)
+    - f-secure.com/v-descs — canonical threat-naming taxonomy
+      (Trojan:W32/* / Worm:W32/* / Riskware:W32/* / Application:W32/* /
+       Suspicious:W32/*!DeepGuard etc.)
+
+  Real verbatim sample line (Elements Connector CEF, manual scan
+  quarantine — from Azure-Sentinel Sample Data, byte-for-byte):
+
+    CEF:0|F-Secure|Computer Protection Premium and EDR||manualScanning.quarantined|Manual Scanning event|4|msg="Spyware:W32/F-Secure_testfile.A" was detected on accessing "f8.exe" and it was quarantined cs1=C:\\Users\\gtn-user\\Downloads\\f8.exe cs2=Spyware:W32/F-Secure_testfile.A accountName=some-comp details_alertType=spyware details_fileScanningType=spyware cs1Label=Infected object details_clientTimestamp=1661507240000 details_filePath=C:\\Users\\gtn-user\\Downloads\\f8.exe details_hostIpAddress=10.133.2.71/22 details_profileName=test-on-demand-scanning details_quarantineId=123123123 act=quarantined details_name=Spyware:W32/F-Secure_testfile.A suser=DESKTOP-4B74U46\\gtn-user details_userName=DESKTOP-4B74U46\\gtn-user details_alertSource=sp.evt.ods.alert details_profileVersion=1602506030 details_profileId=24780194 cs2Label=Malware shost=xhFKRWFRmqT3DWU
+
+  SIEM rule mapping: covers all 3 AV_F-Secure rules from
+  a reference SIEM ruleset. That reference ruleset only has workstation-
+  side (單一主機) F-Secure rules; no 伺服器主機 / 大量勒索 server-axis
+  rules exist for this vendor. host_class is therefore workstation-only.
+
+  Rule coverage matrix:
+    單一主機偵測大量病毒        130020
+    單一主機偵測病毒(已刪除)    130023
+    單一主機偵測病毒(未刪除)    130119
+
+format: cef
+transport: [udp_syslog, tcp_syslog, file, beats]
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+detections:
+  wazuh:
+    - decoder: cef
+    - rule_id: 130020   # AV_F-Secure_單一主機偵測大量病毒
+      level: 7
+    - rule_id: 130023   # AV_F-Secure_單一主機偵測病毒(已刪除)
+      level: 7
+    - rule_id: 130119   # AV_F-Secure_單一主機偵測病毒(未刪除)
+      level: 7
+  sigma:
+    - rule: fsecure_withsecure_av_detection
+      ref: https://github.com/SigmaHQ/sigma   # community contrib pending
+  elk_detection:
+    - kibana_rule_id: cef-av-malware-detected
+      severity: high
+
+mythos_alignment:
+  risk_refs: [R1, R4]
+  pa_refs: [PA10]
+  ttx_class: rapid
+
+regression:
+  # Smaller baseline since only 3 workstation-side rules in scope.
+  baseline_alert_count: 500
+  baseline_ttd_ms: 4000
+
+params:
+  workstation_pool:
+    default:
+      - "DESKTOP-WIN10-A1"
+      - "DESKTOP-WIN11-B2"
+      - "LAPTOP-USR-23"
+      - "LAPTOP-CONS-04"
+      - "DESKTOP-MKT-09"
+  internal_subnet:
+    default: "10.0.20.0/24"
+  user_pool:
+    # WithSecure Elements `suser=` and `details_userName=` carry the
+    # full `HOST\\user` form in real samples — kept as bare username
+    # here; the template prepends the host for proper shape.
+    default: ["alice", "bob", "svc_backup", "contractor_a", "admin_b"]
+
+fields:
+  - name: pri
+    type: fixed
+    value: 134                    # local0.info, typical default for CEF relay
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  # Elements Connector emits client timestamps as epoch-ms (verbatim
+  # from real samples: details_clientTimestamp=1661507240000).
+  - name: client_ts_epoch_ms
+    type: datetime
+    format: epoch
+    # Engine `epoch` returns seconds; template multiplies by 1000 for ms.
+
+  - name: shost
+    type: choice
+    choices: ${params.workstation_pool}
+
+  - name: src_ip
+    type: cidr
+    cidr: ${params.internal_subnet}
+
+  - name: user_name
+    type: choice
+    choices: ${params.user_pool}
+
+  # Canonical F-Secure / WithSecure threat names. Family + variant
+  # taken directly from f-secure.com/v-descs threat-description URLs
+  # plus the verbatim Azure-Sentinel sample (`!DeepGuard` suffix shape).
+  # Note F-Secure uses `Trojan:W32/Foo!DeepGuard` and
+  # `Suspicious:W32/Malware!DeepGuard` rather than Microsoft-style
+  # `Trojan-Ransom:W32/Conti`; we therefore drop the Conti/LockBit
+  # entries from the v2 catalog and use real shapes.
+  - name: threat_name
+    type: weighted_choice
+    choices:
+      "Trojan:W32/Agent.gen!A":                          0.16
+      "Trojan-Dropper:W32/Agent.DSM":                    0.12
+      "Trojan:W32/CryptoRansomwareBehavior.B!DeepGuard": 0.10
+      "Backdoor:W32/Agent.bay":                          0.10
+      "Worm:W32/Agent.gen":                              0.08
+      "Net-Worm:W32/Conficker.gen":                      0.06
+      "Email-Worm:W32/Warezov.W":                        0.04
+      "Spyware:W32/F-Secure_testfile.A":                 0.06
+      "Riskware:W32/ServU":                              0.06
+      "Riskware:W32/PWDump":                             0.04
+      "Application:W32/Joke":                            0.04
+      "Suspicious:W32/Malware!DeepGuard":                0.08
+      "Testfile:JS/F-Secure_testfile.D":                 0.03
+      "EICAR_Test_File":                                 0.03
+
+  # eventClassId in the CEF header — derived from <module>.<outcome>.
+  # Verbatim shapes from Azure-Sentinel sample. Empty bar uses 4 fields
+  # for "action taken" events and 10 for "no action / detect only".
+  - name: event_class_id
+    type: weighted_choice
+    choices:
+      "manualScanning.quarantined":  0.18
+      "manualScanning.deleted":      0.10
+      "manualScanning.none":         0.05  # detect-only manual scan
+      "realtimeScanning.quarantined": 0.20
+      "realtimeScanning.deleted":    0.08
+      "realtimeScanning.blocked":    0.07
+      "fileScanning.none":           0.10  # report-only file scanner
+      "amsi.blocked":                0.07  # script content via AMSI
+      "deepguard.blocked":           0.08
+      "dataGuard.blocked":           0.04
+      "dataGuard.none":              0.03
+
+  # CEF eventName — pretty label paired with event_class_id.
+  - name: event_name_label
+    type: weighted_choice
+    choices:
+      "Manual Scanning event":                       0.33
+      "Real-time Scanning event":                    0.35
+      "File Scanning event":                         0.10
+      "Antimalware Scan Interface (AMSI) event":     0.07
+      "DeepGuard event":                             0.08
+      "DataGuard event":                             0.07
+
+  # Header severity: 4 when action was taken, 10 when nothing happened
+  # (per real samples — high severity flags "no action taken" cases).
+  - name: severity
+    type: weighted_choice
+    choices:
+      "4":  0.75   # quarantined / deleted / blocked
+      "10": 0.20   # act=none — operator must act
+      "1":  0.05   # info / informational dataGuard
+
+  # File path and file name are kept as paired choices because real
+  # CEF samples expose both `details_filePath` and the basename inside
+  # the msg= sentence — splitting them upstream avoids template-level
+  # path arithmetic. Pick a path then derive the matching basename via
+  # `file_name` below (same weight order intentionally).
+  - name: file_path
+    type: weighted_choice
+    choices:
+      "C:\\\\Users\\\\Public\\\\Downloads\\\\invoice_2026.exe":            0.18
+      "C:\\\\Users\\\\alice\\\\AppData\\\\Local\\\\Temp\\\\update.exe":    0.16
+      "C:\\\\Users\\\\bob\\\\Desktop\\\\fake_invoice.pdf.exe":             0.13
+      "C:\\\\ProgramData\\\\F-Secure\\\\quarantine\\\\threat.bin":         0.08
+      "D:\\\\Share\\\\HR\\\\readme_decrypt.txt":                           0.10
+      "C:\\\\Windows\\\\Temp\\\\7z_extract\\\\payload.dll":                0.12
+      "C:\\\\Users\\\\contractor_a\\\\Downloads\\\\driver.zip":            0.11
+      "C:\\\\Users\\\\gtn-user\\\\Downloads\\\\f8.exe":                    0.06  # matches verbatim sample
+      "C:\\\\WINDOWS\\\\system32\\\\cscript.exe":                          0.06  # AMSI case
+
+  - name: file_name
+    type: weighted_choice
+    choices:
+      "invoice_2026.exe":     0.18
+      "update.exe":           0.16
+      "fake_invoice.pdf.exe": 0.13
+      "threat.bin":           0.08
+      "readme_decrypt.txt":   0.10
+      "payload.dll":          0.12
+      "driver.zip":           0.11
+      "f8.exe":               0.06
+      "cscript.exe":          0.06
+
+  # `details_infectionType` — fileInfection / spyware / riskware /
+  # systemInfection / memory — verbatim from Azure-Sentinel samples.
+  - name: scanning_type
+    type: weighted_choice
+    choices:
+      "fileInfection":   0.50
+      "spyware":         0.15
+      "riskware":        0.15
+      "systemInfection": 0.10
+      "memory":          0.10
+
+  # details_alertType — full dotted form from real samples.
+  - name: alert_type
+    type: weighted_choice
+    choices:
+      "on_access_scanner.file_infection.nothing":     0.10
+      "on_access_scanner.spyware.nothing":            0.05
+      "on_demand_scanner.spyware.delete":             0.10
+      "on_demand_scanner.file_infection.nothing":     0.05
+      "file":                                         0.30
+      "spyware":                                      0.10
+      "riskware":                                     0.10
+      "memory":                                       0.05
+      "amsi.infection.block":                         0.10
+      "tamper_protection.uninstall.block":            0.05
+
+  # alertSource — Elements internal taxonomy, real verbatim values.
+  - name: alert_source
+    type: weighted_choice
+    choices:
+      "sp.evt.ods.alert":     0.35  # on-demand scan
+      "sp.evt.oas.alert":     0.45  # on-access scan
+      "sp.evt.fixinf.alert":  0.20  # post-fix alert
+
+  # Lowercase verbs — real F-Secure CEF `act=` values, NOT capitalized.
+  # The v2 catalog had "Disinfected"/"Quarantined"/"Renamed" capitalised,
+  # which matches Policy Manager native syslog body but not Elements CEF.
+  - name: action_taken
+    type: weighted_choice
+    choices:
+      "quarantined":  0.40
+      "deleted":      0.20
+      "blocked":      0.18
+      "disinfected":  0.07
+      "none":         0.15   # detect-only / no action
+
+  - name: file_hash_sha1
+    type: faker
+    method: sha1
+
+  # SHA1 of file *creator* — appears in real samples when a parent
+  # process extracted/dropped the file.
+  - name: creator_sha1
+    type: faker
+    method: sha1
+
+  - name: profile_name
+    type: weighted_choice
+    choices:
+      "default-workstation-profile": 0.40
+      "tikhdm-tamper":               0.15
+      "test-on-demand-scanning":     0.10
+      "TA_TEST_2":                   0.10
+      "dejavu-sop-own-profile":      0.05
+      "kimean-tests":                0.10
+      "lab-default":                 0.10
+
+  # profileId / profileVersion shapes from real samples: 7–8 digit ints,
+  # profileVersion in unix-epoch-ish range (~1.5–1.6B).
+  - name: profile_id
+    type: int_range
+    min: 100000
+    max: 99999999
+
+  - name: profile_version
+    type: int_range
+    min: 1500000000
+    max: 1700000000
+
+  - name: quarantine_id
+    type: int_range
+    min: 1000
+    max: 999999999
+
+  # Elements Connector emits a per-tenant account id; `some-comp` is the
+  # verbatim placeholder in WithSecure's published samples.
+  - name: account_name
+    type: weighted_choice
+    choices:
+      "some-comp":   0.50
+      "tenant-acme": 0.30
+      "lab-tenant":  0.20
+
+  # Free-form msg= body per real samples. NB: this is a small subset —
+  # template builds the full body using msg_template below.
+  - name: action_phrase
+    type: weighted_choice
+    choices:
+      "and it was quarantined": 0.40
+      "and it was deleted":     0.20
+      "and it was blocked":     0.18
+      "and it was disinfected": 0.07
+      "and no action was taken": 0.15
+
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{shost}} CEF:0|F-Secure|Computer Protection Premium and EDR||{{event_class_id}}|{{event_name_label}}|{{severity}}|msg="{{threat_name}}" was detected on accessing "{{file_name}}" {{action_phrase}} cs1={{file_path}} cs2={{threat_name}} accountName={{account_name}} details_alertType={{alert_type}} details_fileScanningType={{scanning_type}} cs1Label=Infected object details_clientTimestamp={{client_ts_epoch_ms}}000 details_filePath={{file_path}} details_hostIpAddress={{src_ip}}/24 details_profileName={{profile_name}} details_quarantineId={{quarantine_id}} act={{action_taken}} details_name={{threat_name}} suser={{shost}}\\{{user_name}} details_userName={{shost}}\\{{user_name}} details_alertSource={{alert_source}} details_profileVersion={{profile_version}} details_profileId={{profile_id}} details_sha1={{file_hash_sha1}} details_infectionName={{threat_name}} details_path={{file_path}} cs2Label=Malware shost={{shost}}

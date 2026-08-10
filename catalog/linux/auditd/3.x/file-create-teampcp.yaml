@@ -1,0 +1,266 @@
+vendor: linux
+product: auditd
+version: "3.x"
+log_type: auditd.file_create.teampcp
+description: |
+  Linux auditd 5-record event (PATH×2 + CWD + SYSCALL + PROCTITLE) for
+  TeamPCP-style filesystem persistence.
+  Models the 5 disk artifacts dropped by LiteLLM 1.82.7/1.82.8 + Telnyx
+  4.87.x post-compromise: sysmon.py / sysmon.service / litellm_init.pth
+  / /tmp/pglog / /tmp/.pg_state, all created by python3 with the syscall
+  audit key tagged for malicious_persistence (or tmp_drop for /tmp/*).
+
+  Schema v3 second canonical example (Linux side, complementing the
+  Sysmon EID 3 Windows-side network-connect catalog).
+  Reference: see the CTI advisory (Datadog Security Labs) cited in the
+  `cti:` block below.
+
+format: auditd_raw
+transport: [file, tcp_syslog, beats]
+
+ocsf:
+  class: file_activity
+  category_uid: 1
+  class_uid: 1001
+
+# ──────────────── DetectOps v2 metadata ────────────────
+# Linux auditd file-create with audit key set by the watchpoint config.
+# Detection should fire on (a) file path matching the IOC list, or
+# (b) audit key == "malicious_persistence". Either alone is enough for
+# the rule to fire — false-positive risk is low since these paths have
+# zero legitimate use.
+detections:
+  wazuh:
+    - decoder: auditd
+    - rule_id: 80710  # auditd: file changed monitored by audit watchpoint
+      level: 5
+    - rule_id: 80784  # custom (TBD): TeamPCP IOC path matched
+      level: 12
+  sigma:
+    - rule: lnx_auditd_susp_file_persistence
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/linux/auditd
+    - rule: lnx_auditd_python_drops_pth_or_systemd_unit
+      ref: TBD  # placeholder — write custom Sigma covering 5 IOC paths
+  elk_detection:
+    - kibana_rule_id: linux-malicious-persistence-file
+      severity: high
+    - kibana_rule_id: teampcp-fs-artifact-match
+      severity: critical
+
+mythos_alignment:
+  # R1 Accelerated Threat Exploitation — TeamPCP demonstrates that PyPI
+  #   compromise drops persistence within seconds of `pip install` on a
+  #   victim host. R10 Threat Detection Lagging Intelligence — file-path
+  #   IOC list is exactly the kind of signal CTI feeds typically deliver
+  #   weeks late; this catalog flips that.
+  risk_refs: [R1, R10]
+  # PA1 Point Agents at Code (FIM agent ingests advisory → audit watch)
+  # PA5 Continuous Patching (post-pip-quarantine: regression must verify
+  #   that auditd watch still catches the file paths)
+  pa_refs: [PA1, PA5]
+  ttx_class: rapid
+
+regression:
+  # 50-event live-fire on 2026-05-19 (Sibling 2 of TeamPCP batch sprint):
+  #   Wazuh custom rule 132030 (file-path IOC):
+  #     - logtest line-by-line path (250 lines piped to wazuh-logtest): 50/50 ✓
+  #       → rule logic 100% correct; pcre2 IOC pattern fires on CREATE PATH line
+  #     - socat UDP path (5-line per packet, 50 packets to .10:514 udp): 25/50
+  #       → deterministic 50% loss across rate=0 burst dispatch and rate=1 slow dispatch
+  #       → ingest verified (archives.log shows full 250 lines for 50 events)
+  #       → loss is in wazuh-analysisd alert generation, not indexer/buffer
+  #       → mechanism: wazuh-remoted/logcollector multi-line UDP packet handling
+  #         (auditd 5-record event: PATH×2 + CWD + SYSCALL + PROCTITLE in one packet)
+  #
+  # ELK ingest: out-of-scope — auditd not currently in ELK forward path
+  # (only modsec/fortigate/fail2ban/nginx-cef on .18 today;
+  #  Sprint 2 B will add Kibana detection rule with own ingest).
+  #
+  # Investigation deferred to Sprint 2 (sibling 3 auditd-execve expected to
+  # show same multi-line UDP quirk → root cause together).
+  baseline_alert_count: 25              # udp path live-fire (deviation baseline)
+  baseline_alert_count_logtest: 50      # logtest line-by-line path (rule logic verified)
+  baseline_ttd_ms: 3000
+  parent_chain: 132029                  # level-0 anchor on "kernel: type=PATH" string match
+  known_caveat_multiline_udp: true      # deterministic 50% loss — investigate alongside sibling 3
+
+# ──────────────── v3: CTI advisory provenance + IOCs ────────────────
+cti:
+  source: datadog-security-labs
+  source_url: https://securitylabs.datadoghq.com/articles/litellm-compromised-pypi-teampcp-supply-chain-campaign/
+  advisory_id: PYSEC-2026-2
+  ingested_at: "2026-05-07"
+  related_campaign: teampcp
+  cve_refs: []
+  iocs:
+    file_paths:
+      - "*/litellm_init.pth"
+      - "*/.config/sysmon/sysmon.py"
+      - "*/.config/systemd/user/sysmon.service"
+      - "/tmp/pglog"
+      - "/tmp/.pg_state"
+    package_versions:
+      - { ecosystem: pypi, name: litellm, versions: ["1.82.7", "1.82.8"] }
+      - { ecosystem: pypi, name: telnyx,  versions: ["4.87.1", "4.87.2"] }
+    # No domain/IP/http_fingerprint — this catalog covers the FS axis only.
+    # The Sysmon EID 3 sibling catalog covers network-side IOCs.
+
+# ──────────────── v3: VulnOps reverse-lookup ────────────────
+vulnops:
+  cve_refs: []
+  affects:
+    - { vendor: pypi, product: litellm, version_range: "1.82.7,1.82.8" }
+    - { vendor: pypi, product: telnyx,  version_range: "4.87.1,4.87.2" }
+  patch_signal:
+    - "litellm 1.82.7 / 1.82.8 quarantined on PyPI"
+    - "telnyx 4.87.1 / 4.87.2 quarantined on PyPI"
+  regression_critical: true   # P0: same campaign as sibling Sysmon catalog
+
+params:
+  hostname:    { default: "ml-dev-04" }
+  victim_user: { default: "dev01" }
+  victim_uid:  { default: 1000 }
+  python_minor: { default: "3.12" }   # used to build site-packages path
+
+fields:
+  - name: epoch_audit
+    type: datetime
+    format: epoch
+
+  - name: audit_serial
+    type: int_range
+    min: 100
+    max: 999999
+
+  - name: hostname
+    type: param
+    param: hostname
+
+  - name: victim_user
+    type: param
+    param: victim_user
+
+  - name: victim_uid
+    type: param
+    param: victim_uid
+
+  # Pick which TeamPCP persistence artifact this event represents.
+  - name: scenario
+    type: weighted_choice
+    choices:
+      sysmon_py:        0.30   # ~/.config/sysmon/sysmon.py — LiteLLM persistence script
+      sysmon_service:   0.25   # ~/.config/systemd/user/sysmon.service — user-level systemd unit
+      pth_hook:         0.20   # site-packages/litellm_init.pth — auto-execute on python startup
+      tmp_pglog:        0.15   # /tmp/pglog — second-stage payload drop
+      tmp_pgstate:      0.10   # /tmp/.pg_state — beacon state file
+
+  - name: target_path
+    type: template
+    template: |-
+      {%- if scenario == 'sysmon_py' -%}/home/{{victim_user}}/.config/sysmon/sysmon.py
+      {%- elif scenario == 'sysmon_service' -%}/home/{{victim_user}}/.config/systemd/user/sysmon.service
+      {%- elif scenario == 'pth_hook' -%}/home/{{victim_user}}/.local/lib/python{{params.python_minor}}/site-packages/litellm_init.pth
+      {%- elif scenario == 'tmp_pglog' -%}/tmp/pglog
+      {%- else -%}/tmp/.pg_state
+      {%- endif -%}
+
+  # Parent directory — used in the nametype=PARENT PATH record. Real
+  # auditd emits the parent dir as item=0 with mode reflecting the dir.
+  - name: parent_dir
+    type: template
+    template: |-
+      {%- if scenario == 'sysmon_py' -%}/home/{{victim_user}}/.config/sysmon
+      {%- elif scenario == 'sysmon_service' -%}/home/{{victim_user}}/.config/systemd/user
+      {%- elif scenario == 'pth_hook' -%}/home/{{victim_user}}/.local/lib/python{{params.python_minor}}/site-packages
+      {%- else -%}/tmp
+      {%- endif -%}
+
+  # CWD record value — typically the user's home or the working dir of
+  # the python interpreter when pip installs run. Approximated as home.
+  - name: cwd_path
+    type: template
+    template: |-
+      {%- if scenario in ['tmp_pglog', 'tmp_pgstate'] -%}/home/{{victim_user}}
+      {%- else -%}/home/{{victim_user}}
+      {%- endif -%}
+
+  - name: file_mode
+    type: template
+    template: |-
+      {%- if scenario == 'sysmon_service' -%}0100644
+      {%- elif scenario == 'tmp_pgstate' -%}0100600
+      {%- else -%}0100755
+      {%- endif -%}
+
+  - name: audit_key
+    type: template
+    template: |-
+      {%- if scenario in ['sysmon_py', 'sysmon_service', 'pth_hook'] -%}malicious_persistence
+      {%- else -%}tmp_drop
+      {%- endif -%}
+
+  - name: parent_inode
+    type: int_range
+    min: 100000
+    max: 9999999
+
+  - name: inode
+    type: int_range
+    min: 100000
+    max: 9999999
+
+  - name: ppid
+    type: int_range
+    min: 1
+    max: 5000
+
+  - name: pid
+    type: int_range
+    min: 1000
+    max: 65000
+
+  - name: ses
+    type: int_range
+    min: 1
+    max: 100
+
+  # Hex-encoded proctitle. Real auditd packs null-separated argv into
+  # hex (e.g. `python3\0script.py` → 707974686f6e3300736372697074_2e7079).
+  # Branch reflects the persistence-writer parent process per scenario:
+  #   sysmon_py / sysmon_service → bash session writing the unit/script
+  #   pth_hook → pip-driven python writing the .pth into site-packages
+  #   tmp_*    → python interpreter from the installed wheel
+  - name: proctitle_hex
+    type: template
+    template: |-
+      {%- if scenario == 'pth_hook' -%}2F7573722F62696E2F70797468 6F6E3300706970005F696E7374 616C6C
+      {%- elif scenario in ['sysmon_py', 'sysmon_service'] -%}707974686F6E33002D63007375 626D69745F706572736973
+      {%- else -%}707974686F6E33002D6300776F 726B65725F6C6F6F70
+      {%- endif -%}
+
+  - name: pri
+    type: fixed
+    value: 5                                 # auditd → audisp-syslog default = user.notice (13) — kernel-emitted via kaudit shows as kern.notice (5)
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+# Auditd file-create event = 5 records sharing one msg=audit(time:serial):
+#   1. PATH (nametype=PARENT, item=0) — parent directory
+#   2. PATH (nametype=CREATE, item=1) — the new file
+#   3. CWD                              — working directory at syscall
+#   4. SYSCALL                          — the openat(O_CREAT) call itself
+#   5. PROCTITLE                        — hex-encoded argv of the process
+# Reference: people.redhat.com/sgrubb/audit/, man 8 auditd,
+# audit-userspace src `src/auditd-event.c`, Wazuh `0290-auditd_rules.xml`.
+# When forwarded via audisp-syslog each record becomes its own syslog
+# line; correlation is via the shared `msg=audit(SECS.MS:SERIAL)` tuple.
+# items=2 in SYSCALL = 2 PATH records (parent + new file) — matches the
+# nametype=PARENT/CREATE pair above.
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} kernel: type=PATH msg=audit({{epoch_audit}}.123:{{audit_serial}}): item=0 name="{{parent_dir}}" inode={{parent_inode}} dev=fd:00 mode=040755 ouid={{victim_uid}} ogid={{victim_uid}} rdev=00:00 nametype=PARENT cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} kernel: type=PATH msg=audit({{epoch_audit}}.123:{{audit_serial}}): item=1 name="{{target_path}}" inode={{inode}} dev=fd:00 mode={{file_mode}} ouid={{victim_uid}} ogid={{victim_uid}} rdev=00:00 nametype=CREATE cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} kernel: type=CWD msg=audit({{epoch_audit}}.123:{{audit_serial}}): cwd="{{cwd_path}}"
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} kernel: type=SYSCALL msg=audit({{epoch_audit}}.123:{{audit_serial}}): arch=c000003e syscall=257 success=yes exit=4 a0=ffffff9c a1=7ffe5d3c4670 a2=241 a3=1b6 items=2 ppid={{ppid}} pid={{pid}} auid={{victim_uid}} uid={{victim_uid}} gid={{victim_uid}} euid={{victim_uid}} suid={{victim_uid}} fsuid={{victim_uid}} egid={{victim_uid}} sgid={{victim_uid}} fsgid={{victim_uid}} tty=pts0 ses={{ses}} comm="python3" exe="/usr/bin/python3" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 key="{{audit_key}}"
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} kernel: type=PROCTITLE msg=audit({{epoch_audit}}.123:{{audit_serial}}): proctitle={{proctitle_hex}}

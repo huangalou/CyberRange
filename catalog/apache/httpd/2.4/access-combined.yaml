@@ -1,0 +1,231 @@
+vendor: apache
+product: httpd
+version: "2.4"
+log_type: access.combined
+description: |
+  Apache HTTP Server 2.4 access log in the canonical "combined" format
+  (NCSA extended). This is THE single most standardized web access log
+  format on the internet — virtually every SIEM ships an out-of-the-box
+  parser for it.
+
+  Source-of-truth (URLs fetched 2026-05-15):
+    - httpd.apache.org Log Files (Common + Combined Log Format
+      definitions, sample lines):
+        https://httpd.apache.org/docs/2.4/logs.html
+    - httpd.apache.org mod_log_config (authoritative directive table —
+      %h %l %u %t %r %>s %b semantics, %t timestamp shape):
+        https://httpd.apache.org/docs/2.4/mod/mod_log_config.html
+    - Logstash patterns-core ECS-v1 httpd patterns (HTTPD_COMMONLOG /
+      HTTPD_COMBINEDLOG) — the de-facto regex every grok-based pipeline
+      (Elastic Apache integration, Filebeat module, Wazuh `web-accesslog`
+      decoder fork) normalizes against:
+        https://github.com/logstash-plugins/logstash-patterns-core/blob/main/patterns/ecs-v1/httpd
+
+  Authoritative `combined` LogFormat directive (httpd.apache.org docs):
+
+    LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-agent}i\"" combined
+
+  Directive map:
+    %h           — Remote hostname / client IP (IP only when HostnameLookups Off, default)
+    %l           — Remote logname (RFC 1413 identd) — almost always `-`
+    %u           — Authenticated remote user — `-` when no auth
+    %t           — Request start time, format `[%d/%b/%Y:%H:%M:%S %z]`
+                   e.g. `[10/Oct/2000:13:55:36 -0700]` (real local TZ offset,
+                   NOT hardcoded +0000)
+    %r           — Request first line: `<METHOD> <URI> HTTP/<ver>`
+    %>s          — Final HTTP status code (post-internal-redirect)
+    %b           — Response body size in bytes, excluding HTTP headers;
+                   `-` instead of `0` when no bytes sent (CLF convention).
+                   NB: %b ≠ %O. %O (mod_logio) is total bytes sent including
+                   headers — combined default uses %b, not %O.
+    %{Referer}i  — Request header `Referer` (intentional misspelling per
+                   RFC; `-` when absent)
+    %{User-agent}i — Request header `User-Agent` (httpd docs use lowercase
+                   "User-agent" in the directive — header name is
+                   case-insensitive on the wire)
+
+  Real vendor sample (verbatim from httpd.apache.org/docs/2.4/logs.html):
+
+    127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326 "http://www.example.com/start.html" "Mozilla/4.08 [en] (Win98; I ;Nav)"
+
+  Default transport: file (Apache writes `/var/log/apache2/access.log` or
+  `/var/log/httpd/access_log`). Reaches SIEM via filebeat / fluent-bit /
+  rsyslog `imfile`. RFC3164 syslog wrap is NOT native — Apache itself
+  ships no syslog emitter for access logs. Catalog therefore renders the
+  raw access-log line WITHOUT a `<PRI>` prefix; the shipper adds syslog
+  framing if/when it forwards over UDP/TCP 514.
+
+format: combined_log
+transport: [file, beats]
+
+ocsf:
+  class: http_activity
+  category_uid: 4
+  class_uid: 4002
+
+# ──────────────── DetectOps v2 metadata ────────────────
+# Apache combined access log is baseline web visibility — most lines do NOT
+# trigger alerts. Detection rules layer on top (XSS/SQLi patterns, abnormal UA
+# strings, scanner fingerprints). TBD: pending live-fire verification on .10.
+detections:
+  wazuh:
+    - decoder: web-accesslog  # Wazuh default, decodes status/uri/UA
+      # No baseline rule_id; Wazuh fires 31xxx series only on attack patterns.
+  sigma:
+    - rule: web_apache_threats_keywords
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/web
+  elk_detection: []  # TBD
+
+mythos_alignment:
+  # Web access log = baseline visibility (R6 asset/exposure inventory).
+  # Active web-attack detection sits on top via Sigma overlay → R1.
+  risk_refs: [R6]
+  pa_refs: []
+  ttx_class: weeks
+
+regression:
+  baseline_alert_count: 0
+  baseline_ttd_ms: 5000
+
+params:
+  client_pool:
+    default:
+      - "203.0.113.45"
+      - "198.51.100.22"
+      - "172.58.21.7"
+      - "84.246.85.131"
+      - "180.149.227.3"
+      - "10.0.0.55"
+  # Default to UTC offset; override per deployment (e.g. "+0800" for TPE,
+  # "-0700" for the httpd.apache.org sample). Real Apache always emits the
+  # process locale offset — never literal "UTC" or "Z".
+  tz_offset:
+    default: "+0000"
+
+fields:
+  # %h — client address.
+  - name: client_ip
+    type: choice
+    choices: ${params.client_pool}
+
+  # %l — remote logname (RFC 1413 identd). Apache emits `-` when
+  # `IdentityCheck Off` (default since httpd 2.0). Real-world rate of
+  # non-dash values is effectively zero on the modern internet.
+  - name: ident
+    type: fixed
+    value: "-"
+
+  # %u — authenticated user. `-` dominates; non-dash only when the URI
+  # sits behind `AuthType Basic` / `AuthType Digest`.
+  - name: user
+    type: weighted_choice
+    choices: { "-": 0.85, "alice": 0.05, "bob": 0.05, "admin": 0.05 }
+
+  # %t — request start time. httpd default is `%d/%b/%Y:%H:%M:%S %z`
+  # rendered between literal `[` and `]` in the template. The %z slot
+  # is the process locale offset; we render the date in UTC and append
+  # the configured offset string verbatim so the line is wire-shaped
+  # like a real Apache instance running in that timezone.
+  - name: ts
+    type: datetime
+    format: "%d/%b/%Y:%H:%M:%S"
+
+  # %r — request line components.
+  - name: method
+    type: weighted_choice
+    choices: { GET: 0.70, POST: 0.20, PUT: 0.03, DELETE: 0.02, HEAD: 0.05 }
+
+  - name: path
+    type: weighted_choice
+    choices:
+      "/":                          0.20
+      "/index.html":                0.10
+      "/api/v1/users":              0.10
+      "/api/v1/login":              0.10
+      "/admin/login.php":           0.05
+      "/wp-login.php":              0.05
+      "/.env":                      0.03
+      "/phpmyadmin/":               0.03
+      "/static/app.js":             0.10
+      "/favicon.ico":               0.10
+      "/api/v1/orders?id=1' OR 1=1--": 0.04
+      "/?cmd=cat%20/etc/passwd":    0.05
+      "/health":                    0.05
+
+  # Real Apache 2.4 instances serve a mix; HTTP/1.1 still dominates on
+  # the public internet, HTTP/2 grows on TLS, HTTP/1.0 lingers in legacy
+  # clients and the apache.org canonical sample itself uses /1.0.
+  - name: protocol
+    type: weighted_choice
+    choices:
+      "HTTP/1.1": 0.80
+      "HTTP/2.0": 0.15
+      "HTTP/1.0": 0.05
+
+  # %>s — final status. Distribution skewed toward 200/304 as is normal
+  # for a healthy web server; 4xx/5xx kept high enough for SOC rules to
+  # have signal to test against.
+  - name: status
+    type: weighted_choice
+    choices:
+      "200": 0.55
+      "301": 0.05
+      "304": 0.10
+      "401": 0.05
+      "403": 0.05
+      "404": 0.10
+      "500": 0.05
+      "502": 0.05
+
+  # %b — response body bytes. Real Apache writes `-` when zero bytes
+  # were sent (CLF convention, see mod_log_config docs). We pick from
+  # a small integer range that includes the literal `-` token at the
+  # low end so SIEM parsers see both shapes.
+  - name: resp_bytes
+    type: weighted_choice
+    choices:
+      "-":      0.05    # %b == 0 → literal dash per CLF
+      "326":    0.10
+      "1024":   0.15
+      "2326":   0.10    # matches httpd.apache.org canonical sample
+      "5120":   0.15
+      "12480":  0.15
+      "45120":  0.15
+      "180224": 0.10
+      "524288": 0.05
+
+  # %{Referer}i — request referer header. `-` literal when absent.
+  - name: referer
+    type: weighted_choice
+    choices:
+      "-":                                       0.50
+      "https://www.google.com/":                 0.20
+      "https://example.com/login":               0.10
+      "https://example.com/dashboard":           0.10
+      "https://t.co/abc":                        0.05
+      "https://github.com/":                     0.05
+
+  # %{User-agent}i — request User-Agent header. Mix of real browser
+  # UAs, common CLI/SDK clients, and a couple of scanner fingerprints
+  # so detection rules pivoting on UA strings have something to bite.
+  - name: user_agent
+    type: weighted_choice
+    choices:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36": 0.45
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15": 0.20
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15": 0.10
+      "curl/8.4.0":                                                                  0.10
+      "python-requests/2.31.0":                                                      0.05
+      "sqlmap/1.7.12":                                                                0.03
+      "Mozilla/5.00 (Nikto/2.5.0)":                                                   0.02
+      "Go-http-client/1.1":                                                           0.05
+
+# Wire format — strict per httpd.apache.org `combined` LogFormat
+# directive. Tokens separated by single spaces. The %t slot is rendered
+# `[<ts> <tz>]` — Apache always wraps the timestamp in literal brackets.
+# %r is wrapped in literal double quotes; %{Referer}i and %{User-agent}i
+# likewise. No syslog PRI prefix here — Apache writes to a file by
+# default; the shipper (filebeat/fluent-bit/rsyslog) adds framing if it
+# forwards over syslog.
+template: |-
+  {{client_ip}} {{ident}} {{user}} [{{ts}} {{params.tz_offset}}] "{{method}} {{path}} {{protocol}}" {{status}} {{resp_bytes}} "{{referer}}" "{{user_agent}}"

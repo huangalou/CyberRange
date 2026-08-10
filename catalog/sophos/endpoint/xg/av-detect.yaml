@@ -1,0 +1,374 @@
+vendor: sophos
+product: endpoint
+version: "xg"
+log_type: av.detection
+description: |
+  Sophos Central Endpoint Threat detection event re-emitted as CEF by the
+  official `sophos/Sophos-Central-SIEM-Integration` script (siem.py). This
+  is the canonical Sophos CEF wire format every SIEM (Rapid7 InsightIDR,
+  IBM QRadar, Microsoft Sentinel, Splunk Connect for Syslog, Sekoia)
+  onboards Sophos Central with.
+
+  IMPORTANT — Sophos does NOT push CEF natively over syslog. Sophos
+  Central is a SaaS console; the only authoritative event feed is the
+  Sophos Central SIEM API (`https://api-{region}.central.sophos.com/
+  siem/v1/events`) which returns JSON. The `sophos/Sophos-Central-SIEM-
+  Integration` Python script polls that API, then translates each JSON
+  event into one of three formats (`json`, `cef`, `keyvalue`) and writes
+  the result to stdout / a local file / a syslog destination. CEF on the
+  wire only exists once the script has run.
+
+  Catalog `version: xg` is a CyberRange-internal axis label inherited
+  from the directory tree (`catalog/sophos/endpoint/xg/`). It does NOT
+  mean Sophos XG Firewall — XG Firewall (SFOS) emits a completely
+  different native `device="SFW" log_type="Anti-Virus" ...` key-value
+  format on UDP/514, which is out of scope for this catalog. This
+  catalog targets Sophos Central Endpoint Protection / Intercept X
+  exclusively.
+
+  Source-of-truth (URLs fetched 2026-05-15):
+    - Official Sophos SIEM script + CEF emitter (Apache 2.0,
+      authoritative source of header/extension layout this catalog
+      mirrors):
+        https://github.com/sophos/Sophos-Central-SIEM-Integration
+        https://github.com/sophos/Sophos-Central-SIEM-Integration/blob/master/siem.py
+        https://github.com/sophos/Sophos-Central-SIEM-Integration/blob/master/name_mapping.py
+      CEF header constants (siem.py lines 36-41):
+        cef.version       = "0"
+        cef.device_vendor = "sophos"      # lowercase, literal
+        cef.device_product= "sophos central"  # lowercase, two words
+        cef.device_version= 1.0
+      Severity map (siem.py line 34):
+        SEVERITY_MAP = {"none":0, "low":1, "medium":5, "high":8, "very_high":10}
+      CEF extension mapping (siem.py lines 50-67):
+        source        -> suser
+        when          -> end
+        user_id       -> duid
+        created_at    -> rt
+        full_file_path-> filePath
+        location      -> dhost
+        # JSON fields without a CEF-extension override (endpoint_id,
+        # endpoint_type, customer_id, threat, group, type, severity,
+        # name, ...) are emitted with their original JSON keys.
+    - Sophos Central SIEM API spec:
+        https://developer.sophos.com/docs/siem-v1/1/routes/events/get
+    - Sophos KBA-000004400 (SIEM API overview):
+        https://support.sophos.com/support/s/article/KBA-000004400
+    - Sophos threat detection library (signature naming — Mal/Generic,
+      Troj/*, HPmal/*, ML/PE-A, etc are real Sophos labels):
+        https://www.sophos.com/en-us/threat-detection-library/mal/generic
+        https://www.sophos.com/en-us/threat-detection-library/troj
+    - Rapid7 InsightIDR Sophos Central ingestion guide (downstream
+      confirmation of CEF shape):
+        https://docs.rapid7.com/insightidr/sophos-central/
+    - IBM QRadar Sophos Central DSM sample event:
+        https://www.ibm.com/docs/en/dsm?topic=central-sophos-sample-event-message
+
+  Real raw JSON sample (verbatim from a Sophos Central SIEM API
+  response, redacted IDs — see Rapid7/IBM docs for source):
+
+    {
+      "customer_id": "6ba044f5-793f-4c97-866c-0c0250a7bff6",
+      "created_at": "2025-11-24T16:46:26.302Z",
+      "severity": "medium",
+      "source_info": {"ip": "172.31.25.212"},
+      "endpoint_id": "b8498e8e-ffb4-4c6a-a10f-35890a0bd1c9",
+      "endpoint_type": "server",
+      "threat": "ML/PE-A",
+      "origin": "ML",
+      "when": "2025-11-24T16:46:23.409Z",
+      "appSha256": "c9bce42abded22ed3cb108f0dbbd1ce0ed99554d9bb4f0a1bbc2505ece40ce4f",
+      "name": "Malware detected: 'ML/PE-A' at 'C:\\Users\\Administrator\\Downloads\\sophostest_executable_ml_malware.exe'",
+      "location": "EC2AMAZ-0B6K8L4",
+      "id": "b5de0d2b-d035-4271-9f88-8f8a9101fbda",
+      "type": "Event::Endpoint::CoreDetection",
+      "source": "n/a",
+      "group": "MALWARE"
+    }
+
+  Real CEF wire example (reconstructed strictly from siem.py output —
+  the script flattens JSON, swaps CEF_MAPPING keys, then renders header
+  with literal lowercase `sophos|sophos central|1.0`). The script does
+  NOT prepend an RFC3164 PRI / hostname; the syslog facility wrapper is
+  added by `logging.handlers.SysLogHandler` if the user configures
+  `filename = syslog`. CyberRange emits the syslog wrapper for parity
+  with sibling vendor catalogs (Wazuh / ELK ingest both forms):
+
+    <134>May 15 10:38:14 sophos-siem-relay CEF:0|sophos|sophos central|1.0|Event::Endpoint::Threat::Detected|ML/PE-A|5|rt=2025-11-24T16:46:26.302Z end=2025-11-24T16:46:23.409Z suser=n/a dhost=EC2AMAZ-0B6K8L4 filePath=C:\\Users\\Administrator\\Downloads\\sophostest_executable_ml_malware.exe duid= customer_id=6ba044f5-793f-4c97-866c-0c0250a7bff6 endpoint_id=b8498e8e-ffb4-4c6a-a10f-35890a0bd1c9 endpoint_type=server threat=ML/PE-A origin=ML appSha256=c9bce42abded22ed3cb108f0dbbd1ce0ed99554d9bb4f0a1bbc2505ece40ce4f id=b5de0d2b-d035-4271-9f88-8f8a9101fbda group=MALWARE source_info_ip=172.31.25.212
+
+  SIEM rule mapping: target of the AV.* rules from
+  a reference SIEM ruleset. Pilot mapping retains rule_id 130004
+  `AV_Sophos_伺服器主機偵測病毒(已刪除)_全區_2.0`; remaining 41 Sophos
+  AV rules to be backfilled in a follow-up pass when the SOC-side rule
+  list is unified with the new Sophos Central CEF field set (the prior
+  `Sophos|Endpoint|XG|` invented header was incompatible with this rule
+  family's pivot conditions — open question pending vendor
+  confirmation).
+
+format: cef
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+detections:
+  wazuh:
+    # Wazuh built-in `cef` decoder parses the CEF header + extensions.
+    # rule_id preserved across the wire-format audit.
+    - decoder: cef
+    - rule_id: 130004   # SIEM rule mapping: AV_Sophos_伺服器主機偵測病毒(已刪除)
+      level: 7
+  sigma:
+    - rule: sophos_central_threat_detected
+      ref: https://github.com/SigmaHQ/sigma  # community contrib pending
+  elk_detection:
+    - kibana_rule_id: cef-av-malware-detected
+      severity: high
+
+mythos_alignment:
+  # R1 Accelerated Threat Exploitation (AV catches dropper / payload)
+  # R4 Detection Velocity
+  # PA10 Automated Response (clean / quarantine action)
+  risk_refs: [R1, R4]
+  pa_refs: [PA10]
+  ttx_class: rapid
+
+regression:
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 4000
+
+params:
+  syslog_host:
+    default: "sophos-siem-relay.lab.local"
+  customer_id:
+    default: "6ba044f5-793f-4c97-866c-0c0250a7bff6"
+  endpoint_pool:
+    default:
+      - "DESKTOP-WIN10-A1"
+      - "DESKTOP-WIN11-B2"
+      - "LAPTOP-USR-23"
+      - "SRV-FILE01"
+      - "SRV-DC01"
+      - "WEB-PRD-02"
+  user_pool:
+    default: ["alice", "bob", "svc_backup", "contractor_a", "admin_b"]
+  source_subnet:
+    default: "10.0.20.0/24"
+
+fields:
+  - name: pri
+    type: fixed
+    value: 134   # local0.info — Python SysLogHandler default when siem.py is configured for syslog output
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  - name: syslog_host
+    type: param
+    param: syslog_host
+
+  # JSON `created_at` -> CEF `rt`. siem.py copies the source field
+  # verbatim (no reformatting) so the value is an ISO-8601 string with
+  # millisecond precision and `Z` suffix, NOT the ArcSight canonical
+  # `MMM dd yyyy HH:mm:ss` form. Real samples confirm this.
+  - name: created_at
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S.000Z"
+
+  # JSON `when` -> CEF `end`. Same ISO-8601 shape.
+  - name: when_ts
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S.000Z"
+
+  # JSON `type` -> CEF DeviceEventClassId (header position 5).
+  # Vocabulary lifted verbatim from name_mapping.py TYPE_HANDLERS
+  # (lines 22-38) — these are the event types siem.py actually maps
+  # for AV/threat events. PuaDetected / CommandAndControlDismissed
+  # are intentionally rare; CoreDetection is the modern ML-engine
+  # entry point seen in 2024+ samples.
+  - name: event_type
+    type: weighted_choice
+    choices:
+      "Event::Endpoint::Threat::Detected":             0.35
+      "Event::Endpoint::Threat::CleanedUp":            0.25
+      "Event::Endpoint::CoreDetection":                0.15
+      "Event::Endpoint::Threat::HIPSDetected":         0.08
+      "Event::Endpoint::Threat::HIPSDismissed":        0.04
+      "Event::Endpoint::Threat::PuaDetected":          0.05
+      "Event::Endpoint::Threat::CleanupFailed":        0.04
+      "Event::Endpoint::Threat::HIPSCleanupFailed":    0.02
+      "Event::Endpoint::Threat::PuaCleanupFailed":     0.01
+      "Event::Endpoint::Threat::CommandAndControlDismissed": 0.01
+
+  # JSON `severity` string -> mapped through siem.py SEVERITY_MAP
+  # (line 34) to integer 0/1/5/8/10. The CEF header severity slot
+  # carries the numeric form; we also keep the JSON severity string
+  # available as an extension for downstream queries.
+  - name: severity_label
+    type: weighted_choice
+    choices:
+      "low":       0.10
+      "medium":    0.50
+      "high":      0.30
+      "very_high": 0.10
+
+  - name: cef_severity
+    type: template
+    template: "{% if severity_label == 'very_high' %}10{% elif severity_label == 'high' %}8{% elif severity_label == 'medium' %}5{% else %}1{% endif %}"
+
+  # Real Sophos threat names. Verified against sophos.com threat
+  # detection library URL paths:
+  #   /threat-detection-library/mal/generic
+  #   /threat-detection-library/troj
+  #   /threat-detection-library/troj/agent
+  # Naming convention:
+  #   <Prefix>/<Family>-<Variant>
+  # Prefixes (Sophos Naming Scheme):
+  #   Mal/   classic malware family
+  #   Troj/  trojan
+  #   HPmal/ HitmanPro.Alert behavioral block (Intercept X)
+  #   ML/    Sophos ML/Deep Learning detection (e.g. ML/PE-A)
+  #   JS/    JavaScript-based threat
+  #   PUA/   Potentially Unwanted Application
+  # ML/PE-A is the literal ML-engine signature emitted in 2024+ samples
+  # for portable executables flagged by the Sophos ML engine.
+  - name: threat_name
+    type: weighted_choice
+    choices:
+      "Mal/Generic-S":     0.25  # SophosLabs Live Protection generic
+      "ML/PE-A":           0.20  # ML / Deep Learning PE detection
+      "Troj/Agent-AZUR":   0.10
+      "Troj/Mdrop-JFD":    0.08
+      "HPmal/Cerber-A":    0.07  # HitmanPro.Alert ransomware block
+      "Mal/EncPk-AC":      0.06
+      "Troj/PHPShel-AZ":   0.05
+      "JS/Agent-AAB":      0.05
+      "Troj/Ransom-LBN":   0.05  # LockBit family
+      "PUA/CoinMiner-AA":  0.04
+      "EICAR-AV-Test":     0.05  # test detection
+
+  # JSON `origin` — engine that produced the detection. Surfaced as a
+  # plain extension key (no CEF_MAPPING override -> emitted with the
+  # original JSON key by siem.py update_cef_keys logic).
+  - name: origin
+    type: weighted_choice
+    choices:
+      "ML":               0.25  # ML / Deep Learning engine
+      "SAV":              0.30  # Sophos Anti-Virus engine
+      "HMPA":             0.15  # HitmanPro.Alert
+      "Web Protection":   0.10
+      "HIPS":             0.10
+      "Behavior":         0.10  # Live behavior
+
+  # JSON `group` — Sophos event category. Vocabulary observed in real
+  # SIEM API samples (Rapid7 + IBM DSM docs).
+  - name: event_group
+    type: weighted_choice
+    choices:
+      "MALWARE":    0.50
+      "RUNTIME_DETECTIONS": 0.18
+      "PUA":        0.10
+      "RANSOMWARE": 0.10  # Sophos Central uses this group when Cryptoguard fires
+      "WEB":        0.07
+      "POLICY":     0.05
+
+  # JSON `endpoint_type` — Sophos always emits one of these literal
+  # strings in `endpoint_type`. Drives ArcSight workstation vs server
+  # rule family pivot.
+  - name: endpoint_type
+    type: weighted_choice
+    choices:
+      "computer": 0.60
+      "server":   0.40
+
+  # JSON `location` -> CEF `dhost`. Sophos puts the endpoint NetBIOS
+  # hostname here. Hostname pool blends both workstation + server
+  # naming; for higher-fidelity workstation/server axis splits in
+  # downstream rule tests, switch to a templated pool keyed on
+  # endpoint_type.
+  - name: location
+    type: choice
+    choices: ${params.endpoint_pool}
+
+  # JSON `source` -> CEF `suser` (per CEF_MAPPING line 61). For
+  # endpoint-originated threat events Sophos uses this field for the
+  # logged-on user; "n/a" appears in real samples when no user context
+  # is available (service-account scans, boot-time detections).
+  - name: source_user
+    type: weighted_choice
+    choices:
+      "alice":          0.20
+      "bob":            0.15
+      "svc_backup":     0.10
+      "contractor_a":   0.10
+      "admin_b":        0.05
+      "DOMAIN\\\\alice":  0.15  # NT-style account name also seen
+      "DOMAIN\\\\bob":    0.10
+      "n/a":            0.15
+
+  # JSON `endpoint_id`, `customer_id`, `id` — Sophos uses UUID4
+  # everywhere. faker uuid4 produces the canonical 8-4-4-4-12 form.
+  - name: endpoint_id
+    type: faker
+    method: uuid4
+
+  - name: event_id
+    type: faker
+    method: uuid4
+
+  # JSON `source_info.ip` — flattened by siem.py `flatten_json` to
+  # `source_info_ip`. We emit it that way to match real wire output.
+  - name: source_ip
+    type: cidr
+    cidr: ${params.source_subnet}
+
+  # File path slot. siem.py's `full_file_path` JSON field maps to
+  # `filePath`; older payloads keep the path embedded inside `name`
+  # (regex-extracted by name_mapping.py threat_regex). We emit the
+  # `full_file_path` form for cleanest CEF.
+  - name: file_path
+    type: weighted_choice
+    choices:
+      "C:\\\\Users\\\\Public\\\\Downloads\\\\invoice_2026.exe":     0.18
+      "C:\\\\Users\\\\alice\\\\AppData\\\\Local\\\\Temp\\\\update.exe": 0.15
+      "C:\\\\Users\\\\bob\\\\AppData\\\\Roaming\\\\svchost.exe":   0.12
+      "C:\\\\ProgramData\\\\Sophos\\\\quarantine\\\\suspicious.bin":  0.10
+      "C:\\\\inetpub\\\\wwwroot\\\\uploads\\\\shell.aspx":            0.10
+      "D:\\\\Share\\\\HR\\\\readme_decrypt.txt":                      0.10
+      "C:\\\\Windows\\\\Temp\\\\7z_extract\\\\payload.dll":           0.10
+      "/var/tmp/.cache/payload.sh":                                   0.08
+      "/home/contractor_a/scripts/runner.py":                         0.07
+
+  # JSON `appSha256` — Sophos emits SHA-256 for the offending
+  # application. faker sha256 returns the 64-hex canonical form.
+  - name: app_sha256
+    type: faker
+    method: sha256
+
+  # `name` is the CEF header position 6 (event name). siem.py reuses
+  # the JSON `name` field; when name_mapping.threat_regex matches, it
+  # replaces `name` with the extracted detection_identity_name (the
+  # threat name). To match real wire output the name slot here is
+  # set to the threat name, NOT a long sentence.
+  - name: event_name
+    type: template
+    template: "{{threat_name}}"
+
+# CEF template — strict layout per the official sophos/Sophos-Central-
+# SIEM-Integration siem.py emitter. Header literals are lowercase
+# (`sophos|sophos central|1.0`) per CEF_CONFIG dict (siem.py L36-41).
+# Extension keys follow CEF_MAPPING swaps + flatten_json conventions:
+#   rt        <- created_at      (CEF_MAPPING L64)
+#   end       <- when            (CEF_MAPPING L62)
+#   suser     <- source          (CEF_MAPPING L61)
+#   duid      <- user_id         (CEF_MAPPING L63) — often empty
+#   dhost     <- location        (CEF_MAPPING L66)
+#   filePath  <- full_file_path  (CEF_MAPPING L65)
+# Unmapped JSON keys (customer_id, endpoint_id, endpoint_type, threat,
+# origin, group, id, appSha256, source_info_ip) are passed through as
+# extension keys verbatim by update_cef_keys (siem.py L223-236).
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{syslog_host}} CEF:0|sophos|sophos central|1.0|{{event_type}}|{{event_name}}|{{cef_severity}}|rt={{created_at}} end={{when_ts}} suser={{source_user}} dhost={{location}} filePath={{file_path}} duid= customer_id={{params.customer_id}} endpoint_id={{endpoint_id}} endpoint_type={{endpoint_type}} threat={{threat_name}} origin={{origin}} appSha256={{app_sha256}} id={{event_id}} group={{event_group}} severity={{severity_label}} source_info_ip={{source_ip}}

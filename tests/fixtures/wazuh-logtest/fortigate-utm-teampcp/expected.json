@@ -1,0 +1,42 @@
+{
+  "catalog_path": "catalog/fortinet/fortios/7.4/utm-webfilter-litellm-c2-teampcp.yaml",
+  "catalog_sha": "0f6c6b8fdaf10ab24a93882ad8bd5697889e17e9",
+  "decoder": "fortigate",
+  "fixtures": [
+    {
+      "name": "litellm-exfil-post",
+      "sample_file": "sample-litellm-exfil-post.log",
+      "phase2_observe": {
+        "_comment": "觀察用,非 pass-fail;若 decoder 抽到這些 fields 算 bonus,不抽也 OK",
+        "logid": "0316013056",
+        "eventtype": "ftgd_blk"
+      },
+      "phase3_must_fire": [132010],
+      "phase3_min_level": 12
+    },
+    {
+      "name": "checkmarx-raw-poll",
+      "sample_file": "sample-checkmarx-raw-poll.log",
+      "phase2_observe": { "hostname": "checkmarx.zone" },
+      "phase3_must_fire": [132010],
+      "phase3_min_level": 12
+    },
+    {
+      "name": "telnyx-wav-dl",
+      "sample_file": "sample-telnyx-wav-dl.log",
+      "phase2_observe": {
+        "eventtype": "urlfilter",
+        "logid": "0315012544"
+      },
+      "phase3_must_fire": [132010],
+      "phase3_min_level": 12
+    },
+    {
+      "name": "litellm-beacon-get",
+      "sample_file": "sample-litellm-beacon-get.log",
+      "phase2_observe": {},
+      "phase3_must_fire": [],
+      "phase3_must_not_fire": [132010]
+    }
+  ]
+}

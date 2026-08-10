@@ -1,0 +1,225 @@
+vendor: linux
+product: openssh
+version: "9.x"
+log_type: auth.failure
+description: |
+  OpenSSH 9.x sshd authentication failure events as they land in
+  /var/log/auth.log (Debian/Ubuntu) or /var/log/secure (RHEL/Fedora/
+  Rocky/Alma) and are forwarded to a SIEM over RFC3164 syslog.
+
+  Covered failure modes (all four are emitted by the SAME sshd
+  monitor loop in openssh-portable/auth.c::auth_log() and the
+  pre-auth disconnect path in sshd-session.c):
+
+    1. invalid_user            — `Failed password for invalid user <u> from <ip> port <p> ssh2`
+    2. failed_password         — `Failed password for <u> from <ip> port <p> ssh2`
+    3. preauth_close           — `Connection closed by authenticating user <u> <ip> port <p> [preauth]`
+    4. invalid_user_announce   — `Invalid user <u> from <ip> port <p>`
+
+  Source-of-truth (URLs fetched 2026-05-15):
+    - OpenSSH portable auth.c — auth_log() composite format string:
+        https://github.com/openssh/openssh-portable/blob/master/auth.c
+      (literal: "%s %s%s%s for %s%.100s from %.200s port %d ssh2%s%s"
+       — placeholders fill as: authmsg="Failed", method="password",
+       submethod="", userValid=" invalid user" | "", username,
+       remote_ip, remote_port, method-key-info, …)
+    - OpenSSH portable auth.c — getpwnamallow() invalid-user announce:
+        literal: "Invalid user %.100s from %.200s port %d"
+    - OpenSSH portable auth.c — auth_maxtries_exceeded():
+        literal: "maximum authentication attempts exceeded for %s%.100s from %.200s port %d ssh2"
+      (matches Wazuh rule 5758)
+    - OpenSSH portable sshd-session.c — pre-auth disconnect message
+      ("Connection closed by authenticating user …") emitted via
+      packet_disconnect() during userauth_finish() when the client
+      drops the channel before completing authentication
+    - Wazuh built-in sshd ruleset (decoder name `sshd`):
+        https://github.com/wazuh/wazuh-ruleset/blob/master/rules/0095-sshd_rules.xml
+      Rule 5700  level 0   parent — "SSHD messages grouped"
+      Rule 5710  level 5   match  "illegal user|invalid user"
+                           → "Attempt to login using a non-existent user"
+      Rule 5712  level 10  if_matched_sid 5710, frequency 8 / 120s,
+                           same_source_ip → brute-force on invalid users
+      Rule 5716  level 5   regex  "^Failed|^error: PAM: Authentication"
+                           → "authentication failed" (real-user failed password)
+      Rule 5720  level 10  if_matched_sid 5716, frequency 8
+                           → "Multiple authentication failures" (real-user brute force)
+      Rule 5722  level 0   match  "Connection closed"
+                           → "ssh connection closed" (covers `[preauth]` variant)
+      Rule 5758  level 8   regex  "^error: maximum authentication attempts exceeded "
+    - Splunk Add-on for Unix and Linux — sourcetype `linux_secure`
+      extracts: action, user, user_name, src, src_port, sshd_protocol
+      (https://research.splunk.com/sources/9a47d88b-1b17-49ce-a0ef-b440ddbd98bb/)
+
+  Rule-id audit (vs prior catalog versions): rule_id 5760 cited in
+  the v2 catalog does NOT exist in the Wazuh built-in ruleset
+  (5700-5799 range jumps from 5759 → 5800). The correct rule for
+  failed-password against a REAL user is 5716, and its brute-force
+  derivative is 5720. The invalid-user pair (5710 → 5712) is kept.
+  The preauth_close pattern is observed by Wazuh as 5722 (level 0,
+  no-alert) — it groups the event but does not fire on its own; we
+  keep it in the catalog because some custom rulesets (Wazuh
+  default ruleset overrides, SOCFortress packs) elevate 5722-class
+  preauth drops into brute-force-style detections.
+
+format: rfc3164
+transport: [udp_syslog, tcp_syslog, file, beats]
+
+ocsf:
+  class: authentication
+  category_uid: 3
+  class_uid: 3002
+
+# ──────────────── DetectOps v2 metadata ────────────────
+# SSH brute-force is the canonical "machine-speed threat" probe — Mythos-ready
+# R4/PA10 are stress-tested by burst-mode dispatch of this catalog.
+detections:
+  wazuh:
+    # Wazuh built-in ruleset (0095-sshd_rules.xml). decoder=sshd applies
+    # to ALL entries below; per-rule level mirrors the upstream XML.
+    - rule_id: 5700      # parent: "SSHD messages grouped"
+      decoder: sshd
+      level: 0
+    - rule_id: 5710      # "Attempt to login using a non-existent user"
+      decoder: sshd
+      level: 5
+    - rule_id: 5712      # brute-force on invalid users (>=8 / 120s)
+      decoder: sshd
+      level: 10
+    - rule_id: 5716      # "authentication failed" (real-user failed password)
+      decoder: sshd
+      level: 5
+    - rule_id: 5720      # multiple authentication failures (>=8)
+      decoder: sshd
+      level: 10
+    - rule_id: 5722      # ssh connection closed — preauth_close
+      decoder: sshd
+      level: 0
+  sigma:
+    - rule: lnx_ssh_brute_force_attempt
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/linux/builtin/auth
+    - rule: lnx_ssh_failed_password
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/linux/builtin/auth
+  elk_detection:
+    - kibana_rule_id: lnx-ssh-multi-failure
+      severity: medium
+
+mythos_alignment:
+  # R1 Accelerated Threat Exploitation — automated SSH brute force is the
+  # textbook machine-speed threat. R4 Inadequate Detection Velocity — the
+  # whole point of dispatching this catalog at burst rate is to measure
+  # whether SOC alert velocity keeps up.
+  risk_refs: [R1, R4]
+  # PA5 Continuous Patching (SSH exposure auditing) +
+  # PA9 Deception (SSH honeypot baseline) +
+  # PA10 Automated Response (auto-block IP)
+  pa_refs: [PA5, PA9, PA10]
+  ttx_class: rapid
+
+regression:
+  # >=8 failures in a short window → 5712 (invalid_user path) and 5720
+  # (real-user path) each fire once. Default brute-force window is ~120s.
+  # 1000 events across 6 src IPs with the kind-weights below yield:
+  #   ~550 invalid_user        → ~68 × 5712 + ~550 × 5710
+  #   ~300 failed_password     → ~37 × 5720 + ~300 × 5716
+  #   ~150 preauth_close       → 5722 silent grouping (level 0)
+  # Composite "alert-class" count (5712 + 5720) ≈ 105.
+  baseline_alert_count: 105
+  baseline_ttd_ms: 3000
+
+params:
+  hostname: { default: "web-server-01" }
+  src_pool:
+    default:
+      - "45.155.205.34"
+      - "92.118.39.71"
+      - "185.220.101.7"
+      - "61.177.172.140"
+      - "194.169.175.36"
+      - "103.149.162.108"
+  user_pool:
+    default:
+      - "admin"
+      - "root"
+      - "ubuntu"
+      - "test"
+      - "oracle"
+      - "git"
+      - "postgres"
+      - "ftpuser"
+      - "support"
+
+fields:
+  # PRI = facility * 8 + severity.
+  # OpenSSH 9.x uses syslog facility AUTHPRIV (10) on RHEL/Fedora/Rocky/
+  # Alma + recent Debian/Ubuntu; severity for these failure events is
+  # LOG_INFO (6) via logit(). 10*8 + 6 = 86 → "<86>".
+  # (Some hardened distros wire sshd to AUTH (4) instead, giving PRI 38;
+  # detection rules pivot on the message body, not PRI, so this is safe.)
+  - name: pri
+    type: fixed
+    value: 86
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  - name: hostname
+    type: param
+    param: hostname
+
+  - name: pid
+    type: int_range
+    min: 1000
+    max: 65535
+
+  # kind drives the four real OpenSSH 9.x message variants. Weights
+  # reflect typical SOC traffic mix on an internet-exposed host:
+  # invalid-user attempts dominate (scanners hit non-existent users),
+  # real-user failures form the brute-force tail, preauth_close shows
+  # up as a steady drumbeat from misbehaving clients and scanners
+  # that probe-then-drop. invalid_user_announce is the standalone
+  # "Invalid user X from Y port Z" line that sshd emits BEFORE the
+  # subsequent "Failed password for invalid user …" — Wazuh rule
+  # 5710 matches both forms (its regex is "illegal user|invalid user").
+  - name: kind
+    type: weighted_choice
+    choices:
+      invalid_user:           0.45
+      failed_password:        0.30
+      preauth_close:          0.15
+      invalid_user_announce:  0.10
+
+  - name: user
+    type: choice
+    choices: ${params.user_pool}
+
+  - name: src_ip
+    type: choice
+    choices: ${params.src_pool}
+
+  - name: src_port
+    type: int_range
+    min: 1024
+    max: 65535
+
+# Template emits the four real OpenSSH 9.x wire formats verbatim
+# (placeholders match the C printf format strings in auth.c and
+# sshd-session.c — see Source-of-truth comments at top of file).
+#
+# Note: OpenSSH does NOT use the public-key reject string the v2
+# catalog claimed ("publickey for <user> SHA256:…"). The actual
+# pubkey-failure path is logged as "Failed publickey for …" and is
+# rare in brute-force traffic; we omit it to keep the catalog focused
+# on the four message variants Wazuh's 5710/5716/5722 grouping
+# rules actually pivot on. Coverage can be added in a future delta
+# (would need a new kind + keytype + fingerprint fields).
+template: |-
+  {%- if kind == "invalid_user" -%}
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} sshd[{{pid}}]: Failed password for invalid user {{user}} from {{src_ip}} port {{src_port}} ssh2
+  {%- elif kind == "failed_password" -%}
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} sshd[{{pid}}]: Failed password for {{user}} from {{src_ip}} port {{src_port}} ssh2
+  {%- elif kind == "preauth_close" -%}
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} sshd[{{pid}}]: Connection closed by authenticating user {{user}} {{src_ip}} port {{src_port}} [preauth]
+  {%- else -%}
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} sshd[{{pid}}]: Invalid user {{user}} from {{src_ip}} port {{src_port}}
+  {%- endif -%}

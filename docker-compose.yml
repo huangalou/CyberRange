@@ -1,0 +1,47 @@
+# CyberRange — packaged deployment (a reverse proxy fronts both services).
+#
+# Bring up:   docker compose up -d --build
+# Tear down:  docker compose down
+#
+# Containers join the existing `gateway-net` so the reverse proxy can reach
+# them by service name (cyberrange-api / cyberrange-web). No host ports are
+# published — only the reverse proxy routes traffic in.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    image: cyberrange-api:latest
+    container_name: cyberrange-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      API_HOST: 0.0.0.0
+      API_PORT: 8001
+      CYBERRANGE_CATALOG_DIR: /app/catalog
+    networks:
+      - gateway-net
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-/api}
+    image: cyberrange-web:latest
+    container_name: cyberrange-web
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+    depends_on:
+      - api
+    networks:
+      - gateway-net
+
+networks:
+  gateway-net:
+    external: true

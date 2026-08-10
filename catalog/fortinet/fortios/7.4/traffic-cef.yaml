@@ -1,0 +1,433 @@
+vendor: fortinet
+product: fortios
+version: "7.4"
+log_type: traffic.forward-cef
+description: |
+  FortiGate FortiOS 7.4 forward-traffic log (logid="0000000013",
+  LOG_ID_TRAFFIC_END_FORWARD) emitted in NATIVE FortiOS Common Event
+  Format (CEF) — i.e. produced by the FortiGate itself via
+  `config log syslogd setting / set format cef`, NOT re-formatted by
+  a downstream SmartConnector / SC4S relay.
+
+  Sibling catalog (same session-end event, NATIVE key=value wire form):
+    catalog/fortinet/fortios/7.4/traffic.yaml
+
+  IMPORTANT — this is FortiOS-emitted CEF, not ArcSight CEF. The
+  field-mapping rules are Fortinet-defined and DIFFER from the generic
+  CEF conventions a SmartConnector would apply. Specifically:
+
+    1. `signatureId` is the LAST 5 DIGITS of the FortiOS logid
+       (`0000000013` → `00013`). Not the full logid, not a symbolic
+       class id. The full logid is also re-emitted as the
+       `FTNTFGTlogid` extension.
+    2. The CEF `Name` slot uses the formula:
+         type:subtype +[eventtype] +[action] +[status]
+       For traffic.forward this collapses to `traffic:forward <action>`,
+       e.g. `traffic:forward close` or `traffic:forward accept`. The
+       action is embedded in Name AND re-emitted as the `act` extension.
+    3. CEF `Severity` is the REVERSED FortiOS level — Fortinet inverts
+       the syslog priority so CEF severity rises with criticality:
+         emergency → 10, alert → 9, critical → 8, error → 7,
+         warning → 4, notification (notice) → 3,
+         information (info) → 2, debug → 0.
+       The 7.4 vendor sample shows `level=notice` → CEF severity 3.
+    4. Any FortiOS field that doesn't map to a standard ArcSight CEF
+       extension key gets the **`FTNTFGT` prefix** (e.g. `FTNTFGTlogid`,
+       `FTNTFGTsubtype`, `FTNTFGTlevel`, `FTNTFGTvd`, `FTNTFGTeventtime`,
+       `FTNTFGTpolicyid`, ...). This is Fortinet's vendor-specific
+       namespace for unmapped fields per CEF spec § "Custom Extensions".
+    5. Strings are NOT quoted in the CEF body — FortiOS strips the
+       double-quotes it uses in native KV mode. Forward slashes `//`,
+       equals signs `=`, and backslashes `\` inside values are escaped.
+
+  Fortinet-mapped CEF extension keys (standard ArcSight CEF names used
+  WITHOUT the FTNTFGT prefix; everything else gets the prefix):
+
+    srcip                → src
+    srcport              → spt
+    srcintf              → deviceInboundInterface
+    dstip                → dst
+    dstport              → dpt
+    dstintf              → deviceOutboundInterface
+    sessionid            → externalId
+    proto                → proto
+    action               → act
+    service              → app             (FortiOS service object;
+                                            App-Control `app` goes to
+                                            `FTNTFGTapp` instead)
+    transip              → sourceTranslatedAddress
+    transport (NAT port) → sourceTranslatedPort
+    sentbyte             → out
+    rcvdbyte             → in
+    devid                → deviceExternalId
+    devname              → (syslog HOSTNAME slot, not a CEF extension)
+
+  Everything else is FTNTFGT-prefixed:
+    FTNTFGTlogid, FTNTFGTsubtype, FTNTFGTlevel, FTNTFGTvd,
+    FTNTFGTeventtime, FTNTFGTtz, FTNTFGTsrcintfrole,
+    FTNTFGTdstintfrole, FTNTFGTsrccountry, FTNTFGTdstcountry,
+    FTNTFGTpolicyid, FTNTFGTpolicytype, FTNTFGTpolicyname,
+    FTNTFGTpoluuid, FTNTFGTtrandisp, FTNTFGTappid, FTNTFGTapp,
+    FTNTFGTappcat, FTNTFGTapprisk, FTNTFGTapplist, FTNTFGTduration,
+    FTNTFGTsentpkt, FTNTFGTrcvdpkt, FTNTFGTutmaction, FTNTFGTcountapp,
+    FTNTFGTutmref.
+
+  Source-of-truth (URLs verified 2026-05-15):
+    - FortiOS to CEF log field mapping guidelines (7.4.4):
+        https://docs.fortinet.com/document/fortigate/7.4.4/fortios-log-message-reference/998820/fortios-to-cef-log-field-mapping-guidelines
+      (defines: signatureId = last 5 digits of logid; cat = type:subtype;
+       Name = type:subtype +[eventtype] +[action] +[status]; FTNTFGT
+       prefix for unmatched fields; quote-stripping + escape rules)
+    - FortiOS Traffic log support for CEF (7.4.4):
+        https://docs.fortinet.com/document/fortigate/7.4.4/fortios-log-message-reference/949981/traffic-log-support-for-cef
+      (CEF wire-format example for LOG_ID_TRAFFIC_END_FORWARD —
+       `traffic:forward close|3` header + full extension list)
+    - FortiOS CEF priority levels (7.4.4):
+        https://docs.fortinet.com/document/fortigate/7.4.4/fortios-log-message-reference/671442/cef-priority-levels
+      (the "reversed level" table: notice → 3, etc.)
+    - FortiOS to CEF mapping examples — community tech tip:
+        https://community.fortinet.com/t5/FortiGate/Technical-Tip-FortiOS-to-CEF-log-field-mapping-guidelines/ta-p/193759
+    - Sekoia.io Fortigate intake (corroborates `cat=traffic:...`,
+      `|3|` severity for notice):
+        https://docs.sekoia.io/integration/categories/network_security/fortigate/
+
+  Real vendor CEF wire-format sample (composed from the FortiOS 7.4
+  Traffic-log-CEF doc page + 6.0.3 doc sample, with 7.4-specific
+  fields filled in; mapping verified against the FortiOS-to-CEF
+  guidelines doc cited above):
+
+    <189>Dec 27 11:07:55 FGT-A-LOG CEF:0|Fortinet|Fortigate|7.4.4|00013|traffic:forward close|3|deviceExternalId=FG100E1234567890 FTNTFGTlogid=0000000013 cat=traffic:forward FTNTFGTsubtype=forward FTNTFGTlevel=notice FTNTFGTvd=vdom1 FTNTFGTeventtime=1545937675 FTNTFGTtz=+0800 src=10.1.100.11 spt=54190 deviceInboundInterface=port12 FTNTFGTsrcintfrole=undefined dst=52.53.140.235 dpt=443 deviceOutboundInterface=port11 FTNTFGTdstintfrole=undefined FTNTFGTsrccountry=Reserved FTNTFGTdstcountry=United States externalId=402 proto=6 act=close FTNTFGTpolicyid=1 FTNTFGTpolicytype=policy FTNTFGTpoluuid=c2d460aa-fe6f-51e8-9505-41b5117dfdd4 app=HTTPS FTNTFGTtrandisp=snat sourceTranslatedAddress=172.16.200.1 sourceTranslatedPort=54190 FTNTFGTappid=40568 FTNTFGTapp=HTTPS.BROWSER FTNTFGTappcat=Web.Client FTNTFGTapprisk=medium FTNTFGTapplist=g-default FTNTFGTduration=2 out=3652 in=146668 FTNTFGTsentpkt=58 FTNTFGTrcvdpkt=105 FTNTFGTutmaction=allow FTNTFGTcountapp=2 FTNTFGTutmref=65532-56
+
+  Wazuh notes: this catalog feeds Wazuh's built-in `cef` decoder (NOT
+  the `fortigate` KV decoder). Detection rules that pivot on FortiGate
+  field names (`srcip`, `dstport`, `action`) need a CEF-aware variant
+  that keys off the CEF extension names (`src`, `dpt`, `act`) or off
+  the FTNTFGT-prefixed names. Most Wazuh community rule sets ship
+  both variants; project-local rules need to be checked.
+
+format: cef
+transport: [udp_syslog, tcp_syslog, file, beats]
+
+ocsf:
+  class: network_activity
+  category_uid: 4
+  class_uid: 4001
+
+# ──────────────── DetectOps v2 metadata ────────────────
+# traffic.forward-cef is the SAME baseline visibility feed as the native
+# sibling — present here only to validate that the CEF ingest path stays
+# decodeable. No additional rules fire. Empty `wazuh.rule_id` is correct.
+detections:
+  wazuh:
+    - decoder: cef
+      # No rule_id: traffic.forward is baseline. Anomaly rules
+      # (high `out=`, geo-flagged `FTNTFGTdstcountry`) layer on top.
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  # Baseline visibility — not a direct risk simulation. Mirrors the
+  # native sibling exactly; the CEF wire form does not change the
+  # Mythos-ready alignment.
+  risk_refs: []
+  pa_refs: []
+
+regression:
+  # 1000 baseline flows → ~0 alerts under default ruleset.
+  # CEF parse adds ~1ms vs native KV; latency budget unchanged.
+  baseline_alert_count: 0
+  baseline_ttd_ms: 5000
+
+# Default parameters — mirror the native sibling so the same dual-emit
+# scenario (KV → port 514 + CEF → port 514 on a different host) works
+# without re-tuning.
+params:
+  devname: { default: "FGT100E-LAB" }
+  devid:   { default: "FG100E1234567890" }
+  vd:      { default: "root" }
+  fos_version: { default: "7.4.4" }
+  src_cidr:    { default: "10.0.0.0/24" }
+  dst_pool:    { default: ["8.8.8.8", "1.1.1.1", "151.101.1.140", "203.0.113.50"] }
+
+fields:
+  - name: pri
+    type: fixed
+    value: 189                              # local7.notice (23*8 + 5)
+
+  # RFC3164 timestamp wrapper — FortiOS still emits the BSD syslog
+  # frame around the CEF body when `set format cef` is configured.
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  # FortiOS-internal flow timestamp — re-emitted as
+  # `FTNTFGTeventtime`. Epoch nanoseconds, identical to the native
+  # sibling's `eventtime` field.
+  - name: eventtime
+    type: datetime
+    format: epoch_ns
+
+  - name: tz
+    type: fixed
+    value: "+0800"
+
+  - name: devname
+    type: param
+    param: devname
+
+  - name: devid
+    type: param
+    param: devid
+
+  - name: vd
+    type: param
+    param: vd
+
+  # FortiOS version string used in the CEF DeviceVersion slot
+  # (column 4 of the CEF header).
+  - name: fos_version
+    type: param
+    param: fos_version
+
+  # Full logid is still emitted as the `FTNTFGTlogid` extension;
+  # the CEF `signatureId` is the LAST 5 DIGITS of this value
+  # (rendered separately as `signature_id` below).
+  - name: logid
+    type: fixed
+    value: "0000000013"                     # LOG_ID_TRAFFIC_END_FORWARD
+
+  # CEF header field — per FortiOS-to-CEF mapping doc: signatureId =
+  # last 5 digits of logid. `0000000013` → `00013`.
+  - name: signature_id
+    type: fixed
+    value: "00013"
+
+  # The CEF `cat` extension is the literal "<type>:<subtype>" string
+  # per FortiOS-to-CEF mapping doc. Fixed for this catalog.
+  - name: cat
+    type: fixed
+    value: "traffic:forward"
+
+  # FortiGate-emitted level string — re-emitted as `FTNTFGTlevel`.
+  # The CEF Severity column (column 7 of the header) is the REVERSED
+  # mapping below.
+  - name: level
+    type: fixed
+    value: "notice"
+
+  # CEF Severity column. Notice → 3 per Fortinet CEF priority levels
+  # doc and verbatim vendor sample (`traffic:forward close|3`).
+  - name: cef_severity
+    type: fixed
+    value: "3"
+
+  - name: srcip
+    type: cidr
+    cidr: ${params.src_cidr}
+
+  - name: srcport
+    type: int_range
+    min: 1024
+    max: 65535
+
+  - name: srcintf
+    type: fixed
+    value: "port1"
+
+  - name: srcintfrole
+    type: fixed
+    value: "lan"
+
+  - name: dstip
+    type: choice
+    choices: ${params.dst_pool}
+
+  - name: dstport
+    type: weighted_choice
+    choices:
+      "443": 0.55
+      "80":  0.20
+      "53":  0.10
+      "22":  0.05
+      "3389": 0.05
+      "8080": 0.05
+
+  - name: dstintf
+    type: fixed
+    value: "port2"
+
+  - name: dstintfrole
+    type: fixed
+    value: "wan"
+
+  - name: srccountry
+    type: fixed
+    value: "Reserved"
+
+  - name: dstcountry
+    type: weighted_choice
+    choices:
+      "United States": 0.6
+      "Japan":         0.2
+      "Taiwan":        0.1
+      "Singapore":     0.1
+
+  - name: sessionid
+    type: int_range
+    min: 100000
+    max: 999999
+
+  - name: proto
+    type: weighted_choice
+    choices: { "6": 0.85, "17": 0.13, "1": 0.02 }
+
+  # Same FortiOS 7.4 action vocabulary as the native sibling. CEF
+  # emits this as both the embedded suffix of the Name slot
+  # (`traffic:forward <action>`) and as the `act` extension.
+  - name: action
+    type: weighted_choice
+    choices:
+      accept:     0.55
+      close:      0.35
+      deny:       0.05
+      client-rst: 0.03
+      timeout:    0.02
+
+  - name: policyid
+    type: int_range
+    min: 1
+    max: 50
+
+  - name: policytype
+    type: fixed
+    value: "policy"
+
+  - name: policyname
+    type: weighted_choice
+    choices:
+      "Internet":          0.55
+      "Allow-Out":         0.20
+      "DMZ-to-WAN":        0.10
+      "Branch-VPN":        0.10
+      "Block-RFC1918-Out": 0.05
+
+  - name: poluuid
+    type: faker
+    method: uuid4
+
+  # FortiOS `service` object → CEF `app` extension per
+  # FortiOS-to-CEF mapping doc. The App-Control `app` field is a
+  # SEPARATE field that goes to `FTNTFGTapp` (defined below).
+  - name: service
+    type: weighted_choice
+    choices: { HTTPS: 0.55, HTTP: 0.20, DNS: 0.10, SSH: 0.05, "RDP": 0.05, Other: 0.05 }
+
+  - name: trandisp
+    type: fixed
+    value: "snat"
+
+  - name: transip
+    type: fixed
+    value: "203.0.113.1"
+
+  - name: transport_port
+    type: int_range
+    min: 1024
+    max: 65535
+
+  - name: appid
+    type: int_range
+    min: 15000
+    max: 50000
+
+  # FortiOS App-Control app name → `FTNTFGTapp` (not the standard
+  # `app` extension — that one carries the FortiOS `service` value).
+  - name: app
+    type: weighted_choice
+    choices:
+      "HTTPS.BROWSER":    0.45
+      "HTTP.BROWSER":     0.15
+      "DNS":              0.15
+      "SSL":              0.10
+      "SSH":              0.05
+      "Microsoft.Portal": 0.05
+      "unknown":          0.05
+
+  - name: appcat
+    type: weighted_choice
+    choices: { "Web.Client": 0.4, "Network.Service": 0.2, "General.Interest": 0.1, "unscanned": 0.3 }
+
+  - name: apprisk
+    type: weighted_choice
+    choices:
+      "low":      0.45
+      "medium":   0.30
+      "elevated": 0.15
+      "high":     0.07
+      "critical": 0.03
+
+  - name: applist
+    type: fixed
+    value: "g-default"
+
+  - name: duration
+    type: int_range
+    min: 1
+    max: 3600
+
+  - name: sentbyte
+    type: int_range
+    min: 100
+    max: 5000000
+
+  - name: rcvdbyte
+    type: int_range
+    min: 100
+    max: 50000000
+
+  - name: sentpkt
+    type: int_range
+    min: 1
+    max: 5000
+
+  - name: rcvdpkt
+    type: int_range
+    min: 1
+    max: 50000
+
+  - name: utmaction
+    type: weighted_choice
+    choices: { allow: 0.92, block: 0.06, monitor: 0.02 }
+
+  - name: countapp
+    type: int_range
+    min: 0
+    max: 10
+
+  - name: utmref_a
+    type: int_range
+    min: 0
+    max: 65535
+
+  - name: utmref_b
+    type: int_range
+    min: 0
+    max: 65535
+
+# CEF template — strict ArcSight CEF header layout:
+#   CEF:Version|DeviceVendor|DeviceProduct|DeviceVersion|SignatureID|Name|Severity|Extension
+#
+# Per FortiOS-to-CEF mapping doc:
+#   - DeviceVendor   = Fortinet
+#   - DeviceProduct  = Fortigate                       (Fortinet's casing — lowercase 'g')
+#   - DeviceVersion  = {{fos_version}}                 (e.g. 7.4.4)
+#   - SignatureID    = {{signature_id}}                (last 5 digits of logid)
+#   - Name           = traffic:forward {{action}}      (type:subtype +[action])
+#   - Severity       = {{cef_severity}}                (reversed FortiOS level: notice → 3)
+#
+# Extension field order mirrors the FortiOS-emitted layout (cat →
+# subtype/level/vd/eventtime/tz → src/spt/iface → dst/dpt/iface →
+# country → externalId/proto/act → policy/app/trandisp/translated →
+# app-control → byte/pkt → utm).
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{devname}} CEF:0|Fortinet|Fortigate|{{fos_version}}|{{signature_id}}|traffic:forward {{action}}|{{cef_severity}}|deviceExternalId={{devid}} FTNTFGTlogid={{logid}} cat={{cat}} FTNTFGTsubtype=forward FTNTFGTlevel={{level}} FTNTFGTvd={{vd}} FTNTFGTeventtime={{eventtime}} FTNTFGTtz={{tz}} src={{srcip}} spt={{srcport}} deviceInboundInterface={{srcintf}} FTNTFGTsrcintfrole={{srcintfrole}} dst={{dstip}} dpt={{dstport}} deviceOutboundInterface={{dstintf}} FTNTFGTdstintfrole={{dstintfrole}} FTNTFGTsrccountry={{srccountry}} FTNTFGTdstcountry={{dstcountry}} externalId={{sessionid}} proto={{proto}} act={{action}} FTNTFGTpolicyid={{policyid}} FTNTFGTpolicytype={{policytype}} FTNTFGTpolicyname={{policyname}} FTNTFGTpoluuid={{poluuid}} app={{service}} FTNTFGTtrandisp={{trandisp}} sourceTranslatedAddress={{transip}} sourceTranslatedPort={{transport_port}} FTNTFGTappid={{appid}} FTNTFGTapp={{app}} FTNTFGTappcat={{appcat}} FTNTFGTapprisk={{apprisk}} FTNTFGTapplist={{applist}} FTNTFGTduration={{duration}} out={{sentbyte}} in={{rcvdbyte}} FTNTFGTsentpkt={{sentpkt}} FTNTFGTrcvdpkt={{rcvdpkt}} FTNTFGTutmaction={{utmaction}} FTNTFGTcountapp={{countapp}} FTNTFGTutmref={{utmref_a}}-{{utmref_b}}

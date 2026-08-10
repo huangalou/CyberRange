@@ -1,0 +1,307 @@
+vendor: nginx
+product: access
+version: "1.x"
+log_type: access.combined
+description: |
+  Nginx HTTP server access log in the upstream-default `combined` format,
+  as defined by the `ngx_http_log_module` `log_format` directive. This is
+  THE wire form every vanilla nginx ships with out of the box — the format
+  Wazuh's `web-accesslog` decoder + rule families 31100/31101/31103-31108
+  and the nginx-specific 31141 (499 ignore) operate on.
+
+  Source-of-truth (URLs fetched 2026-05-15):
+    - nginx.org `ngx_http_log_module` reference (authoritative `combined`
+      log_format definition, variable semantics, $time_local CLF shape,
+      missing-variable dash convention):
+        https://nginx.org/en/docs/http/ngx_http_log_module.html
+    - nginx.org `ngx_http_core_module` `$time_local` variable
+      (Common Log Format — `[dd/Mon/yyyy:HH:MM:SS +zzzz]` rendering):
+        https://nginx.org/en/docs/http/ngx_http_core_module.html#var_time_local
+    - nginx.org variable index (cross-reference of $remote_addr,
+      $remote_user, $request, $status, $body_bytes_sent, $http_referer,
+      $http_user_agent):
+        https://nginx.org/en/docs/varindex.html
+    - Wazuh default ruleset web-accesslog family (0245-web_rules.xml —
+      31100 parent, 31101 4xx, 31103 SQLi, 31104 traversal, 31105 XSS,
+      31141 nginx-499 ignore, 31151 multi-4xx-from-same-IP,
+      31161-31163 multi-5xx-from-same-IP):
+        https://github.com/wazuh/wazuh-ruleset/blob/master/rules/0245-web_rules.xml
+
+  Authoritative `combined` log_format directive (nginx.org docs):
+
+    log_format combined '$remote_addr - $remote_user [$time_local] '
+                        '"$request" $status $body_bytes_sent '
+                        '"$http_referer" "$http_user_agent"';
+
+  Directive map:
+    $remote_addr      — Client IP address
+    -                 — LITERAL DASH (this is a hardcoded `-` in the format
+                        string itself, NOT a variable). nginx has NO ident
+                        column equivalent to Apache's `%l` — the dash is
+                        present unconditionally. Many SOC engineers
+                        miscall this "the ident field" by analogy with
+                        Apache combined; it is not — it's a constant.
+    $remote_user      — Authenticated user (HTTP Basic / Digest auth).
+                        Per nginx.org: "If the variable value is not
+                        found, a hyphen (-) will be logged." So `-` when
+                        no auth, real username when AuthBasic matched.
+    [$time_local]     — Request start time in Common Log Format. Format
+                        per nginx.org `$time_local` reference:
+                          dd/Mon/yyyy:HH:MM:SS +zzzz
+                        e.g. `15/May/2026:14:32:18 +0800`. The square
+                        brackets are literal in the log_format string.
+                        TZ offset is the nginx worker's local TZ —
+                        nginx does NOT convert to UTC. Never literal `Z`.
+    "$request"        — Full request line: `<METHOD> <URI> HTTP/<ver>`.
+                        Wrapped in literal double quotes per the format.
+    $status           — Response status code (3-digit integer).
+    $body_bytes_sent  — Response body size in bytes (excluding HTTP
+                        response headers). KEY DIFFERENCE FROM APACHE:
+                        nginx writes literal `0` for zero-byte responses
+                        (e.g. 304 Not Modified, 204 No Content). Apache's
+                        %b writes `-` under the same condition. This is
+                        a parser gotcha — Wazuh's web-accesslog decoder
+                        handles both; some hand-rolled grok patterns
+                        accept only one or the other.
+                        NB: also distinct from $bytes_sent (which
+                        includes response headers); combined uses
+                        $body_bytes_sent, not $bytes_sent.
+    "$http_referer"   — Request `Referer` header (RFC misspelling
+                        preserved). `-` when absent. Quoted.
+    "$http_user_agent" — Request `User-Agent` header. `-` when absent.
+                        Quoted.
+
+  Real vendor sample (matching the user-provided reference shape, render
+  shape verified against the nginx.org `$time_local` Common Log Format
+  spec):
+
+    192.168.1.10 - - [15/May/2026:14:32:18 +0800] "GET /index.html HTTP/1.1" 200 4521 "https://example.com/landing" "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+
+  Default transport: file (nginx writes `/var/log/nginx/access.log`).
+  Reaches SIEM via filebeat / fluent-bit / rsyslog `imfile` / Wazuh agent
+  `localfile` block. RFC3164 syslog wrap is NOT native — nginx's
+  `access_log syslog:server=...` directive (since 1.7.1) does add a
+  syslog header at emit time, but the default deployment ships file-only.
+  This catalog renders the raw access-log line WITHOUT a `<PRI>` prefix;
+  the shipper adds syslog framing if/when it forwards over UDP/TCP 514.
+
+  Companion catalog:
+    catalog/nginx/access/1.x/cef-wrapped.yaml — same upstream nginx
+    request, but re-emitted through a CEF wrapper (NXLog / syslog-ng /
+    rsyslog / Fluent Bit / application-side CEF builder) and pinned to
+    the companion SOC stack's payload-injection test harness emitter shape. That sibling
+    feeds the `nginx-cef-*` ELK index; THIS catalog feeds the plain
+    `web-accesslog`-decoded path the Wazuh 119000-119010 + 31xxx
+    families key off.
+
+format: custom
+transport: [file, beats, udp_syslog, tcp_syslog]
+
+ocsf:
+  class: http_activity
+  category_uid: 4
+  class_uid: 4002
+
+# ──────────────── DetectOps v2 metadata ────────────────
+# Native nginx access log is baseline web visibility — most lines do NOT
+# trigger alerts. Wazuh fires 31xxx series only on attack patterns
+# (SQLi/XSS/traversal/multi-4xx). 119000-119010 are companion-SOC-local
+# rules in `local_nginx_gateway.xml` keyed on the `/var/log/nginx/
+# access.log` location + 31100 parent rule.
+detections:
+  wazuh:
+    - decoder: web-accesslog        # Wazuh default — decodes status/uri/UA
+    - rule_id: 31100                # parent: access log messages grouped
+    - rule_id: 31101                # 4xx response
+      level: 3
+    - rule_id: 31103                # SQL injection attempt
+      level: 6
+    - rule_id: 31104                # directory traversal / common attack
+      level: 6
+    - rule_id: 31105                # XSS attempt
+      level: 6
+    - rule_id: 31108                # ignored simple-query 2xx/3xx
+    - rule_id: 31141                # nginx-specific 499 ignore
+    - rule_id: 31151                # multi-4xx from same source (14/90s)
+      level: 10
+    - rule_id: 31120                # 5xx server error
+      level: 6
+    - rule_id: 31161                # multi-501 from same source
+    - rule_id: 31162                # multi-500 from same source
+    - rule_id: 31163                # multi-503 from same source
+  sigma:
+    - rule: web_nginx_threats_keywords
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/web/nginx
+    - rule: web_nginx_core_rule_set
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/web
+  elk_detection: []  # native path is Wazuh-primary; ELK uses CEF sibling
+
+mythos_alignment:
+  # Web access log = baseline visibility (R6 asset/exposure inventory).
+  # Active web-attack detection sits on top via Sigma overlay → R1.
+  risk_refs: [R6, R1]
+  pa_refs: []
+  ttx_class: weeks
+
+regression:
+  # nginx access volume is high; default rules alert on ~3% of synthetic
+  # mixed traffic (status>=400, scanner UAs, attack-shaped paths).
+  baseline_alert_count: 30
+  baseline_ttd_ms: 4000
+
+params:
+  client_pool:
+    default:
+      - "192.168.1.10"
+      - "192.168.1.42"
+      - "203.0.113.45"
+      - "198.51.100.22"
+      - "172.58.21.7"
+      - "84.246.85.131"
+      - "180.149.227.3"
+      - "10.0.0.55"
+  # nginx renders $time_local in the worker process's local TZ. Default
+  # +0800 to match TPE deployment (most companion SOC stack traffic); override per
+  # site. Real nginx never writes literal `UTC` / `Z` here.
+  tz_offset:
+    default: "+0800"
+  vhost:
+    # nginx access.log does NOT include vhost in the combined format
+    # (combined has no %v equivalent). Kept here for parity with the CEF
+    # sibling and for use in the path/referer pool templates only.
+    default: "example.com"
+
+fields:
+  # $remote_addr — client IP.
+  - name: client_ip
+    type: choice
+    choices: ${params.client_pool}
+
+  # $remote_user — `-` dominates; non-dash only when the URI sits behind
+  # `auth_basic` / `auth_request`. Per nginx.org: "If the variable value
+  # is not found, a hyphen (-) will be logged."
+  - name: remote_user
+    type: weighted_choice
+    choices: { "-": 0.90, "alice": 0.04, "bob": 0.03, "admin": 0.03 }
+
+  # $time_local — Common Log Format: dd/Mon/yyyy:HH:MM:SS. The %z TZ
+  # offset is appended in the template from params.tz_offset so the line
+  # is wire-shaped like a real nginx worker running in that timezone.
+  - name: ts
+    type: datetime
+    format: "%d/%b/%Y:%H:%M:%S"
+
+  # $request components — rendered as `<METHOD> <URI> HTTP/<ver>` inside
+  # double quotes.
+  - name: method
+    type: weighted_choice
+    choices: { GET: 0.72, POST: 0.18, PUT: 0.03, DELETE: 0.02, HEAD: 0.04, OPTIONS: 0.01 }
+
+  - name: path
+    type: weighted_choice
+    choices:
+      "/":                                                            0.16
+      "/index.html":                                                  0.10
+      "/api/v1/users":                                                0.10
+      "/api/v1/login":                                                0.08
+      "/api/v1/orders/123":                                           0.08
+      "/static/app.js":                                               0.08
+      "/static/main.css":                                             0.07
+      "/favicon.ico":                                                 0.06
+      "/healthz":                                                     0.05
+      "/admin/.env":                                                  0.04
+      "/wp-login.php":                                                0.04
+      "/phpmyadmin/":                                                 0.02
+      "/login.php?user=admin&pass=':%20OR%20'1'='1":                  0.03
+      "/products?id=1%20UNION%20SELECT%20username,password%20FROM%20users--": 0.03
+      "/search?q=%3Cscript%3Ealert(1)%3C/script%3E":                  0.03
+      "/?file=../../../../etc/passwd":                                0.02
+      "/api/v2/upload":                                               0.01
+
+  # HTTP version distribution — modern nginx defaults to HTTP/1.1, with
+  # HTTP/2 growing on TLS-fronted vhosts. HTTP/1.0 lingers in legacy
+  # clients and the nginx.org examples themselves include /1.0 cases.
+  - name: protocol
+    type: weighted_choice
+    choices:
+      "HTTP/1.1": 0.78
+      "HTTP/2.0": 0.17
+      "HTTP/1.0": 0.05
+
+  # $status — final status code. Distribution skewed toward 200/304 as is
+  # normal for a healthy server; 4xx/5xx kept high enough to feed Wazuh
+  # 31101 / 31103-31105 / 31151 / 31161-31163 rules. 499 included because
+  # the nginx-specific Wazuh 31141 rule exists for it (client closed
+  # connection — nginx-only status, not in RFC 9110).
+  - name: status
+    type: weighted_choice
+    choices:
+      "200": 0.62
+      "301": 0.04
+      "304": 0.10
+      "401": 0.04
+      "403": 0.05
+      "404": 0.07
+      "499": 0.02   # nginx-specific (Wazuh 31141)
+      "500": 0.03
+      "502": 0.02
+      "503": 0.01
+
+  # $body_bytes_sent — response body bytes. KEY: nginx writes literal `0`
+  # for zero-byte responses (304 Not Modified, 204 No Content), unlike
+  # Apache %b which writes `-`. We render a mix including `0` so SIEM
+  # parsers see the realistic shape.
+  - name: body_bytes_sent
+    type: weighted_choice
+    choices:
+      "0":      0.08    # 304 Not Modified / 204 No Content typical
+      "326":    0.10
+      "1024":   0.15
+      "4521":   0.10    # matches user-provided reference sample
+      "5120":   0.15
+      "12480":  0.15
+      "45120":  0.12
+      "180224": 0.10
+      "524288": 0.05
+
+  # $http_referer — Referer header (note RFC-preserved misspelling).
+  # nginx writes literal `-` when the header is absent.
+  - name: referer
+    type: weighted_choice
+    choices:
+      "-":                                       0.45
+      "https://example.com/landing":             0.10
+      "https://www.google.com/":                 0.15
+      "https://example.com/login":               0.10
+      "https://example.com/dashboard":           0.10
+      "https://t.co/abc":                        0.05
+      "https://github.com/":                     0.05
+
+  # $http_user_agent — User-Agent header. Mix of real browser UAs, CLI
+  # clients, and scanner fingerprints (Nikto / sqlmap / Nuclei) so
+  # Wazuh 31103/31105 + Sigma scanner rules have signal to bite.
+  - name: user_agent
+    type: weighted_choice
+    choices:
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36": 0.30
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36": 0.25
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15": 0.15
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15": 0.08
+      "curl/8.4.0":                                                                  0.08
+      "python-requests/2.31.0":                                                      0.05
+      "sqlmap/1.7.12":                                                                0.03
+      "Mozilla/5.00 (Nikto/2.5.0)":                                                   0.02
+      "Nuclei - Open-source project (github.com/projectdiscovery/nuclei)":            0.02
+      "Go-http-client/1.1":                                                           0.02
+
+# Wire format — strict per nginx.org `ngx_http_log_module` predefined
+# `combined` log_format directive. Tokens separated by single spaces.
+# Literal `-` between client IP and remote_user (this is hardcoded in the
+# log_format string itself, NOT an ident field). Timestamp wrapped in
+# literal `[ ]`. Request line wrapped in literal `"..."`. Referer and
+# User-Agent each wrapped in literal `"..."`. No syslog PRI prefix —
+# nginx writes to file by default; shipper adds framing if forwarding
+# over syslog (or use `access_log syslog:server=...` to let nginx add
+# its own syslog header at emit time).
+template: |-
+  {{client_ip}} - {{remote_user}} [{{ts}} {{params.tz_offset}}] "{{method}} {{path}} {{protocol}}" {{status}} {{body_bytes_sent}} "{{referer}}" "{{user_agent}}"

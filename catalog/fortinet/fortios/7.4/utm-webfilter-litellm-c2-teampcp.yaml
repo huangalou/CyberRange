@@ -1,0 +1,469 @@
+vendor: fortinet
+product: fortios
+version: "7.4"
+log_type: fortios.utm.webfilter.litellm_c2.teampcp
+description: |
+  FortiGate FortiOS 7.4 UTM Web Filter event observing outbound HTTPS/HTTP
+  from a dev workstation toward TeamPCP C2 endpoints. Models the perimeter
+  visibility of the LiteLLM 1.82.7 import-payload exfil POST, the Telnyx
+  4.87.x WAV second-stage retrieval, and the checkmarx.zone polling
+  callback documented in Datadog Security Labs' advisory.
+
+  Native FortiOS wire format is space-separated key=value pairs, wrapped in
+  RFC3164 syslog with a local7-class PRI — identical framing to the
+  sibling `traffic.yaml` (logid="0000000013"). Two distinct UTM-webfilter
+  logids participate, depending on which block path the FortiGate uses:
+
+    * logid="0316013056" — LOG_ID_WEB_FTGD_CAT_BLK (`eventtype="ftgd_blk"`,
+      `msg="URL belongs to a denied category in policy"`,
+      `craction=4194304`). Used when the destination FQDN matches a
+      FortiGuard category (here "Malicious Websites", `cat=26`).
+      Carries `crscore` / `crlevel` (Client Reputation score / level),
+      `method="domain"` (FortiGuard match was on hostname not URL path).
+    * logid="0315012544" — LOG_ID_WEB_URL_BLK (`eventtype="urlfilter"`,
+      `msg="URL was blocked because it is in the URL filter list"`,
+      `craction=8`). Used when no FortiGuard category matches but a
+      local URL filter list entry matches (the SOC's TeamPCP IOC list).
+      Carries `urlfilteridx` (index into the list), `urlsource` (e.g.
+      "Local URLfilter Block"), `urlfilterlist` (profile-bound list name)
+      — `cat` / `catdesc` / `method` are absent on this variant.
+
+  Schema v3 fifth canonical example — the URI-path + exfil-header sub-axis
+  of the http_fingerprints IOC category. Sibling catalogs:
+    - Sysmon EID 3 network-connect — domains + ips axis
+    - auditd file-create          — file_paths axis
+    - k8s-audit DaemonSet         — http_fingerprints User-Agent sub-axis
+    - auditd EXECVE pip-install   — process axis (argv pattern)
+  This catalog claims the URI-path + custom-request-header sub-axis inside
+  http_fingerprints, plus adds a vendor dimension (perimeter network
+  device) no sibling covers.
+
+  Datadog advisory IOC anchors rendered by this template:
+    - `X-Filename: tpcp.tar.gz`   exfil header — LiteLLM POST
+      (visible only when `set extended-utm-log enable` is set on the
+      webfilter profile and HTTP TLS is intercepted by the FortiGate;
+      we render it as `reqheader_xfilename=` to keep KV shape stable —
+      production captures use this synthetic key in the extended-utm
+      payload that follows the standard fields)
+    - `GET /raw` on checkmarx.zone — 1.82.7 import-payload polling
+    - `GET /ringtone.wav` on 83.142.209.203:8080 — Telnyx second-stage
+  Reference: see the CTI advisory (Datadog Security Labs) cited in the
+  `cti:` block below.
+
+  Source-of-truth (URLs verified 2026-05-15):
+    - FortiOS 7.4.x Log Message Reference — 13056 LOG_ID_WEB_FTGD_CAT_BLK
+        https://docs.fortinet.com/document/fortigate/7.4.1/fortios-log-message-reference/13056/13056-log-id-web-ftgd-cat-blk
+    - FortiOS 7.4.x Log Message Reference — Webfilter log support for CEF
+      (lists the canonical native-KV field set as the contrast example):
+        https://docs.fortinet.com/document/fortigate/7.4.3/fortios-log-message-reference/400992/webfilter-log-support-for-cef
+    - FortiOS 7.4 Administration Guide — Static URL filter (urlfilter sample):
+        https://docs.fortinet.com/document/fortigate/7.4.0/administration-guide/615462/url-filter
+    - FortiOS 7.4 Log Message Reference — Enabling extended logging
+      (where `reqheader_*` / `agent` / `referralurl` fields come from):
+        https://docs.fortinet.com/document/fortigate/7.4.0/fortios-log-message-reference/496081/enabling-extended-logging
+
+  Real vendor wire-format samples (verbatim, drawn from Fortinet docs +
+  community-published captures, both FortiOS 7.4.x):
+
+    # ftgd_blk — FortiGuard "Malicious Websites" category match
+    date=2019-05-13 time=16:29:45 logid="0316013056" type="utm" subtype="webfilter" eventtype="ftgd_blk" level="warning" vd="vdom1" eventtime=1557790184975119738 policyid=1 sessionid=381780 srcip=10.1.100.11 srcport=44258 srcintf="port12" srcintfrole="undefined" dstip=185.244.31.158 dstport=80 dstintf="port11" dstintfrole="undefined" proto=6 service="HTTP" hostname="morrishittu.ddns.net" profile="test-webfilter" action="blocked" reqtype="direct" url="/" sentbyte=84 rcvdbyte=0 direction="outgoing" msg="URL belongs to a denied category in policy" method="domain" cat=26 catdesc="Malicious Websites" crscore=30 craction=4194304 crlevel="high"
+
+    # urlfilter — local URL filter list match (no FortiGuard category)
+    date=2023-08-10 time=15:02:25 eventtime=1691704944982929658 tz="-0700" logid="0315012544" type="utm" subtype="webfilter" eventtype="urlfilter" level="warning" vd="root" urlfilteridx=1 urlfilterlist="webfilter" policyid=1 poluuid="4a4b9d00-e471-51ed-71ec-c1a3bc8f773c" policytype="policy" sessionid=4198 srcip=1.1.1.2 srcport=55044 srccountry="Australia" srcintf="internal7" srcintfrole="lan" srcuuid="45eec070-e471-51ed-4b1c-930f37c5d882" dstip=157.240.3.35 dstport=443 dstcountry="United States" dstintf="wan1" dstintfrole="wan" dstuuid="45eec070-e471-51ed-4b1c-930f37c5d882" proto=6 service="HTTPS" hostname="www.facebook.com" profile="webfilter" action="blocked" reqtype="direct" url="https://www.facebook.com/" sentbyte=812 rcvdbyte=0 direction="outgoing" urlsource="Local URLfilter Block" msg="URL was blocked because it is in the URL filter list" crscore=30 craction=8 crlevel="high"
+
+  Notes on field ordering (kept faithful to the vendor samples):
+    * `eventtime` is **epoch nanoseconds** in FortiOS 7.4 (e.g.
+      1691704944982929658) — same convention as `traffic.yaml`.
+    * `tz` is emitted only when `config system global / set timezone` is
+      configured; we always emit it (matches production-host capture).
+    * `devname` / `devid` are emitted when `config log syslogd setting /
+      set device-id` is configured — included here, matches sibling.
+    * `cat` / `catdesc` / `method` belong to the ftgd_blk variant only.
+    * `urlfilteridx` / `urlsource` / `urlfilterlist` belong to the
+      urlfilter variant only.
+    * `craction` is a numeric Client Reputation action mask: 4194304
+      for FortiGuard category block, 8 for URL-list block (per vendor
+      samples). `crscore` / `crlevel` accompany both.
+    * `reqheader_xfilename` is a synthetic key we emit on the
+      litellm_exfil_post scenario to surface the advisory's
+      `X-Filename: tpcp.tar.gz` exfil header at the perimeter. In
+      real FortiOS extended-utm-log output the request-header capture
+      is appended as part of the `agent` / `rawdata` block; we choose
+      the explicit-key form for cleaner Wazuh / ELK pivot.
+
+  Wazuh notes: the bundled `fortigate` decoder keys off the `devname=` /
+  `devid=` / `logid=` triple at the head of the body. UTM webfilter
+  blocked events trigger stock rule `81644` ("Blocked URL belongs to a
+  denied category in policy", level 6, matches type="utm"
+  subtype="webfilter"). The 81602 family is the upstream FortiOS-version
+  grouping (81600/81601/81602/81641) that feeds 81603 umbrella, then
+  splits to 81644 for the webfilter-specific path. Detections for
+  TeamPCP-specific URI-path / X-Filename pivots are project-local
+  rule 132010 chained off 81644 — see `runbooks/teampcp-pilot-fortigate-detect.md`.
+
+format: key_value
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: http_activity
+  category_uid: 4
+  class_uid: 4002
+
+# ──────────────── DetectOps v2 metadata ────────────────
+# Detection pivots: url= matches `/raw` | `/ringtone.wav`, or the
+# reqheader_xfilename= field equals `tpcp.tar.gz`. FortiGate webfilter
+# action=blocked covers all 4 scenarios (TeamPCP IOC list or FortiGuard
+# Malicious Websites category will hit one of the two block paths).
+detections:
+  wazuh:
+    - decoder: fortigate
+    - rule_id: 81644                  # stock "Blocked URL belongs to a denied category in policy" (Wazuh built-in, level 6, UTM webfilter)
+      level: 6
+    - rule_id: 132010                 # custom: teampcp URI-path / X-Filename IOC match (chain off 81644)
+      level: 12
+  sigma:
+    - rule: fortinet_webfilter_susp_uri_pattern_teampcp
+      ref: TBD                         # placeholder — write custom Sigma
+    - rule: fortinet_webfilter_exfil_header_xfilename
+      ref: TBD                         # placeholder — covers tpcp.tar.gz
+  elk_detection:
+    - kibana_rule_id: fortinet-teampcp-uri-path
+      severity: critical
+    - kibana_rule_id: fortinet-teampcp-exfil-header
+      severity: critical
+
+mythos_alignment:
+  # R1 Accelerated Threat Exploitation — perimeter is the last enforcement
+  #   point before exfil leaves the org boundary. R10 Threat Detection
+  #   Lagging Intelligence — URI-path + custom-header IOCs are exactly the
+  #   kind of feed-driven content that arrives late in CTI pipelines.
+  risk_refs: [R1, R10]
+  # PA1 Point Agents at Code (perimeter agent ingests URI-path IOC list)
+  # PA5 Continuous Patching (after PyPI quarantine, regression must verify
+  #   FortiGate decoder still alerts on tpcp.tar.gz / /raw / /ringtone.wav)
+  pa_refs: [PA1, PA5]
+  ttx_class: rapid
+
+regression:
+  # Live-fire 50 events (pilot run):
+  #   rule 132010 custom teampcp IOC match:               41/50  (expected 38–46)
+  #   rule 112034 SOC pre-existing custom (non-IOC noise):  9/50
+  #   rule 81644 stock UTM webfilter blocked:               0/50  (SOC 112034 chained ahead in this lab)
+  #   Wazuh total ingested:                                50/50  (≥48 pass)
+  #   ELK fortigate-* index total:                         50/50  (UDP loss 0% this run; Task 4 saw 41/50)
+  # baseline_alert_count tracks 132010 — the SOC signal-of-record for this catalog.
+  # Stock + SOC custom rules write into YAML comment for context, not into schema.
+  # Chain: 132010 → 81644 → 81603 → {81600/81601/81602/81641}
+  # baseline_ttd_ms is event-eventtime → Wazuh ingest @timestamp P95 across 41 hits;
+  # spread dominated by `nc -u -w1` dispatcher pacing (50 packets serialized over ~50s),
+  # not real detection latency. Per-event Wazuh pipeline first-packet delta ≈ 36s.
+  # Batch sprint should re-baseline with parallel dispatcher to isolate true TTD.
+  baseline_alert_count: 41
+  baseline_ttd_ms: 83945
+
+# ──────────────── v3: CTI advisory provenance + IOCs ────────────────
+cti:
+  source: datadog-security-labs
+  source_url: https://securitylabs.datadoghq.com/articles/litellm-compromised-pypi-teampcp-supply-chain-campaign/
+  advisory_id: PYSEC-2026-2
+  ingested_at: "2026-05-12"
+  related_campaign: teampcp
+  cve_refs: []
+  iocs:
+    # URI-path + custom-header sub-axis of http_fingerprints. The
+    # k8s-audit sibling owns the User-Agent sub-axis (`Python-urllib*`).
+    # domains/ips appear in the rendered FortiGate KV line (dstip=,
+    # hostname=) but are owned by the Sysmon EID 3 sibling per the
+    # axis-ownership invariant — they are NOT in this catalog's
+    # cti.iocs bundle.
+    http_fingerprints:
+      - { header: "uri-path",   value: "/raw" }                   # checkmarx.zone polling
+      - { header: "uri-path",   value: "/ringtone.wav" }          # Telnyx WAV stage
+      - { header: "X-Filename", value: "tpcp.tar.gz" }            # LiteLLM exfil header
+    package_versions:
+      - { ecosystem: pypi, name: litellm, versions: ["1.82.7", "1.82.8"] }
+      - { ecosystem: pypi, name: telnyx,  versions: ["4.87.1", "4.87.2"] }
+    # No domains / ips / file_paths / file_hashes — sibling catalogs own
+    # those axes (axis-ownership invariant, see file-create-teampcp.yaml).
+
+# ──────────────── v3: VulnOps reverse-lookup ────────────────
+vulnops:
+  cve_refs: []
+  affects:
+    - { vendor: pypi, product: litellm, version_range: "1.82.7,1.82.8" }
+    - { vendor: pypi, product: telnyx,  version_range: "4.87.1,4.87.2" }
+  patch_signal:
+    - "litellm 1.82.7 / 1.82.8 quarantined on PyPI"
+    - "telnyx 4.87.1 / 4.87.2 quarantined on PyPI"
+  regression_critical: true            # P0: perimeter last-mile detection
+
+params:
+  devname:     { default: "FGT100E-LAB" }
+  devid:       { default: "FG100E1234567890" }
+  vd:          { default: "root" }
+  policy_id:   { default: 7 }
+  poluuid:     { default: "7d2c9a40-3f1b-5180-b6ab-dee501feadbe" }
+  src_cidr:    { default: "10.42.0.0/24" }
+  victim_user: { default: "dev01" }
+  webfilter_profile:   { default: "default-strict" }
+  urlfilter_list_name: { default: "teampcp-block-list" }
+
+fields:
+  # ──────────────── RFC3164 syslog envelope ────────────────
+  - name: pri
+    type: fixed
+    value: 188                              # local7.warning (23*8 + 4)
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  - name: date
+    type: datetime
+    format: "%Y-%m-%d"
+
+  - name: time
+    type: datetime
+    format: "%H:%M:%S"
+
+  - name: eventtime
+    type: datetime
+    format: epoch_ns
+
+  - name: tz
+    type: fixed
+    value: "+0800"
+
+  - name: devname
+    type: param
+    param: devname
+
+  - name: devid
+    type: param
+    param: devid
+
+  - name: vd
+    type: param
+    param: vd
+
+  # ──────────────── Flow endpoints ────────────────
+  - name: srcip
+    type: cidr
+    cidr: ${params.src_cidr}
+
+  - name: srcport
+    type: int_range
+    min: 49152
+    max: 65535
+
+  - name: srcintf
+    type: fixed
+    value: "port3"
+
+  - name: srcintfrole
+    type: fixed
+    value: "lan"
+
+  - name: dstintf
+    type: fixed
+    value: "port1"
+
+  - name: dstintfrole
+    type: fixed
+    value: "wan"
+
+  - name: srccountry
+    type: fixed
+    value: "Reserved"
+
+  - name: sessionid
+    type: int_range
+    min: 100000
+    max: 999999
+
+  # ──────────────── 4 weighted scenarios ────────────────
+  # Each scenario pins to one advisory URI-path / header IOC tuple. Heaviest
+  # weight on litellm_exfil_post (the X-Filename exfil header is the
+  # highest-confidence single-event IOC).
+  - name: scenario
+    type: weighted_choice
+    choices:
+      litellm_exfil_post:  0.35   # POST models.litellm.cloud / + X-Filename: tpcp.tar.gz
+      checkmarx_raw_poll:  0.30   # GET  checkmarx.zone /raw  (1.82.7 import polling)
+      telnyx_wav_dl:       0.20   # GET  83.142.209.203:8080 /ringtone.wav  (Telnyx)
+      litellm_beacon_get:  0.15   # GET  models.litellm.cloud /api/v1/heartbeat
+
+  - name: hostname
+    type: template
+    template: |-
+      {%- if scenario == 'checkmarx_raw_poll' -%}checkmarx.zone
+      {%- elif scenario == 'telnyx_wav_dl' -%}83.142.209.203
+      {%- else -%}models.litellm.cloud
+      {%- endif -%}
+
+  - name: dstip
+    type: template
+    template: |-
+      {%- if scenario == 'checkmarx_raw_poll' -%}172.67.182.93
+      {%- elif scenario == 'telnyx_wav_dl' -%}83.142.209.203
+      {%- else -%}104.21.74.18
+      {%- endif -%}
+
+  - name: dstport
+    type: template
+    template: |-
+      {%- if scenario == 'telnyx_wav_dl' -%}8080
+      {%- else -%}443
+      {%- endif -%}
+
+  - name: dstcountry
+    type: template
+    template: |-
+      {%- if scenario == 'telnyx_wav_dl' -%}Russian Federation
+      {%- else -%}United States
+      {%- endif -%}
+
+  - name: service
+    type: template
+    template: |-
+      {%- if scenario == 'telnyx_wav_dl' -%}HTTP
+      {%- else -%}HTTPS
+      {%- endif -%}
+
+  - name: http_method
+    type: template
+    template: |-
+      {%- if scenario == 'litellm_exfil_post' -%}POST
+      {%- else -%}GET
+      {%- endif -%}
+
+  - name: uri_path
+    type: template
+    template: |-
+      {%- if scenario == 'checkmarx_raw_poll' -%}/raw
+      {%- elif scenario == 'telnyx_wav_dl' -%}/ringtone.wav
+      {%- elif scenario == 'litellm_exfil_post' -%}/
+      {%- else -%}/api/v1/heartbeat
+      {%- endif -%}
+
+  - name: user_agent
+    type: template
+    template: |-
+      {%- if scenario == 'telnyx_wav_dl' -%}Mozilla/5.0
+      {%- else -%}Python-urllib/3.12
+      {%- endif -%}
+
+  - name: x_filename
+    type: template
+    template: |-
+      {%- if scenario == 'litellm_exfil_post' -%}tpcp.tar.gz
+      {%- else -%}-
+      {%- endif -%}
+
+  - name: sentbyte
+    type: template
+    template: |-
+      {%- if scenario == 'litellm_exfil_post' -%}28631
+      {%- else -%}412
+      {%- endif -%}
+
+  - name: rcvdbyte
+    type: template
+    template: |-
+      {%- if scenario == 'telnyx_wav_dl' -%}0
+      {%- elif scenario == 'checkmarx_raw_poll' -%}0
+      {%- else -%}0
+      {%- endif -%}
+
+  # ──────────────── UTM webfilter block-path selector ────────────────
+  # `block_path` decides which of the two webfilter logids fires.
+  # FortiGuard-known malicious domains (litellm.cloud / checkmarx.zone)
+  # hit ftgd_blk; the bare-IP Telnyx callback typically doesn't carry a
+  # FortiGuard category and falls to the SOC's local URL-list block.
+  - name: block_path
+    type: template
+    template: |-
+      {%- if scenario == 'telnyx_wav_dl' -%}urlfilter
+      {%- else -%}ftgd_blk
+      {%- endif -%}
+
+  - name: logid
+    type: template
+    template: |-
+      {%- if scenario == 'telnyx_wav_dl' -%}0315012544
+      {%- else -%}0316013056
+      {%- endif -%}
+
+  - name: eventtype
+    type: template
+    template: |-
+      {%- if scenario == 'telnyx_wav_dl' -%}urlfilter
+      {%- else -%}ftgd_blk
+      {%- endif -%}
+
+  - name: msg
+    type: template
+    template: |-
+      {%- if scenario == 'telnyx_wav_dl' -%}URL was blocked because it is in the URL filter list
+      {%- else -%}URL belongs to a denied category in policy
+      {%- endif -%}
+
+  - name: craction
+    # Numeric Client Reputation action mask. 4194304 for FortiGuard
+    # category block, 8 for URL-list block. Verbatim from vendor samples.
+    type: template
+    template: |-
+      {%- if scenario == 'telnyx_wav_dl' -%}8
+      {%- else -%}4194304
+      {%- endif -%}
+
+  - name: crscore
+    type: weighted_choice
+    choices:
+      "30": 0.5
+      "50": 0.3
+      "60": 0.2
+
+  - name: crlevel
+    type: fixed
+    value: "high"
+
+  # ──────────────── ftgd_blk-only fields ────────────────
+  - name: cat
+    type: fixed
+    value: 26                               # FortiGuard "Malicious Websites"
+
+  - name: catdesc
+    type: fixed
+    value: "Malicious Websites"
+
+  - name: method
+    type: fixed
+    value: "domain"
+
+  # ──────────────── urlfilter-only fields ────────────────
+  - name: urlfilteridx
+    type: int_range
+    min: 0
+    max: 7
+
+  - name: urlsource
+    type: fixed
+    value: "Local URLfilter Block"
+
+# FortiGate UTM Web Filter event in native KV syslog (RFC3164 PRI prefix +
+# key=value pairs). Field order mirrors the FortiOS 7.4 vendor samples:
+#   date time → devname/devid/eventtime/tz → logid/type/subtype/eventtype/
+#   level/vd → (urlfilter: urlfilteridx/urlfilterlist) → policy* → src* →
+#   dst* → srccountry/dstcountry → sessionid/proto/service/hostname →
+#   profile/action/reqtype/url → sentbyte/rcvdbyte/direction →
+#   (ftgd_blk: msg/method/cat/catdesc | urlfilter: urlsource/msg) →
+#   crscore/craction/crlevel → extended-utm: agent/reqheader_xfilename.
+# Branches render only the fields applicable to the chosen block_path so
+# the wire shape matches Fortinet's published per-eventtype field set.
+template: |-
+  {%- if block_path == 'ftgd_blk' -%}
+  <{{pri}}>{{rfc3164_ts}} {{params.devname}} date={{date}} time={{time}} devname="{{params.devname}}" devid="{{params.devid}}" eventtime={{eventtime}} tz="{{tz}}" logid="{{logid}}" type="utm" subtype="webfilter" eventtype="{{eventtype}}" level="warning" vd="{{params.vd}}" policyid={{params.policy_id}} poluuid="{{params.poluuid}}" policytype="policy" sessionid={{sessionid}} srcip={{srcip}} srcport={{srcport}} srcintf="{{srcintf}}" srcintfrole="{{srcintfrole}}" dstip={{dstip}} dstport={{dstport}} dstintf="{{dstintf}}" dstintfrole="{{dstintfrole}}" srccountry="{{srccountry}}" dstcountry="{{dstcountry}}" proto=6 service="{{service}}" hostname="{{hostname}}" profile="{{params.webfilter_profile}}" action="blocked" reqtype="direct" url="{{uri_path}}" sentbyte={{sentbyte}} rcvdbyte={{rcvdbyte}} direction="outgoing" msg="{{msg}}" method="{{method}}" cat={{cat}} catdesc="{{catdesc}}" crscore={{crscore}} craction={{craction}} crlevel="{{crlevel}}" user="{{params.victim_user}}" agent="{{user_agent}}" reqheader_xfilename="{{x_filename}}"
+  {%- else -%}
+  <{{pri}}>{{rfc3164_ts}} {{params.devname}} date={{date}} time={{time}} devname="{{params.devname}}" devid="{{params.devid}}" eventtime={{eventtime}} tz="{{tz}}" logid="{{logid}}" type="utm" subtype="webfilter" eventtype="{{eventtype}}" level="warning" vd="{{params.vd}}" urlfilteridx={{urlfilteridx}} urlfilterlist="{{params.urlfilter_list_name}}" policyid={{params.policy_id}} poluuid="{{params.poluuid}}" policytype="policy" sessionid={{sessionid}} srcip={{srcip}} srcport={{srcport}} srcintf="{{srcintf}}" srcintfrole="{{srcintfrole}}" dstip={{dstip}} dstport={{dstport}} dstintf="{{dstintf}}" dstintfrole="{{dstintfrole}}" srccountry="{{srccountry}}" dstcountry="{{dstcountry}}" proto=6 service="{{service}}" hostname="{{hostname}}" profile="{{params.webfilter_profile}}" action="blocked" reqtype="direct" url="{{service|lower}}://{{hostname}}{{uri_path}}" sentbyte={{sentbyte}} rcvdbyte={{rcvdbyte}} direction="outgoing" urlsource="{{urlsource}}" msg="{{msg}}" crscore={{crscore}} craction={{craction}} crlevel="{{crlevel}}" user="{{params.victim_user}}" agent="{{user_agent}}" reqheader_xfilename="{{x_filename}}"
+  {%- endif -%}

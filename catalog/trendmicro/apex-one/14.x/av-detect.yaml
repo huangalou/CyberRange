@@ -1,0 +1,411 @@
+vendor: trendmicro
+product: apex-one
+version: "14.x"
+log_type: av.detection
+description: |
+  Trend Micro Apex One 14.x AV detection event forwarded by Apex Central
+  Log Forwarder to a syslog SIEM. Wire format is CEF over RFC3164 syslog —
+  this is what Apex Central actually emits when "Common Event Format (CEF)"
+  is selected in Syslog Forwarder configuration (the other option is the
+  native "Apex Central format"; every SIEM integration we have seen uses
+  CEF). Header pname is "Apex Central" because the on-prem product was
+  rebranded from "Control Manager"; older samples still show
+  `Trend Micro|Control Manager|7.0|` in the wild.
+
+  Source-of-truth for wire format (all fetched 2026-05-14):
+    - Trend Micro Apex Central Online Help — CEF Virus/Malware Logs
+      (authoritative field mapping table + canonical raw sample):
+      https://docs.trendmicro.com/en-us/enterprise/apex-central-online-help/appendices/syslog-mapping-cef/cef-virusmalware-log.aspx
+    - Apex Central CEF Action Mapping Table (literal `act` string vocab):
+      https://docs.trendmicro.com/en-us/documentation/article/trend-micro-apex-central-patch-4-cef-action-table
+    - Rapid7 InsightIDR — Trend Micro Apex One ingestion guide (confirms
+      "You must send Trend Micro Apex One logs to SIEM in CEF Format" +
+      real raw sample with `CEF:0|Trend Micro|Control Manager|7.0|`):
+      https://docs.rapid7.com/insightidr/trend-micro-apex-one/
+    - Sekoia.io Trend Micro Apex One integration (2024 real raw sample
+      with `CEF:0|Trend Micro|Apex Central|2019|AV:File cleaned|...`):
+      https://docs.sekoia.io/integration/categories/endpoint/trend_micro_apex_one/
+    - Trend Micro malware naming scheme (new 2018+ convention:
+      `<Type>.<Platform>.<Family>.<Variant>.<dldr|opt>`):
+      https://success.trendmicro.com/dcx/s/solution/1119738
+    - Splunk Connect for Syslog community thread confirming Apex Central
+      onboards via the generic CEF source (no Apex-specific add-on
+      required, format is plain CEF):
+      https://github.com/splunk/splunk-connect-for-syslog/issues/1793
+
+  Real raw sample (from Trend Micro official docs, verbatim):
+    CEF:0|Trend Micro|Apex Central|2019|AV:File renamed|JS_EXPLOIT.SMDN|3|
+    deviceExternalId=104 rt=Feb 18 2016 14:34:00 GMT+00:00 cnt=1
+    dhost=ApexOneClient01 duser=Admin004 act=File renamed
+    cn1Label=VLF_PatternNumber cn1=920500 cn2Label=VLF_SecondAction cn2=3
+    cs1Label=VLF_FunctionCode cs1=Manual Scan
+    cs2Label=VLF_EngineVersion cs2=9.500.1005
+    cs3Label=CLF_ProductVersion cs3=10.6
+    cs4Label=CLF_ReasonCode cs4=virus log
+    cs5Label=VLF_FirstActionResult cs5=File renamed
+    cs6Label=VLF_SecondActionResult cs6=N/A
+    cat=1703 dvchost=ApexOneServer01
+    cn3Label=CLF_SeverityCode cn3=2
+    fname=0348C693056617D34FC5B5BAB4643885FEE5FEDF;0xD5D56AC2
+    filePath=C:\Users\Administrator\Desktop\trend_test_virus\Trojans\
+    msg=BMAC Schedule of Events.xls
+    shost=ABC-OSCE-WKS12 suser=ABC-OSCE-WKS12 dst=10.201.129.24
+    deviceFacility=Apex One reason=B deviceNtDomain=APEXTMCM
+    dntdom=OSCEDomain1
+
+  SIEM rule mapping: covers 8 of the 9 AV_TrendMicro rules
+  from a reference SIEM ruleset. The remaining 130036
+  「伺服器連線惡意網址」is a Web Reputation event — separate wire format
+  shipped via `web-reputation.yaml` in this same vendor/version dir.
+
+  Unlike the Symantec ruleset, TrendMicro rules are 全區 only (no
+  來源/目的 axis split), so we do not need to populate both
+  attackerAddress and targetAddress. host_class drives the
+  workstation vs server rule family.
+
+  Rule coverage matrix (scenario × host_class):
+    單一主機偵測大量病毒          130118
+    單一主機偵測勒索病毒          130096
+    單一主機偵測病毒(已刪除)      130073
+    單一主機偵測病毒(未刪除)      130009
+    伺服器主機偵測大量病毒        130063
+    伺服器主機偵測病毒(已刪除)    130037
+    伺服器主機偵測病毒(未刪除)    130050
+    伺服器主機感染勒索軟體病毒    130083
+
+format: cef
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+detections:
+  wazuh:
+    # Wazuh built-in `cef` decoder parses the CEF header + extensions; rule
+    # ids below are the ArcSight-derived SOC-side mappings (decoupled from
+    # wire format and preserved across the 2026-05-14 wire-format audit).
+    - decoder: cef
+    - rule_id: 130118  # AV_TrendMicro_單一主機偵測大量病毒
+      level: 7
+    - rule_id: 130096  # AV_TrendMicro_單一主機偵測勒索病毒
+      level: 7
+    - rule_id: 130073  # AV_TrendMicro_單一主機偵測病毒(已刪除)
+      level: 7
+    - rule_id: 130009  # AV_TrendMicro_單一主機偵測病毒(未刪除)
+      level: 7
+    - rule_id: 130063  # AV_TrendMicro_伺服器主機偵測大量病毒
+      level: 7
+    - rule_id: 130037  # AV_TrendMicro_伺服器主機偵測病毒(已刪除)
+      level: 7
+    - rule_id: 130050  # AV_TrendMicro_伺服器主機偵測病毒(未刪除)
+      level: 7
+    - rule_id: 130083  # AV_TrendMicro_伺服器主機感染勒索軟體病毒
+      level: 7
+  sigma:
+    - rule: trendmicro_apex_one_av_detection
+      ref: https://github.com/SigmaHQ/sigma  # community contrib pending
+  elk_detection:
+    - kibana_rule_id: cef-av-malware-detected
+      severity: high
+    - kibana_rule_id: cef-av-ransomware-detected
+      severity: critical
+
+mythos_alignment:
+  risk_refs: [R1, R4]
+  pa_refs: [PA10]
+  ttx_class: rapid
+
+regression:
+  # 1000 events with 60/40 workstation/server split + 15% mass_outbreak +
+  # 20% ransomware should fire all 8 rules at least once. Mass-virus rules
+  # require Wazuh-side <frequency>4</frequency><timeframe>60</timeframe>
+  # aggregation to escalate.
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 4000
+
+params:
+  syslog_host:
+    default: "apexcentral.lab.local"
+  apex_central_host:
+    default: "TW-APEXCENTRAL-01"
+  apex_central_domain:
+    default: "APEXTMCM"
+  apex_central_dntdom:
+    default: "OSCEDomain1"
+  apex_one_server:
+    default: "ApexOneServer01"
+  workstation_pool:
+    default:
+      - "DESKTOP-WIN10-A1"
+      - "DESKTOP-WIN11-B2"
+      - "LAPTOP-USR-23"
+      - "LAPTOP-CONS-04"
+      - "DESKTOP-MKT-09"
+  server_pool:
+    default:
+      - "SRV-FILE01"
+      - "SRV-DC01"
+      - "WEB-PRD-02"
+      - "DB-MSSQL-01"
+      - "APP-ERP-03"
+  internal_subnet:
+    default: "10.0.20.0/24"
+  server_subnet:
+    default: "10.0.50.0/24"
+  user_pool:
+    default: ["alice", "bob", "svc_backup", "contractor_a", "admin_b"]
+
+fields:
+  - name: pri
+    type: fixed
+    value: 134   # local0.info — Apex Central Syslog Forwarder default
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  # rt= inside CEF body uses "%b %d %Y %H:%M:%S GMT+00:00" — Apex Central
+  # always emits UTC with explicit "GMT+00:00" suffix per real samples.
+  - name: cef_ts
+    type: datetime
+    format: "%b %d %Y %H:%M:%S GMT+00:00"
+
+  - name: host_class
+    type: weighted_choice
+    choices:
+      workstation: 0.60
+      server:      0.40
+
+  - name: workstation_host
+    type: choice
+    choices: ${params.workstation_pool}
+
+  - name: server_host
+    type: choice
+    choices: ${params.server_pool}
+
+  # dhost / shost / suser all carry the affected endpoint name (real
+  # samples reuse the hostname across these three fields; suser can also
+  # carry domain\user when known).
+  - name: dhost
+    type: template
+    template: "{% if host_class == 'server' %}{{server_host}}{% else %}{{workstation_host}}{% endif %}"
+
+  - name: workstation_ip
+    type: cidr
+    cidr: ${params.internal_subnet}
+
+  - name: server_ip
+    type: cidr
+    cidr: ${params.server_subnet}
+
+  - name: dst_ip
+    type: template
+    template: "{% if host_class == 'server' %}{{server_ip}}{% else %}{{workstation_ip}}{% endif %}"
+
+  - name: user_name
+    type: choice
+    choices: ${params.user_pool}
+
+  # CEF deviceExternalId — Apex Central internal endpoint id (integer per
+  # real samples: 104, 551, 3541).
+  - name: device_external_id
+    type: int_range
+    min: 100
+    max: 9999
+
+  # Per Trend Micro Threat Detection Naming Scheme (2018+):
+  #   <Type>.<Platform>.<Family>.<Variant>[.<dldr|opt>]
+  # Old-style TROJ_*/PE_KARO.A/JS_EXPLOIT.* are still emitted by older
+  # pattern files (kept here at low weight for fidelity with real
+  # heterogeneous environments). Ransom.* drives 130096 / 130083
+  # ransomware rules when host_class matches.
+  - name: virus_name
+    type: weighted_choice
+    choices:
+      "Trojan.Win32.FRS.VSNW03G24":        0.15
+      "Trojan.Win32.GENERIC.SM":           0.12
+      "Mal_Generic-1":                     0.10
+      "Ransom.Win64.LOCKBIT.SMYXBLBE":     0.10
+      "Ransom.Win32.CONTI.THDOEBA":        0.08
+      "Ransom.Win64.LOCKER.A":             0.07
+      "TROJ_GENERIC.SM":                   0.08
+      "PE_KARO.A":                         0.05
+      "JS_EXPLOIT.SMDN":                   0.05
+      "Worm.Win32.DOWNAD.AD":              0.05
+      "PUA.Linux.CoinMiner.A":             0.05
+      "Backdoor.Win32.GENERIC.SMA":        0.05
+      "HEUR.Behavior.Win32.Suspicious.A":  0.05
+
+  # CLF_SeverityCode (cn3) range 0..4 per Apex Central docs. 2 is the
+  # most common "Medium" observed in real samples; 3 (High) and 4
+  # (Critical) align with ransomware / mass-outbreak events.
+  - name: severity_code
+    type: weighted_choice
+    choices:
+      "2": 0.50
+      "3": 0.35
+      "4": 0.15
+
+  # Header severity (right of pipe in CEF prefix) is Apex Central's
+  # 0..10 mapping — real samples consistently show 3 for AV events.
+  - name: header_severity
+    type: weighted_choice
+    choices:
+      "3":  0.55
+      "5":  0.25
+      "7":  0.15
+      "10": 0.05
+
+  - name: file_path
+    type: weighted_choice
+    choices:
+      "C:\\Users\\Public\\Downloads\\":                                  0.18
+      "C:\\Users\\alice\\AppData\\Local\\Temp\\":                        0.15
+      "C:\\inetpub\\wwwroot\\uploads\\":                                 0.13
+      "C:\\Program Files\\Trend Micro\\quarantine\\":                    0.10
+      "D:\\Share\\HR\\":                                                 0.12
+      "C:\\Windows\\Temp\\7z_extract\\":                                 0.12
+      "C:\\Windows\\System32\\drivers\\":                                0.10
+      "C:\\Users\\bob\\Desktop\\":                                       0.10
+
+  - name: file_name
+    type: weighted_choice
+    choices:
+      "invoice_2026.exe":     0.18
+      "update.exe":           0.15
+      "shell.aspx":           0.13
+      "virus.bin":            0.10
+      "readme_decrypt.txt":   0.12
+      "payload.dll":          0.12
+      "malicious.sys":        0.10
+      "fake_invoice.pdf.exe": 0.10
+
+  # CEF fileHash. Real Apex Central samples emit SHA-1 (40-hex), per
+  # official doc field description "SHA-1 checksum". Faker `sha1`
+  # produces a hex digest in the right shape.
+  - name: file_hash
+    type: faker
+    method: sha1
+
+  # AV:Action eventid + matching `act` field. These must agree per the
+  # Action Mapping Table — the eventid string and act string are the
+  # same literal vocabulary. Weighted so ~70% are successful clean/
+  # quarantine/delete actions → 已刪除 rules; ~30% are pass/fail
+  # outcomes → 未刪除 rules.
+  - name: action_taken
+    type: weighted_choice
+    choices:
+      "File cleaned":                       0.30
+      "File quarantined":                   0.20
+      "File deleted":                       0.10
+      "File renamed":                       0.05
+      "File passed":                        0.05
+      "Unable to clean file. Passed":       0.10  # 未刪除
+      "Unable to clean file. File deleted": 0.05
+      "Unable to clean file. File renamed": 0.05
+      "Access denied":                      0.05
+      "No action":                          0.05  # 未刪除
+
+  # VLF_FirstActionResult (cs5). Real samples consistently mirror act;
+  # we keep them aligned via template substitution rather than
+  # independently sampling, to avoid (act=File cleaned, cs5=File
+  # deleted) impossible combinations.
+
+  # VLF_SecondAction code (cn2). Per Action Mapping Table:
+  #   0=Unknown 1=N/A 21=File cleaned 22=File deleted
+  #   23=File quarantined 24=File renamed 25=File passed
+  # Most events have N/A (1) as second action; only fall-back chains
+  # see 21..25 here.
+  - name: second_action_code
+    type: weighted_choice
+    choices:
+      "1":  0.70   # N/A
+      "23": 0.15   # File quarantined
+      "22": 0.08   # File deleted
+      "21": 0.05   # File cleaned
+      "25": 0.02   # File passed
+
+  - name: second_action_result
+    type: weighted_choice
+    choices:
+      "N/A":               0.70
+      "File quarantined":  0.15
+      "File deleted":      0.08
+      "File cleaned":      0.05
+      "File passed":       0.02
+
+  # cs1 / VLF_FunctionCode — scan type that produced the detection.
+  - name: function_code
+    type: weighted_choice
+    choices:
+      "Real-time Scan":  0.55
+      "Manual Scan":     0.15
+      "Scheduled Scan":  0.20
+      "Behavior Monitoring": 0.07
+      "Damage Cleanup Services": 0.03
+
+  - name: pattern_version
+    type: weighted_choice
+    choices:
+      "1956500": 0.45    # 2024 sample
+      "1958200": 0.30
+      "1960100": 0.20
+      "920500":  0.05    # legacy sample shape
+
+  - name: engine_version
+    type: weighted_choice
+    choices:
+      "11.000.1006": 0.40
+      "12.500.1005": 0.30
+      "9.500.1005":  0.15  # legacy
+      "12.600.1010": 0.15
+
+  - name: product_version
+    type: weighted_choice
+    choices:
+      "14.0":  0.55      # Apex One 14.x
+      "11":    0.20
+      "10.6":  0.15
+      "14.5":  0.10
+
+  # CLF_ReasonCode (cs4) — log categorization. For AV events it is
+  # always literal "virus log" per the Action Mapping Table and every
+  # real sample seen.
+  - name: reason_code
+    type: fixed
+    value: "virus log"
+
+  # CEF cat — log type identifier. 1703 = Virus/Malware log per
+  # Apex Central docs.
+  - name: cat_id
+    type: fixed
+    value: "1703"
+
+  # reason — Threat classification (A..G) per Apex Central docs. Real
+  # samples show B and E; we sample across A..G with B/E weighted.
+  - name: reason_letter
+    type: weighted_choice
+    choices:
+      "B": 0.40
+      "E": 0.30
+      "A": 0.10
+      "C": 0.08
+      "D": 0.05
+      "F": 0.05
+      "G": 0.02
+
+  - name: device_payload_id
+    type: faker
+    method: uuid4
+
+# Template emits real Apex Central CEF wire format. Field order matches
+# the canonical raw sample in the description block:
+#   <PRI>RFC3164_TS HOST CEF:0|Trend Micro|Apex Central|2019|AV:<act>|<virus>|<sev>|<extensions>
+# All CEF extension keys (cn1..cn3, cs1..cs6, c6a3 etc) and their
+# Label values are verbatim from the official Apex Central CEF
+# Virus/Malware Log mapping table.
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{params.syslog_host}} CEF:0|Trend Micro|Apex Central|2019|AV:{{action_taken}}|{{virus_name}}|{{header_severity}}|deviceExternalId={{device_external_id}} rt={{cef_ts}} cnt=1 dhost={{dhost}} duser={{params.apex_central_domain}}\\{{user_name}} act={{action_taken}} cn1Label=VLF_PatternNumber cn1={{pattern_version}} cn2Label=VLF_SecondAction cn2={{second_action_code}} cs1Label=VLF_FunctionCode cs1={{function_code}} cs2Label=VLF_EngineVersion cs2={{engine_version}} cs3Label=CLF_ProductVersion cs3={{product_version}} cs4Label=CLF_ReasonCode cs4={{reason_code}} cs5Label=VLF_FirstActionResult cs5={{action_taken}} cs6Label=VLF_SecondActionResult cs6={{second_action_result}} cat={{cat_id}} dvchost={{params.apex_one_server}} cn3Label=CLF_SeverityCode cn3={{severity_code}} fname={{file_name}} filePath={{file_path}} msg={{file_name}} shost={{dhost}} suser={{dhost}} dst={{dst_ip}} fileHash={{file_hash}} deviceFacility=Apex One reason={{reason_letter}} deviceNtDomain={{params.apex_central_domain}} dntdom={{params.apex_central_dntdom}} ApexCentralHost={{params.apex_central_host}} devicePayloadId={{device_payload_id}}

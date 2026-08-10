@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cyberrange-api"
+version = "0.0.1"
+description = "FastAPI backend wrapping the cyberrange catalog log generator"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "huangalou" }]
+# `cyberrange` is a sibling project. Install it editable first:
+#   pip install -e ../engine
+#   pip install -e '.[dev]'
+dependencies = [
+  "cyberrange",
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "pydantic>=2.5",
+  "bcrypt>=4.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "httpx>=0.27",
+]
+
+[project.scripts]
+cyberrange-api = "cyberrange_api.main:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cyberrange_api"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

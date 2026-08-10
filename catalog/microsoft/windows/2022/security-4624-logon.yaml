@@ -1,0 +1,398 @@
+vendor: microsoft
+product: windows
+version: "2022"
+log_type: security.event_id_4624
+description: |
+  Windows Security Event ID 4624 (An account was successfully logged on).
+  Wire-format faithful to the Winlogbeat / Wazuh-agent / NXLog forwarded
+  JSON envelope, single-line for line-delimited TCP syslog ingest into
+  filebeat 9514/tcp.
+
+  Source-of-truth (URLs fetched 2026-05-15):
+    - Microsoft Learn — 4624(S) An account was successfully logged on
+      (Event XML schema, EventData field-by-field reference, the full
+      LogonType enum 0/2/3/4/5/7/8/9/10/11/12/13, Version 2 additions
+      for Windows 10 / Server 2016+):
+        https://learn.microsoft.com/en-us/windows/security/threat-protection/auditing/event-4624
+    - Elastic Winlogbeat security module — winlog.event_data PascalCase
+      key shape:
+        https://www.elastic.co/guide/en/beats/winlogbeat/current/winlogbeat-module-security.html
+    - Wazuh windows_eventchannel agent JSON — win.system.* + camelCase
+      win.eventdata.* (parallel sibling shape, see Open Questions in
+      companion doc microsoft-windows-security-events.md):
+        https://documentation.wazuh.com/current/user-manual/capabilities/log-data-collection/configuration.html
+    - NXLog im_msvistalog → xm_json (PascalCase EventData passthrough):
+        https://docs.nxlog.co/agent/current/im/msvistalog.html
+    - ArcSight SmartConnector for Microsoft Windows Event Log — CEF
+      mapping (Destination User Name ← TargetUserName, deviceCustomString3
+      ← ProcessId, deviceCustomString6 ← LogonGuid):
+        https://www.microfocus.com/documentation/arcsight/arcsight-smartconnectors/pdfdoc/windows-eventlog-native-event-mappings/windows-eventlog-native-event-mappings.pdf
+
+  Wire-shape choice — this catalog emits the Winlogbeat/PascalCase form
+  because the companion SOC stack ingests via filebeat → Elastic
+  (incoming-* index) and Winlogbeat is the canonical Elastic agent. The
+  Wazuh-agent camelCase variant (win.system / win.eventdata) parses the
+  same fields under a different envelope; see companion doc for the
+  exact mapping table.
+
+  SIEM rule mapping: feeds the AD/4672 rule family that
+  pivots on TargetUserName, LogonType, IpAddress, ElevatedToken.
+
+format: json
+transport: [tcp_syslog, beats, file]
+
+ocsf:
+  class: authentication
+  category_uid: 3
+  class_uid: 3002
+
+# ──────────────── DetectOps v2 metadata ────────────────
+# 4624 is the canonical "who logged on, from where, how" signal. Wazuh
+# decodes via windows_eventchannel; specific rules layer on LogonType /
+# IpAddress / TargetUserName. ArcSight legacy 4672-pivot rules feed off
+# 4624's correlation id (TargetLogonId / SubjectLogonId).
+detections:
+  wazuh:
+    - decoder: windows_eventchannel
+    - rule_id: 60106  # windows_security_4624 (success logon, generic)
+      level: 3
+    # Specific child rules for LogonType=10 (RDP) / LogonType=3 (network)
+    # from off-prem IPs would be project-local additions.
+  sigma:
+    - rule: win_susp_rdp_logon_from_external_ip
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/windows/builtin/security
+    - rule: win_alert_active_directory_user_control
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/windows/builtin/security
+  elk_detection:
+    - kibana_rule_id: ad-logon-from-external-ip
+      severity: medium
+
+mythos_alignment:
+  # R4 Inadequate Detection Velocity (auth events must be sub-minute)
+  # PA1 Point Agents at Code (identity-driven detection upstream of EDR)
+  risk_refs: [R4]
+  pa_refs: [PA1]
+  ttx_class: rapid
+
+regression:
+  # 4624 is high-volume. Default rules alert on a small fraction (RDP from
+  # WAN, service-account interactive, etc). 1000 events → ~20 alerts typical.
+  baseline_alert_count: 20
+  baseline_ttd_ms: 3000
+
+params:
+  hostname: { default: "WIN-DC01" }
+  domain:   { default: "LAB" }
+  fqdn_suffix: { default: "lab.local" }
+  target_user_pool: { default: ["alice", "bob", "admin", "svc_backup", "guest"] }
+
+fields:
+  # ──────────────── timestamps ────────────────
+  - name: ts_iso
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S.%fZ"
+
+  # SystemTime per official EventXML uses 100-ns precision; Winlogbeat
+  # rounds to microseconds in JSON. Matches the @timestamp value.
+  - name: ts_system
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S.%fZ"
+
+  - name: hostname
+    type: param
+    param: hostname
+
+  - name: fqdn
+    type: template
+    template: "{{hostname}}.{{params.fqdn_suffix}}"
+
+  # ──────────────── System block ────────────────
+  # EventRecordID is monotonic per channel; faked within plausible range.
+  - name: event_record_id
+    type: int_range
+    min: 1000000
+    max: 9999999999
+
+  # LSASS process id — varies per boot. winlogon/lsass run as pid<1000
+  # but the System.Execution.ProcessID is the writer of the event,
+  # typically lsass (low 3-4 digit hex).
+  - name: system_process_id
+    type: int_range
+    min: 400
+    max: 999
+
+  - name: system_thread_id
+    type: int_range
+    min: 100
+    max: 9999
+
+  # ──────────────── New Logon (Target) ────────────────
+  - name: target_user
+    type: choice
+    choices: ${params.target_user_pool}
+
+  - name: target_domain
+    type: param
+    param: domain
+
+  # TargetUserSid: built from a stable lab SID prefix + RID drawn from
+  # the user's position; for a synthetic feed we keep the prefix fixed
+  # and randomize the RID 1000..1999 (matches AD user range).
+  - name: target_user_rid
+    type: int_range
+    min: 1000
+    max: 1999
+
+  - name: target_user_sid
+    type: template
+    template: "S-1-5-21-1111111111-2222222222-3333333333-{{target_user_rid}}"
+
+  - name: target_logon_id
+    type: faker
+    method: hex_8
+
+  # TargetLinkedLogonId — paired session for elevated tokens. 0x0 for
+  # the common case; occasionally a real hex when ElevatedToken=Yes.
+  - name: target_linked_logon_id
+    type: weighted_choice
+    choices:
+      "0x0": 0.85
+      "RANDOM_HEX": 0.15
+
+  - name: target_linked_logon_hex
+    type: faker
+    method: hex_8
+
+  # NewCredentials (LogonType=9) outbound identity. `-` for all other
+  # logon types per the Microsoft schema.
+  - name: target_outbound_user
+    type: fixed
+    value: "-"
+
+  - name: target_outbound_domain
+    type: fixed
+    value: "-"
+
+  # ──────────────── Subject ────────────────
+  - name: subject_user
+    type: weighted_choice
+    choices:
+      "SYSTEM": 0.55
+      "ANONYMOUS LOGON": 0.05
+      "WIN-DC01$": 0.10        # machine account (computer logging on)
+      "alice": 0.10
+      "bob": 0.10
+      "admin": 0.10
+
+  - name: subject_domain
+    type: weighted_choice
+    choices:
+      "NT AUTHORITY": 0.55
+      "LAB": 0.35
+      "WORKGROUP": 0.10
+
+  # Subject SID — SYSTEM is S-1-5-18 in nearly every 4624 since LSASS
+  # is the typical caller. For user-subject events use a domain SID.
+  - name: subject_user_sid
+    type: weighted_choice
+    choices:
+      "S-1-5-18": 0.60
+      "S-1-5-7":  0.05          # ANONYMOUS LOGON
+      "S-1-5-21-1111111111-2222222222-3333333333-500": 0.10
+      "S-1-5-21-1111111111-2222222222-3333333333-1001": 0.10
+      "S-1-5-21-1111111111-2222222222-3333333333-1002": 0.10
+      "S-1-5-21-1111111111-2222222222-3333333333-1003": 0.05
+
+  - name: subject_logon_id
+    type: faker
+    method: hex_8
+
+  # ──────────────── Logon Information ────────────────
+  # Complete enum from Microsoft Learn (System type 0 omitted —
+  # only generated by the System account at boot; not seen on the wire
+  # via Winlogbeat/agent under normal forwarding).
+  - name: logon_type
+    type: weighted_choice
+    choices:
+      "2":  0.18   # Interactive (console)
+      "3":  0.40   # Network
+      "4":  0.02   # Batch
+      "5":  0.10   # Service
+      "7":  0.05   # Unlock
+      "8":  0.02   # NetworkCleartext
+      "9":  0.02   # NewCredentials (runas /netonly)
+      "10": 0.15   # RemoteInteractive (RDP)
+      "11": 0.04   # CachedInteractive
+      "12": 0.01   # CachedRemoteInteractive
+      "13": 0.01   # CachedUnlock
+
+  # ImpersonationLevel — Microsoft emits the format marker, NOT the
+  # human-readable label. Wazuh / Winlogbeat / NXLog preserve it raw.
+  # %%1832 SecurityAnonymous, %%1833 SecurityIdentification,
+  # %%1840 SecurityImpersonation (most common), %%1841 SecurityDelegation.
+  - name: impersonation_level
+    type: weighted_choice
+    choices:
+      "%%1840": 0.70
+      "%%1833": 0.20
+      "%%1841": 0.05
+      "%%1832": 0.05
+
+  # RestrictedAdminMode — Yes/No only valid for LogonType=10, else `-`.
+  # Renderer can't condition cleanly without a Jinja template field; we
+  # weight `-` to dominate so non-RDP samples stay accurate, with
+  # occasional Yes/No leaking through (acceptable noise for a generator).
+  - name: restricted_admin_mode
+    type: weighted_choice
+    choices:
+      "-":   0.85
+      "No":  0.12
+      "Yes": 0.03
+
+  # VirtualAccount — %%1842 Yes / %%1843 No per Microsoft. Almost
+  # always %%1843 in real fleets (only managed service accounts emit Yes).
+  - name: virtual_account
+    type: weighted_choice
+    choices:
+      "%%1843": 0.97
+      "%%1842": 0.03
+
+  # ElevatedToken — %%1842 Yes / %%1843 No. Roughly half of admin
+  # interactive logons; mostly No on the wire.
+  - name: elevated_token
+    type: weighted_choice
+    choices:
+      "%%1843": 0.70
+      "%%1842": 0.30
+
+  # ──────────────── Detailed Authentication ────────────────
+  # LogonProcessName — the trusted logon process. Per Microsoft Learn
+  # 4611, NOT the auth package. Common values: User32 (interactive),
+  # Advapi (svc, runas), Kerberos (the kerberos.dll logon entry on DCs),
+  # NtLmSsp_ / Negotiate (network), Schannel (TLS), IKE (IPsec),
+  # seclogo (CredUI). Note "Kerberos" is the package; "Kerberos" as a
+  # LogonProcessName only appears on DCs handling AS-REQ.
+  - name: logon_process
+    type: weighted_choice
+    choices:
+      "User32 ":      0.20   # trailing space is the real wire form
+      "Advapi  ":     0.15   # padded to 8 chars on the wire
+      "NtLmSsp ":     0.20
+      "Negotiat":     0.10   # truncated form seen in real logs
+      "Kerberos":     0.30
+      "Schannel":     0.05
+
+  # AuthenticationPackageName — the package the logon process used.
+  # Per Microsoft Learn list: NTLM (NTLM-family), Kerberos, Negotiate.
+  - name: auth_package
+    type: weighted_choice
+    choices:
+      "Kerberos": 0.55
+      "NTLM":     0.30
+      "Negotiate": 0.15
+
+  # LmPackageName (NTLM only). `-` for non-NTLM, else NTLM V1 / V2 / LM.
+  # We weight `-` to dominate; the Kerberos path dominates real logs.
+  - name: lm_package_name
+    type: weighted_choice
+    choices:
+      "-":       0.70
+      "NTLM V2": 0.25
+      "NTLM V1": 0.04
+      "LM":      0.01
+
+  # KeyLength — 0 for Kerberos, 128 for NTLMv2, 56 for NTLMv1.
+  - name: key_length
+    type: weighted_choice
+    choices:
+      "0":   0.70
+      "128": 0.25
+      "56":  0.05
+
+  # TransmittedServices — Kerberos S4U chain. Default `-` for non-S4U.
+  - name: transmitted_services
+    type: fixed
+    value: "-"
+
+  # LogonGuid — Kerberos correlation GUID. Zeroed for NTLM/local logons.
+  - name: logon_guid_hex
+    type: faker
+    method: uuid4
+
+  - name: logon_guid
+    type: weighted_choice
+    choices:
+      "ZERO": 0.45        # NTLM/local — Microsoft Learn: "{00000000-...}"
+      "REAL": 0.55        # Kerberos — real GUID
+
+  # ──────────────── Network Information ────────────────
+  - name: workstation
+    type: weighted_choice
+    choices:
+      "WS-FINANCE-01": 0.25
+      "WS-HR-02":      0.20
+      "WS-DEV-07":     0.20
+      "RDP-JUMP-01":   0.15
+      "-":             0.20
+
+  # Source Network Address — per Microsoft Learn: IPv4 or IPv6; ::1 or
+  # 127.0.0.1 for localhost; `-` when LSASS doesn't get an IP (some
+  # Kerberos network logons).
+  - name: ip_address
+    type: weighted_choice
+    choices:
+      "10.0.0.55":     0.25
+      "10.0.0.122":    0.20
+      "192.168.10.43": 0.10
+      "203.0.113.77":  0.15      # external — flags RDP-from-WAN rules
+      "::1":           0.05
+      "127.0.0.1":     0.10
+      "-":             0.15
+
+  # Source Port — 0 for interactive logons (Microsoft Learn explicit
+  # rule), ephemeral for network.
+  - name: ip_port
+    type: weighted_choice
+    choices:
+      "0":     0.30
+      "RANGE": 0.70
+
+  - name: ip_port_range
+    type: int_range
+    min: 49152
+    max: 65535
+
+  # ──────────────── Process Information ────────────────
+  # ProcessId — hex pointer per Microsoft schema. Often the lsass pid.
+  - name: process_id_dec
+    type: int_range
+    min: 400
+    max: 65535
+
+  - name: process_name
+    type: weighted_choice
+    choices:
+      "C:\\\\Windows\\\\System32\\\\lsass.exe":     0.30
+      "C:\\\\Windows\\\\System32\\\\winlogon.exe": 0.25
+      "C:\\\\Windows\\\\System32\\\\svchost.exe":   0.20
+      "C:\\\\Windows\\\\System32\\\\services.exe":  0.10
+      "-":                                           0.15
+
+  # ──────────────── syslog envelope ────────────────
+  - name: pri
+    type: fixed
+    value: 134                              # local0.info
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+# Template — Winlogbeat-compatible JSON envelope wrapped in RFC3164
+# syslog for line-delimited TCP ingest. Top-level keys match the real
+# Winlogbeat security-module output: @timestamp / event / host / agent /
+# ecs / log / winlog. The winlog.event_data block carries every
+# Version 2 (Windows 10 / Server 2016+) field listed in the Microsoft
+# Learn 4624 schema. Note: Winlogbeat camelCases nothing inside
+# event_data — keys stay PascalCase exactly as Windows emits them.
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} {"@timestamp":"{{ts_iso}}","ecs":{"version":"8.0.0"},"agent":{"type":"winlogbeat","version":"8.14.0","name":"{{hostname}}"},"host":{"name":"{{hostname}}","hostname":"{{hostname}}","os":{"family":"windows","name":"Windows Server 2022","platform":"windows"}},"log":{"level":"information"},"event":{"code":4624,"provider":"Microsoft-Windows-Security-Auditing","action":"Logon","category":["authentication"],"type":["start"],"outcome":"success","kind":"event"},"winlog":{"channel":"Security","event_id":4624,"provider_name":"Microsoft-Windows-Security-Auditing","provider_guid":"{54849625-5478-4994-A5BA-3E3B0328C30D}","computer_name":"{{fqdn}}","record_id":{{event_record_id}},"task":"Logon","keywords":["Audit Success"],"opcode":"Info","version":2,"api":"wineventlog","process":{"pid":{{system_process_id}},"thread":{"id":{{system_thread_id}}}},"event_data":{"SubjectUserSid":"{{subject_user_sid}}","SubjectUserName":"{{subject_user}}","SubjectDomainName":"{{subject_domain}}","SubjectLogonId":"0x{{subject_logon_id}}","TargetUserSid":"{{target_user_sid}}","TargetUserName":"{{target_user}}","TargetDomainName":"{{target_domain}}","TargetLogonId":"0x{{target_logon_id}}","LogonType":"{{logon_type}}","LogonProcessName":"{{logon_process}}","AuthenticationPackageName":"{{auth_package}}","WorkstationName":"{{workstation}}","LogonGuid":"{% if logon_guid == 'ZERO' %}{00000000-0000-0000-0000-000000000000}{% else %}{{'{'}}{{logon_guid_hex}}{{'}'}}{% endif %}","TransmittedServices":"{{transmitted_services}}","LmPackageName":"{{lm_package_name}}","KeyLength":"{{key_length}}","ProcessId":"0x{{'%x' | format(process_id_dec | int)}}","ProcessName":"{{process_name}}","IpAddress":"{{ip_address}}","IpPort":"{% if ip_port == '0' %}0{% else %}{{ip_port_range}}{% endif %}","ImpersonationLevel":"{{impersonation_level}}","RestrictedAdminMode":"{{restricted_admin_mode}}","TargetOutboundUserName":"{{target_outbound_user}}","TargetOutboundDomainName":"{{target_outbound_domain}}","VirtualAccount":"{{virtual_account}}","TargetLinkedLogonId":"{% if target_linked_logon_id == '0x0' %}0x0{% else %}0x{{target_linked_logon_hex}}{% endif %}","ElevatedToken":"{{elevated_token}}"}}}

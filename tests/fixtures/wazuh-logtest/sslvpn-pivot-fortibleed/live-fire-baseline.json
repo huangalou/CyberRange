@@ -1,0 +1,66 @@
+{
+  "_meta": {
+    "description": "Task 6 live-fire dual-send baseline — FortiBleed pivot slice",
+    "generated_at": "2026-06-19T13:50:00Z",
+    "branch": "feat/fortibleed-pivot-slice",
+    "fixtures_used": [
+      "s3-sslvpn-auth-success.log",
+      "s4-4720-account-create.log"
+    ],
+    "send_order": "S3 first, then S4 (2s delay) — ensures EQL sequence order"
+  },
+  "send_timestamps": {
+    "s3_wazuh_udp514": "2026-06-19T13:40:09Z",
+    "s4_wazuh_udp514": "2026-06-19T13:40:13Z",
+    "s3_elk_tcp9514": "2026-06-19T13:40:21Z",
+    "s4_elk_tcp9514": "2026-06-19T13:40:23Z"
+  },
+  "wazuh": {
+    "rule_132080_hits": 1,
+    "rule_131021_hits": 0,
+    "rule_132085_hits": 0,
+    "rule_132085_expected": 0,
+    "rule_132085_note": "By design: if_matched_sid co-occurrence rule (rule-tree hangs off FortiGate chain, does not evaluate Windows json events, structurally cannot fire cross-source). Cross-source pivot correlation is handled by ELK EQL.",
+    "rule_131021_note": "S4 Windows JSON arrived in Wazuh archives (confirmed) but winlog.event_data.SubjectUserName not decoded without Winlogbeat agent — no decoder matches raw JSON-over-syslog. Rule did not fire.",
+    "alert_132080_at": "2026-06-19T13:40:07.360Z",
+    "time_to_detect_132080_seconds": "<10",
+    "time_to_detect_132080_note": "~immediate; Wazuh @timestamp reflects log time; alert indexed within seconds of UDP 514 receipt",
+    "user_jchen_decoded": true,
+    "field_dstuser": "jchen"
+  },
+  "elk": {
+    "s3_index": "fortigate-2026.06.19",
+    "s3_user_name": "jchen",
+    "s3_event_action": "tunnel-up",
+    "s3_event_code": "0101039947",
+    "s3_ingest_at": "2026-06-19T13:40:21.005Z",
+    "s4_index": "windows-sec-2026.06.19",
+    "s4_user_name": "jchen",
+    "s4_event_code": 4720,
+    "s4_event_action": "A user account was created",
+    "s4_event_dataset": "windows.security",
+    "s4_user_target_name": "svc_backdoor$",
+    "s4_host_name": "WIN-DC01",
+    "s4_ingest_at": "2026-06-19T13:40:23.039Z",
+    "eql_rule_name": "FortiBleed pivot — SSL VPN valid-account login → AD account creation",
+    "eql_rule_id": "<kibana-rule-uuid>",
+    "eql_signal_count": 3,
+    "eql_signal_user_name": "jchen",
+    "eql_signal_status": "active",
+    "eql_signal_generated_at": "2026-06-19T13:43:51Z",
+    "eql_rule_interval_seconds": 300,
+    "time_to_detect_eql_seconds": 210,
+    "time_to_detect_eql_note": "S3+S4 ingested at 13:40:21-13:40:23; EQL rule fired at 13:43:51. 210s = first scheduled 300s-interval run after ingest. Ingest latency itself was <2s.",
+    "ingest_pipeline": "fortibleed-user-normalize",
+    "routing_pipeline": "auto-route",
+    "user_normalize_working": true
+  },
+  "real_ingest_path_validated": true,
+  "real_ingest_path_notes": "Both S3 and S4 transited filebeat (9514→filebeat→ES), were processed by auto-route + fortibleed-user-normalize, routed to vendor-specific indices (fortigate-* and windows-sec-*), and EQL sequence rule generated 3 signals with user.name=jchen. This validates the full production ingest path not covered by Task 5 (which injected directly into ES).",
+  "live_fire_done": true,
+  "concerns": [
+    "Wazuh S4 (4720 JSON-over-syslog): event arrived in Wazuh archives but no rule fired. Wazuh cannot decode Windows Security Event JSON without Winlogbeat agent — field winlog.event_data.SubjectUserName not extracted. This is a known architectural gap (see Task 4 findings: SAME_FIELD_VIABLE=false). Wazuh detection path for S4 is limited to EQL/ELK.",
+    "EQL rule produced 3 signals instead of 1. Likely because the windows-sec-2026.06.19 index contained 2 docs from prior test sends (both with user.name=jchen and event.code=4720). The 900s EQL window matched multiple S4 events against the single S3 event in the 15-minute maxspan. These are test residuals — a single FortiBleed pivot corresponds to a single S3→S4 pair; clean the index before re-running in production.",
+    "132085 (Wazuh if_matched_sid co-occurrence rule) confirmed 0 hits — by design: rule-tree hangs off FortiGate chain child, does not evaluate Windows json events, structurally cannot fire cross-source. This is not a CDB rule. Cross-source pivot correlation is the responsibility of ELK EQL."
+  ]
+}

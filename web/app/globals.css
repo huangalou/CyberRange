@@ -1,0 +1,137 @@
+@import "tailwindcss";
+
+@theme {
+  /* Surface palette — dark navy SOC console. */
+  --color-bg:       oklch(13% 0.025 250);
+  --color-surface:  oklch(18% 0.028 250);
+  --color-surface-2: oklch(22% 0.032 250);
+  --color-line:     oklch(28% 0.03 250 / 0.6);
+  --color-line-strong: oklch(40% 0.04 250);
+
+  /* Text. */
+  --color-fg:       oklch(96% 0.005 250);
+  --color-fg-muted: oklch(65% 0.025 250);
+  --color-fg-faint: oklch(45% 0.025 250);
+
+  /* Accent — acid lime, used for actions / focus / live data. */
+  --color-accent:   oklch(86% 0.22 130);
+  --color-accent-2: oklch(75% 0.22 130);
+
+  /* Status colors. */
+  --color-ok:       oklch(78% 0.18 145);
+  --color-warn:     oklch(80% 0.17 75);
+  --color-err:      oklch(70% 0.22 25);
+  --color-info:     oklch(75% 0.13 220);
+
+  /* Typography. */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", "Menlo", "Consolas", monospace;
+
+  --text-display: clamp(2.4rem, 1.4rem + 3.2vw, 4.2rem);
+  --text-h1:      clamp(1.6rem, 1.1rem + 1.8vw, 2.4rem);
+  --text-h2:      clamp(1.15rem, 0.9rem + 0.9vw, 1.5rem);
+}
+
+html, body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Subtle dot grid texture in the background for atmosphere. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image: radial-gradient(
+    oklch(40% 0.04 250 / 0.18) 1px,
+    transparent 1px
+  );
+  background-size: 24px 24px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+#__next, body > main, body > div { position: relative; z-index: 1; }
+
+::selection {
+  background: var(--color-accent);
+  color: var(--color-bg);
+}
+
+/* Scrollbar — quiet. */
+* { scrollbar-width: thin; scrollbar-color: var(--color-line-strong) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: var(--color-line-strong); border-radius: 4px; }
+
+/* Vendor accent helper — components set --vendor-h via inline style. */
+.vendor-rail {
+  background: linear-gradient(
+    180deg,
+    oklch(70% 0.18 var(--vendor-h, 250)) 0%,
+    oklch(50% 0.22 var(--vendor-h, 250)) 100%
+  );
+}
+.vendor-text { color: oklch(75% 0.16 var(--vendor-h, 250)); }
+.vendor-soft-bg { background: oklch(70% 0.18 var(--vendor-h, 250) / 0.10); }
+.vendor-border { border-color: oklch(60% 0.18 var(--vendor-h, 250) / 0.55); }
+
+/* Mono code block. */
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  letter-spacing: -0.005em;
+}
+
+/* Status pills. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.pill-pending  { background: oklch(35% 0.04 250 / 0.5); color: var(--color-fg-muted); border-color: var(--color-line); }
+.pill-running  { background: oklch(75% 0.13 220 / 0.18); color: var(--color-info); border-color: oklch(75% 0.13 220 / 0.4); }
+.pill-completed{ background: oklch(78% 0.18 145 / 0.18); color: var(--color-ok); border-color: oklch(78% 0.18 145 / 0.4); }
+.pill-failed   { background: oklch(70% 0.22 25 / 0.18); color: var(--color-err); border-color: oklch(70% 0.22 25 / 0.4); }
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 0.4; transform: scale(1); }
+  50%      { opacity: 1.0; transform: scale(1.2); }
+}
+.live-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
+
+.login-input {
+  width: 100%;
+  background: var(--color-bg);
+  border: 1px solid var(--color-line);
+  border-radius: 6px;
+  padding: 0.625rem 0.875rem;
+  color: var(--color-fg);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 0.875rem;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.login-input::placeholder {
+  color: var(--color-fg-faint);
+}
+.login-input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px oklch(86% 0.22 130 / 0.18);
+}

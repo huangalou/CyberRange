@@ -1,0 +1,470 @@
+vendor: mcafee
+product: epo
+version: "5.10"
+log_type: av.detection
+description: |
+  McAfee ePolicy Orchestrator (ePO) 5.10 → Trellix Endpoint Security (ENS)
+  threat event, forwarded by the ePO Syslog Forwarder. McAfee Enterprise
+  rebranded to **Trellix** in 2022; ePO became Trellix ePO and ENS became
+  Trellix Endpoint Security — both names still appear in real wire output
+  because `ProductName="McAfee Endpoint Security"` is the literal value
+  emitted by ENS 10.5 / 10.6 / 10.7 agents and ePO has not changed that
+  field in the on-prem 5.10 builds.
+
+  Wire format: **native XML, NOT CEF.** ePO's default Syslog Forwarder
+  emits an RFC5424 syslog frame whose MSG body is an `<EPOevent>` XML
+  document. CEF is offered as an option only when admins explicitly add
+  the "Common Event Format" Forwarder Add-On (Skyhigh / Trellix ESM
+  SmartConnector path) or write an Automatic Response rule that emits
+  the CEF template. Every SIEM integration we audited (LogRhythm,
+  LogPoint, NXLog, Splunk Add-on for McAfee ePO Syslog, IBM QRadar JSA,
+  Arctic Wolf, Google Chronicle, Microsoft Sentinel) onboards the XML
+  form as the default.
+
+  Source-of-truth URLs (fetched 2026-05-14):
+    - LogPoint McAfee EPO integration guide
+      https://servicedesk.logpoint.com/hc/en-us/articles/115003788929-McAfee-EPO
+      (real raw XML body sample with `EPOevent` / `MachineInfo` /
+      `SoftwareInfo ProductName="McAfee Endpoint Security"
+      ProductFamily="TVD"` / `CommonFields` / `Analyzer=ENDP_AM_1060` /
+      `AnalyzerName=McAfee Endpoint Security`)
+    - NXLog Trellix ePO docs
+      https://docs.nxlog.co/integrate/trellix-epo.html
+    - Splunk Add-on for McAfee ePO Syslog
+      https://docs.splunk.com/Documentation/AddOns/released/McAfeeEPOSyslog/About
+      (sourcetype `mcafee:epo:syslog`, confirms TLS+XML default)
+    - IBM QRadar DSM — McAfee ePolicy Orchestrator sample event messages
+      https://www.ibm.com/docs/en/dsm?topic=orchestrator-mcafee-epolicy-sample-event-messages
+    - Trellix KB85494 — Complete list of event IDs for Endpoint Security
+      https://thrive.trellix.com/s/article/KB85494
+    - Trellix KB54677 — General list of Event IDs sent to ePolicy Orchestrator
+      https://kcm.trellix.com/corporate/index?page=content&id=KB54677
+    - Google Chronicle Trellix ePO parser
+      https://docs.cloud.google.com/chronicle/docs/ingestion/default-parsers/trellix-epo
+    - Trellix community / KB on Artemis / RDN/Generic / GTI naming
+      https://kcm.trellix.com/corporate/index?page=content&id=KB53782
+      https://kcm.trellix.com/corporate/index?page=content&id=KB97027
+
+  Real ePO wire format example (Threat Detected, ENS 10.7, redacted):
+
+    <29>1 2017-08-05T04:24:40.0Z LAB-EPO EPOEvents - EventFwd
+    [agentInfo@3401 tenantId="1"] <?xml version="1.0" encoding="UTF-8"?>
+    <EPOevent><MachineInfo><MachineName>DESKTOP-WIN10-A1</MachineName>
+    <AgentGUID>{41gb1743-a17d-12eb-379b-000000000000}</AgentGUID>
+    <IPAddress>10.10.10.10</IPAddress><OSName>Windows 10 Workstation</OSName>
+    <UserName>USERNAME</UserName><TimeZoneBias>360</TimeZoneBias>
+    <RawMACAddress>14b31f10c25c</RawMACAddress></MachineInfo>
+    <SoftwareInfo ProductName="McAfee Endpoint Security"
+    ProductVersion="10.7.0.3468" ProductFamily="TVD">
+    <CommonFields><Analyzer>ENDP_AM_1060</Analyzer>
+    <AnalyzerName>McAfee Endpoint Security</AnalyzerName>
+    <AnalyzerVersion>10.7.0.3468</AnalyzerVersion>
+    <AnalyzerHostName>DESKTOP-WIN10-A1</AnalyzerHostName>
+    <AnalyzerDATVersion>10256</AnalyzerDATVersion>
+    <AnalyzerEngineVersion>6010.8670</AnalyzerEngineVersion>
+    <AnalyzerDetectionMethod>On-Access Scan</AnalyzerDetectionMethod>
+    </CommonFields><Event><EventID>1027</EventID><Severity>2</Severity>
+    <GMTTime>2017-08-05T04:24:38</GMTTime><ThreatCategory>av.detect.virus
+    </ThreatCategory><ThreatEventID>1027</ThreatEventID>
+    <ThreatSeverity>2</ThreatSeverity><ThreatName>Artemis!12345ABCDEF0
+    </ThreatName><ThreatType>trojan</ThreatType><DetectedUTC>
+    2017-08-05T04:24:38</DetectedUTC><TargetHostName>DESKTOP-WIN10-A1
+    </TargetHostName><TargetUserName>DOMAIN\\alice</TargetUserName>
+    <TargetFileName>C:\\Users\\alice\\AppData\\Local\\Temp\\update.exe
+    </TargetFileName><ThreatActionTaken>deleted</ThreatActionTaken>
+    <ThreatHandled>True</ThreatHandled></Event></SoftwareInfo></EPOevent>
+
+  SIEM rule mapping: **best-effort, no direct rule_id**.
+  A reference SIEM ruleset does
+  NOT include McAfee/Trellix entries — only Sophos / Symantec / TrendMicro /
+  Kaspersky / F-Secure. However, the user reports many SI/MSSP customers
+  ingest McAfee/Trellix logs, so
+  this catalog stays catalog-side ready. When the SOC-side rule family is
+  added (mirroring `AV_McAfee_<scenario>_全區_2.0` naming), back-fill the
+  rule_id list below. The wire format alone should already match those
+  rules' typical `description` / `data.vendor=mcafee` selectors.
+
+  Scenario coverage mirrors the established Symantec/TrendMicro 8-class
+  taxonomy so future SOC rules can be modeled by analogy:
+    單一主機偵測大量病毒          (workstation, occurrences high)
+    單一主機偵測勒索病毒          (workstation, ThreatType=ransom)
+    單一主機偵測病毒(已刪除)      (workstation, ThreatActionTaken=deleted/cleaned)
+    單一主機偵測病毒(未刪除)      (workstation, ThreatActionTaken=none/would have)
+    伺服器主機偵測大量病毒        (server, occurrences high)
+    伺服器主機偵測病毒(已刪除)    (server, action=deleted/cleaned)
+    伺服器主機偵測病毒(未刪除)    (server, action=none)
+    伺服器主機感染勒索軟體病毒    (server, ThreatType=ransom)
+
+format: xml          # native EPOevent XML inside RFC5424 syslog frame
+transport: [tcp_syslog_tls, tcp_syslog, file]   # ePO prefers TLS:6514
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+detections:
+  wazuh:
+    # ePO native XML requires a `mcafee-epo` decoder family (Wazuh
+    # community contrib by joselopezrio; see wazuh-ruleset PR #467).
+    # Wazuh built-in `cef` decoder will NOT parse this; only the
+    # post-transform CEF output of an ArcSight SmartConnector / Skyhigh
+    # CEF Forwarder Add-On would route through that path.
+    - decoder: mcafee-epo
+    # TODO(av-extension): backfill rule_ids when AV_McAfee_* family lands.
+    # Expected scenarios (per Symantec/TrendMicro precedent — see
+    # description block for full Chinese-named list):
+    #   AV_McAfee_單一主機偵測大量病毒_全區_2.0
+    #   AV_McAfee_單一主機偵測勒索病毒_全區_2.0
+    #   AV_McAfee_單一主機偵測病毒_已刪除_全區_2.0
+    #   AV_McAfee_單一主機偵測病毒_未刪除_全區_2.0
+    #   AV_McAfee_伺服器主機偵測大量病毒_全區_2.0
+    #   AV_McAfee_伺服器主機偵測病毒_已刪除_全區_2.0
+    #   AV_McAfee_伺服器主機偵測病毒_未刪除_全區_2.0
+    #   AV_McAfee_伺服器主機感染勒索軟體病毒_全區_2.0
+  sigma:
+    - rule: mcafee_epo_threat_event_xml
+      ref: https://github.com/SigmaHQ/sigma   # community contrib pending
+  elk_detection:
+    - kibana_rule_id: mcafee-epo-threat-detected
+      severity: high
+
+mythos_alignment:
+  risk_refs: [R1, R4]
+  pa_refs: [PA10]
+  ttx_class: rapid
+
+regression:
+  # baseline pending — back-fill once Wazuh AV_McAfee_* rule family exists.
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 4000
+
+params:
+  epo_host:
+    default: "epo-prod.lab.local"
+  tenant_id:
+    default: "1"
+  workstation_pool:
+    default:
+      - "DESKTOP-WIN10-A1"
+      - "DESKTOP-WIN11-B2"
+      - "LAPTOP-USR-23"
+      - "LAPTOP-CONS-04"
+      - "DESKTOP-MKT-09"
+  server_pool:
+    default:
+      - "SRV-FILE01"
+      - "SRV-DC01"
+      - "WEB-PRD-02"
+      - "DB-MSSQL-01"
+      - "APP-ERP-03"
+  internal_subnet:
+    default: "10.0.20.0/24"
+  server_subnet:
+    default: "10.0.50.0/24"
+  user_pool:
+    default: ["alice", "bob", "svc_backup", "contractor_a", "admin_b"]
+  domain_name:
+    default: "CORP"
+
+fields:
+  # RFC5424 PRI — McAfee ePO default facility=local0 / severity=info → 134.
+  # Real captured samples show <29> too (kern.notice) — both observed.
+  - name: pri
+    type: weighted_choice
+    choices:
+      "134": 0.55
+      "29":  0.45
+
+  - name: rfc5424_ts
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S.0Z"
+
+  - name: gmt_ts
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S"
+
+  - name: epo_host
+    type: param
+    param: epo_host
+
+  - name: tenant_id
+    type: param
+    param: tenant_id
+
+  # host_class drives workstation vs server scenario family.
+  - name: host_class
+    type: weighted_choice
+    choices:
+      workstation: 0.60
+      server:      0.40
+
+  - name: workstation_host
+    type: choice
+    choices: ${params.workstation_pool}
+
+  - name: server_host
+    type: choice
+    choices: ${params.server_pool}
+
+  - name: machine_name
+    type: template
+    template: "{% if host_class == 'server' %}{{server_host}}{% else %}{{workstation_host}}{% endif %}"
+
+  - name: workstation_ip
+    type: cidr
+    cidr: ${params.internal_subnet}
+
+  - name: server_ip
+    type: cidr
+    cidr: ${params.server_subnet}
+
+  - name: ip_address
+    type: template
+    template: "{% if host_class == 'server' %}{{server_ip}}{% else %}{{workstation_ip}}{% endif %}"
+
+  - name: os_name
+    type: template
+    template: "{% if host_class == 'server' %}Windows Server 2019{% else %}Windows 10 Workstation{% endif %}"
+
+  - name: agent_guid_raw
+    type: faker
+    method: uuid4
+
+  # ePO emits AgentGUID wrapped in literal braces: `{UUID}`.
+  - name: agent_guid
+    type: template
+    template: "{{'{'}}{{agent_guid_raw}}{{'}'}}"
+
+  # RawMACAddress = 12 hex chars, no separators (ePO convention).
+  - name: raw_mac
+    type: faker
+    method: hex_16   # 16 hex chars; we slice via template below
+
+  - name: raw_mac_12
+    type: template
+    template: "{{raw_mac[:12]|lower}}"
+
+  - name: tz_bias
+    type: fixed
+    value: -480  # Asia/Taipei UTC+8 → bias -480
+
+  # ENS product version strings — real values from Trellix KB85494 +
+  # release notes. 10.7.0.3468 is GA build; 10.7.0.4660 and 10.7.0.5249
+  # are later 10.7 patches. 10.6.1.1190 is end-of-life 10.6 (still in
+  # the field at customers that pinned the major).
+  - name: ens_product_version
+    type: weighted_choice
+    choices:
+      "10.7.0.3468": 0.30
+      "10.7.0.4660": 0.30
+      "10.7.0.5249": 0.20
+      "10.6.1.1190": 0.20
+
+  - name: product_family
+    type: fixed
+    value: "TVD"   # ENS Threat Prevention always reports ProductFamily=TVD
+
+  # Analyzer code — ENS module identifier emitted in <Analyzer> tag.
+  # ENDP_AM_xxxx = ENS Threat Prevention (Anti-Malware); ENDP_FW_xxxx =
+  # Firewall; ENDP_WC_xxxx = Web Control; ENDP_ATP_xxxx = Adaptive Threat
+  # Protection; AMSI = AntiMalware Scan Interface (script).
+  - name: analyzer_code
+    type: weighted_choice
+    choices:
+      "ENDP_AM_1060":  0.50   # ENS Threat Prevention On-Access (10.6/10.7)
+      "ENDP_AM_1070":  0.20   # ENS 10.7 Anti-Malware
+      "ENDP_AMSI_1000": 0.10  # ENS AMSI integration
+      "ENDP_ATP_1090": 0.10   # Adaptive Threat Protection
+      "ENDP_AM_1054":  0.10   # legacy ENS 10.5 anti-malware
+
+  # AnalyzerName — literal full product string per real samples.
+  - name: analyzer_name
+    type: fixed
+    value: "McAfee Endpoint Security"
+
+  - name: analyzer_dat_version
+    type: int_range
+    min: 10200
+    max: 10500   # DAT pattern number — runs ~10000+ for ENS
+
+  - name: analyzer_engine_version
+    type: weighted_choice
+    choices:
+      "6010.8670": 0.40
+      "6700.9999": 0.30
+      "6300.9999": 0.30
+
+  # AnalyzerDetectionMethod — literal strings from ENS Threat Prevention
+  # docs + Trellix community samples + Splunk Add-on lookups.
+  - name: analyzer_detection_method
+    type: weighted_choice
+    choices:
+      "On-Access Scan":              0.45
+      "On-Demand Scan":              0.20
+      "Real Protect":                0.10
+      "Adaptive Threat Protection":  0.10
+      "Self Protection":             0.05
+      "Memory Scan":                 0.05
+      "Exploit Prevention":          0.05
+
+  # ThreatName — real McAfee/Trellix vendor naming patterns:
+  #   Artemis!<MD5-12>      — GTI cloud heuristic catch (confirmed in
+  #                           Trellix KB97027 + KB65525)
+  #   RDN/Generic.<variant> — RDN ("real-time defense network") PUP class
+  #                           (confirmed in Trellix community RDN/Generic.com)
+  #   Generic <Type>.<id>   — ENS engine generic family
+  #                           (Generic Trojan.ju / Generic Exploit.a — observed)
+  #   PWS-<Family>          — password-stealer family
+  #   Exploit-CVE<id>.<v>   — CVE-targeted exploit (Exploit-CVE2016-0189.d)
+  #   Ransom-<Family>!<h>   — ransomware family with hash variant
+  #   Trojan-<Family>!<h>   — trojan family with hash variant
+  #   <Platform>/<Family>.<v> — JS/Phish-A.qx, W32/Downadup.gen!c
+  - name: threat_name
+    type: weighted_choice
+    choices:
+      "Artemis!12345ABCDEF0":             0.18
+      "RDN/Generic.PWS!a":                0.13
+      "RDN/Generic.dx":                   0.08
+      "Generic Trojan.ju":                0.08
+      "Generic Exploit.a":                0.05
+      "PWS-Zbot.gen.bj":                  0.07
+      "Exploit-CVE2016-0189.d":           0.05
+      "Ransom-Conti!1234567890ab":        0.08
+      "Ransom-LockBit!a1b2c3d4e5f6":      0.07
+      "Ransom-Robin.y":                   0.05
+      "Trojan-FBJK!1234567890AB":         0.05
+      "W32/Downadup.gen!c":               0.04
+      "JS/Phish-A.qx":                    0.04
+      "PUP-FAM!a1b2c3d4":                 0.03
+
+  # ThreatType — ePO XML uses lowercase short tokens (per Chronicle parser
+  # mapping + Splunk add-on lookups). Distinct from ThreatCategory.
+  - name: threat_type
+    type: weighted_choice
+    choices:
+      "trojan":     0.30
+      "virus":      0.18
+      "ransom":     0.18
+      "worm":       0.07
+      "exploit":    0.07
+      "pup":        0.07
+      "spyware":    0.05
+      "backdoor":   0.04
+      "downloader": 0.04
+
+  # ThreatCategory — Trellix taxonomy strings (Chronicle parser + KB54677).
+  # Always dotted lowercase form: av.detect.<class>, hip.shielding.<class>.
+  - name: threat_category
+    type: weighted_choice
+    choices:
+      "av.detect.virus":         0.35
+      "av.detect.trojan":        0.20
+      "av.detect.ransom":        0.15
+      "av.detect.pup":           0.10
+      "av.detect.adware":        0.05
+      "av.detect.worm":          0.05
+      "hip.shielding":           0.05
+      "atp.suspicious_behavior": 0.05
+
+  # ThreatSeverity — 1..7 in EPOEvents schema (1=Informational, 2=Low,
+  # 3=Medium, 4=Major, 5=Critical, 7=Highest). AV detects are usually 2-5.
+  - name: threat_severity
+    type: weighted_choice
+    choices:
+      "2": 0.20
+      "3": 0.35
+      "4": 0.30
+      "5": 0.15
+
+  # Severity (Event header) — duplicates ThreatSeverity in practice.
+  - name: event_severity
+    type: template
+    template: "{{threat_severity}}"
+
+  # EventID / ThreatEventID — McAfee ENS threat-prevention event IDs.
+  # Range 1027..1100 covers most malware detection / cleanup events per
+  # Trellix KB85494 (Complete list of event IDs for Endpoint Security):
+  #   1027 = "Detected Threat"  (canonical AV signature hit)
+  #   1034 = "Threat clean failed"
+  #   1035 = "Threat deleted"
+  #   1036 = "Threat cleaned"
+  #   1037 = "Threat quarantined"
+  #   1038 = "Threat denied access"
+  #   1059 = "Unwanted program detected"
+  #   1078 = "Threat detected (would have blocked)"
+  #   1092 = "Solidcore: Test send"
+  #   1095 = "Behavior: <event>"
+  - name: threat_event_id
+    type: weighted_choice
+    choices:
+      "1027": 0.35   # Detected Threat
+      "1036": 0.18   # Threat cleaned
+      "1035": 0.15   # Threat deleted
+      "1037": 0.12   # Threat quarantined
+      "1038": 0.06   # Denied access
+      "1059": 0.06   # Unwanted program detected
+      "1034": 0.04   # Clean failed
+      "1078": 0.04   # Would have blocked (detect-only)
+
+  # ThreatActionTaken — literal ENS strings from Trellix Threat Prevention
+  # Product Guide + Splunk add-on lookups + Chronicle parser mappings:
+  #   "deleted" "cleaned" "quarantined" "denied access" "blocked"
+  #   "none" (== no action taken, drives 未刪除)
+  #   "would have deleted" / "would have blocked" (observe-only mode)
+  #   "continue" (HIPS pass-through)
+  #   "moved" (legacy VSE quarantine string)
+  - name: threat_action_taken
+    type: weighted_choice
+    choices:
+      "deleted":              0.30
+      "cleaned":              0.25
+      "quarantined":          0.15
+      "blocked":              0.08
+      "denied access":        0.07
+      "would have blocked":   0.05
+      "would have deleted":   0.03
+      "none":                 0.07   # drives 未刪除 scenario
+
+  - name: threat_handled
+    type: weighted_choice
+    choices:
+      "True":  0.85
+      "False": 0.15   # drives 未刪除 / unresolved scenario
+
+  - name: user_name
+    type: choice
+    choices: ${params.user_pool}
+
+  - name: domain_user
+    type: template
+    template: "{{params.domain_name}}\\\\{{user_name}}"
+
+  - name: target_file_name
+    type: weighted_choice
+    choices:
+      "C:\\\\Users\\\\Public\\\\Downloads\\\\invoice_2026.exe":              0.18
+      "C:\\\\Users\\\\alice\\\\AppData\\\\Local\\\\Temp\\\\update.exe":      0.15
+      "C:\\\\inetpub\\\\wwwroot\\\\uploads\\\\shell.aspx":                   0.13
+      "C:\\\\Program Files\\\\McAfee\\\\quarantine\\\\threat.bin":           0.10
+      "D:\\\\Share\\\\HR\\\\readme_decrypt.txt":                             0.12
+      "C:\\\\Windows\\\\Temp\\\\7z_extract\\\\payload.dll":                  0.12
+      "C:\\\\Windows\\\\System32\\\\drivers\\\\malicious.sys":               0.10
+      "C:\\\\Users\\\\bob\\\\Desktop\\\\fake_invoice.pdf.exe":               0.10
+
+  # SourceProcessName — process that triggered the detection (parent of
+  # the access). Real ePO XML carries this as <SourceProcessName>.
+  - name: source_process_name
+    type: weighted_choice
+    choices:
+      "C:\\\\Windows\\\\explorer.exe":                                     0.30
+      "C:\\\\Program Files\\\\Microsoft Office\\\\WINWORD.EXE":            0.15
+      "C:\\\\Program Files\\\\Internet Explorer\\\\iexplore.exe":          0.10
+      "C:\\\\Program Files\\\\Mozilla Firefox\\\\firefox.exe":             0.10
+      "C:\\\\Program Files (x86)\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe": 0.15
+      "C:\\\\Windows\\\\System32\\\\powershell.exe":                       0.10
+      "C:\\\\Windows\\\\System32\\\\svchost.exe":                          0.05
+      "C:\\\\ProgramData\\\\dropper\\\\dropper.exe":                       0.05
+
+template: |-
+  <{{pri}}>1 {{rfc5424_ts}} {{epo_host}} EPOEvents - EventFwd [agentInfo@3401 tenantId="{{tenant_id}}"] <?xml version="1.0" encoding="UTF-8"?><EPOevent><MachineInfo><MachineName>{{machine_name}}</MachineName><AgentGUID>{{agent_guid}}</AgentGUID><IPAddress>{{ip_address}}</IPAddress><OSName>{{os_name}}</OSName><UserName>{{user_name}}</UserName><TimeZoneBias>{{tz_bias}}</TimeZoneBias><RawMACAddress>{{raw_mac_12}}</RawMACAddress></MachineInfo><SoftwareInfo ProductName="McAfee Endpoint Security" ProductVersion="{{ens_product_version}}" ProductFamily="{{product_family}}"><CommonFields><Analyzer>{{analyzer_code}}</Analyzer><AnalyzerName>{{analyzer_name}}</AnalyzerName><AnalyzerVersion>{{ens_product_version}}</AnalyzerVersion><AnalyzerHostName>{{machine_name}}</AnalyzerHostName><AnalyzerDATVersion>{{analyzer_dat_version}}</AnalyzerDATVersion><AnalyzerEngineVersion>{{analyzer_engine_version}}</AnalyzerEngineVersion><AnalyzerDetectionMethod>{{analyzer_detection_method}}</AnalyzerDetectionMethod></CommonFields><Event><EventID>{{threat_event_id}}</EventID><Severity>{{event_severity}}</Severity><GMTTime>{{gmt_ts}}</GMTTime><ThreatCategory>{{threat_category}}</ThreatCategory><ThreatEventID>{{threat_event_id}}</ThreatEventID><ThreatSeverity>{{threat_severity}}</ThreatSeverity><ThreatName>{{threat_name}}</ThreatName><ThreatType>{{threat_type}}</ThreatType><DetectedUTC>{{gmt_ts}}</DetectedUTC><TargetHostName>{{machine_name}}</TargetHostName><TargetUserName>{{domain_user}}</TargetUserName><TargetFileName>{{target_file_name}}</TargetFileName><SourceProcessName>{{source_process_name}}</SourceProcessName><ThreatActionTaken>{{threat_action_taken}}</ThreatActionTaken><ThreatHandled>{{threat_handled}}</ThreatHandled></Event></SoftwareInfo></EPOevent>

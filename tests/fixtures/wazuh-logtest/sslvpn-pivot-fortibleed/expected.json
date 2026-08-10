@@ -1,0 +1,25 @@
+{
+  "join_user": "jchen",
+  "correlation_window_seconds": 900,
+  "samples": [
+    {
+      "file": "s3-sslvpn-auth-success.log",
+      "stage": "S3",
+      "expected_rule_id": "132080",
+      "expected_level_min": 8,
+      "expected_groups": ["authentication_success", "fortibleed"]
+    },
+    {
+      "file": "s4-4720-account-create.log",
+      "stage": "S4",
+      "expected_rule_id": "131021",
+      "expected_level_min": 12,
+      "expected_groups": ["account_changed", "attack"]
+    }
+  ],
+  "expected_correlation": {
+    "wazuh_rule_id": "132085",
+    "elk": "sequence by user.name maxspan=15m [tunnel-up] [4720]",
+    "expected_level_min": 12
+  }
+}

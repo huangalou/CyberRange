@@ -1,0 +1,260 @@
+vendor: paloalto
+product: panos
+version: "10.0"
+log_type: threat-cef
+description: |
+  PAN-OS 10.0 Threat log emitted in CEF format per the PA 10.0 admin
+  guide Table-4 (Threat logs). Threat logs fire when an enabled
+  Security Profile detects a match: Antivirus, Anti-Spyware,
+  Vulnerability Protection, URL Filtering (when logged here),
+  File Blocking, Data Filtering, or WildFire verdict.
+
+  See also `traffic-cef.yaml` for the full architectural rationale +
+  customization mechanism (per-dispatch cef_extension_overrides /
+  cef_header_overrides). This catalog reuses the same machinery.
+
+  Source-of-truth:
+    - PAN-OS 10.0 CEF Configuration Guide:
+        https://docs.paloaltonetworks.com/content/dam/techdocs/en_US/pdf/cef/pan-os-10-0-cef-configuration-guide.pdf
+
+  Wire shape:
+    <PRI>MMM dd YYYY HH:MM:SS host CEF:0|Palo Alto Networks|PAN-OS|<ver>|<subtype>|THREAT|<sev>|<ext>
+
+  - SignatureID = threat log subtype: vulnerability | spyware | virus |
+    wildfire | url | data | file
+  - Name = "THREAT"
+  - Severity = CEF 0-10; PA emits high for `critical`, etc.
+
+format: cef
+transport: [udp_syslog, tcp_syslog, file, beats]
+
+ocsf:
+  class: security_finding
+  category_uid: 2
+  class_uid: 2004
+
+cef_header:
+  device_vendor:  "Palo Alto Networks"
+  device_product: "PAN-OS"
+  device_version: "10.0.0"
+  signature_id:   "vulnerability"
+  name:           "THREAT"
+  severity:       7
+
+cef_mapping:
+  - { pa_field: receive_time,        cef_key: rt }
+  - { pa_field: serial,              cef_key: deviceExternalId }
+  - { pa_field: log_subtype,         cef_key: PanOSLogSubtype }
+  - { pa_field: src_ip,              cef_key: src }
+  - { pa_field: dst_ip,              cef_key: dst }
+  - { pa_field: natsrc_ip,           cef_key: sourceTranslatedAddress }
+  - { pa_field: natdst_ip,           cef_key: destinationTranslatedAddress }
+  - { pa_field: rule_name,           cef_key: PanOSRuleName }
+  - { pa_field: src_user,            cef_key: suser }
+  - { pa_field: dst_user,            cef_key: duser }
+  - { pa_field: application,         cef_key: app }
+  - { pa_field: virtual_system,      cef_key: PanOSVsys }
+  - { pa_field: src_zone,            cef_key: PanOSSrcZone }
+  - { pa_field: dst_zone,            cef_key: PanOSDstZone }
+  - { pa_field: inbound_interface,   cef_key: deviceInboundInterface }
+  - { pa_field: outbound_interface,  cef_key: deviceOutboundInterface }
+  - { pa_field: session_id,          cef_key: externalId }
+  - { pa_field: src_port,            cef_key: spt }
+  - { pa_field: dst_port,            cef_key: dpt }
+  - { pa_field: protocol,            cef_key: proto }
+  - { pa_field: action,              cef_key: act }
+  - { pa_field: miscellaneous,       cef_key: request }
+  - { pa_field: threat_name,         cef_key: cs1 }
+  - { pa_field: threat_id,           cef_key: cn1 }
+  - { pa_field: category,            cef_key: cat }
+  - { pa_field: pa_severity,         cef_key: PanOSThreatSeverity }
+  - { pa_field: direction,           cef_key: PanOSDirection }
+  - { pa_field: src_country,         cef_key: PanOSSrcLocation }
+  - { pa_field: dst_country,         cef_key: PanOSDstLocation }
+  - { pa_field: content_type,        cef_key: PanOSContentType }
+  - { pa_field: http_method,         cef_key: requestMethod }
+  - { pa_field: user_agent,          cef_key: requestClientApplication }
+  - { pa_field: file_name,           cef_key: fname }
+  - { pa_field: file_hash,           cef_key: fileHash }
+
+params:
+  hostname:     { default: "PA-VM-01.example.local" }
+  serial:       { default: "001234567890" }
+  src_cidr:     { default: "10.50.0.0/24" }
+  dst_pool:
+    default:
+      - "8.8.8.8"
+      - "1.1.1.1"
+      - "151.101.1.140"
+      - "104.18.32.7"
+      - "203.0.113.99"
+
+fields:
+  - { name: pri, type: fixed, value: 134 }
+  - { name: rfc3164_ts, type: datetime, format: "%b %d %Y %H:%M:%S" }
+  - { name: hostname, type: param, param: hostname }
+
+  - { name: receive_time, type: datetime, format: "%b %d %Y %H:%M:%S" }
+  - { name: serial,       type: param, param: serial }
+  - name: log_subtype
+    type: weighted_choice
+    choices:
+      vulnerability: 0.35
+      spyware:       0.20
+      virus:         0.15
+      url:           0.15
+      file:          0.08
+      wildfire:      0.05
+      data:          0.02
+  - name: src_ip
+    type: cidr
+    cidr: ${params.src_cidr}
+  - name: dst_ip
+    type: choice
+    choices: ${params.dst_pool}
+  - { name: natsrc_ip, type: fixed, value: "0.0.0.0" }
+  - { name: natdst_ip, type: fixed, value: "0.0.0.0" }
+  - name: rule_name
+    type: weighted_choice
+    choices:
+      "outbound-web":     0.35
+      "dmz-to-inside":    0.20
+      "block-malicious":  0.15
+      "any-allow":        0.20
+      "default-deny":     0.10
+  - name: src_user
+    type: weighted_choice
+    choices:
+      "":                  0.70
+      'CORP\alice':        0.10
+      'CORP\bob':          0.10
+      'CORP\svc-deploy':   0.10
+  - { name: dst_user, type: fixed, value: "" }
+  - name: application
+    type: weighted_choice
+    choices:
+      "web-browsing":  0.40
+      "ssl":           0.30
+      "smtp":          0.10
+      "dns-base":      0.10
+      "ftp":           0.05
+      "ms-rdp":        0.05
+  - { name: virtual_system, type: fixed, value: "vsys1" }
+  - name: src_zone
+    type: weighted_choice
+    choices: { trust: 0.70, dmz: 0.30 }
+  - name: dst_zone
+    type: weighted_choice
+    choices: { untrust: 0.85, trust: 0.15 }
+  - name: inbound_interface
+    type: weighted_choice
+    choices: { "ethernet1/1": 0.50, "ethernet1/2": 0.30, "ethernet1/3": 0.20 }
+  - name: outbound_interface
+    type: weighted_choice
+    choices: { "ethernet1/3": 0.50, "ethernet1/4": 0.30, "ethernet1/18.1": 0.20 }
+  - { name: session_id, type: int_range, min: 100000, max: 9999999 }
+  - { name: src_port, type: int_range, min: 1024, max: 65535 }
+  - name: dst_port
+    type: weighted_choice
+    choices: { "443": 0.55, "80": 0.30, "25": 0.05, "22": 0.05, "21": 0.05 }
+  - name: protocol
+    type: weighted_choice
+    choices: { tcp: 0.92, udp: 0.08 }
+  - name: action
+    type: weighted_choice
+    choices:
+      "alert":         0.40
+      "block-url":     0.20
+      "reset-both":    0.15
+      "drop":          0.15
+      "block":         0.10
+  - name: miscellaneous
+    type: weighted_choice
+    choices:
+      "evil.example.com/malware.exe":      0.25
+      "phishing-site.example.org/login":   0.20
+      "tracker.adnet.example.net/px.gif":  0.15
+      "files.dropbox.example.com/file":    0.10
+      "github.com/owner/repo.git":         0.10
+      "api.openai.example.com/v1/chat":    0.10
+      "raw.malicious.example.io/exploit.bin": 0.10
+  - name: threat_name
+    type: weighted_choice
+    choices:
+      "Apache Log4j Remote Code Execution Vulnerability": 0.20
+      "Suspicious User-Agent Strings":                    0.15
+      "Generic ML AV Detection":                          0.15
+      "DNS C2 Beacon":                                    0.10
+      "Phishing URL Block":                               0.10
+      "Cobalt Strike Beacon":                             0.10
+      "Mimikatz Credential Dump":                         0.10
+      "Generic.Trojan":                                   0.10
+  - { name: threat_id, type: int_range, min: 30000, max: 99999 }
+  - name: category
+    type: weighted_choice
+    choices:
+      "command-and-control":    0.25
+      "phishing":               0.20
+      "malware":                0.20
+      "bruteforce":             0.10
+      "code-execution":         0.10
+      "scanning":               0.10
+      "spyware":                0.05
+  - name: pa_severity
+    type: weighted_choice
+    choices:
+      "critical": 0.15
+      "high":     0.25
+      "medium":   0.30
+      "low":      0.20
+      "informational": 0.10
+  - name: direction
+    type: weighted_choice
+    choices: { "client-to-server": 0.70, "server-to-client": 0.30 }
+  - name: src_country
+    type: weighted_choice
+    choices: { TW: 0.10, RU: 0.30, CN: 0.20, US: 0.15, NG: 0.10, KP: 0.05, IR: 0.05, VN: 0.05 }
+  - name: dst_country
+    type: weighted_choice
+    choices: { TW: 0.40, US: 0.30, JP: 0.10, NL: 0.05, DE: 0.05, IE: 0.05, SG: 0.05 }
+  - name: content_type
+    type: weighted_choice
+    choices:
+      "application/octet-stream":  0.30
+      "text/html":                 0.25
+      "application/x-msdownload":  0.15
+      "application/zip":           0.10
+      "image/png":                 0.10
+      "application/pdf":           0.10
+  - name: http_method
+    type: weighted_choice
+    choices: { GET: 0.65, POST: 0.30, PUT: 0.03, DELETE: 0.02 }
+  - name: user_agent
+    type: weighted_choice
+    choices:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36": 0.40
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2) AppleWebKit/605.1.15 Safari/605.1.15": 0.20
+      "curl/7.88.1":         0.15
+      "python-requests/2.31.0": 0.10
+      "Cobalt Strike":       0.05
+      "Mozilla/5.00 (Nikto/2.5.0)": 0.05
+      "sqlmap/1.7.12":       0.05
+  - name: file_name
+    type: weighted_choice
+    choices:
+      "":               0.40
+      "malware.exe":    0.20
+      "invoice.pdf":    0.15
+      "update.dll":     0.10
+      "exploit.bin":    0.08
+      "screenshot.png": 0.07
+  - name: file_hash
+    type: weighted_choice
+    choices:
+      "":  0.40
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef": 0.20
+      "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210": 0.20
+      "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef": 0.20
+
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} CEF:0|{{cef_header.device_vendor}}|{{cef_header.device_product}}|{{cef_header.device_version}}|{{cef_header.signature_id}}|{{cef_header.name}}|{{cef_header.severity}}|{{cef_extensions}}

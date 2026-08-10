@@ -1,0 +1,398 @@
+vendor: trendmicro
+product: apex-one
+version: "14.x"
+log_type: webrep.malicious_url
+description: |
+  Trend Micro Apex One 14.x Web Reputation Service (WRS) event forwarded
+  by Apex Central Log Forwarder to a syslog SIEM. Wire format is CEF over
+  RFC3164 syslog with eventid `WB:36` ("Web reputation" Filter/Blocking
+  Type per the official Apex Central CEF Filter/Blocking Type Mapping
+  Table; `cat=36` mirrors that code). Apex Central documents this log
+  family as "CEF Web Security Logs" — Web Reputation is one Filter/
+  Blocking Type among many on the same wire format; siblings such as
+  `WB:32` URL blocking, `WB:33` URL filtering, `WB:7` User-defined share
+  the same CEF skeleton but emit different `cat=` codes.
+
+  Header pname is "Apex Central" (rebrand of "Control Manager"). Older
+  agents and pre-2019 deployments still emit
+  `CEF:0|Trend Micro|Control Manager|7.0|…` — out of scope here.
+
+  Source-of-truth for wire format (all fetched 2026-05-14):
+    - Trend Micro Apex Central Online Help — CEF Web Security Logs
+      (authoritative field mapping table + canonical raw sample with
+      WB:7 / cat=7 — same wire format, different Filter/Blocking Type):
+      https://docs.trendmicro.com/en-us/documentation/article/trend-micro-apex-central-2019-online-help-cef-web-security-log
+    - Apex Central CEF Filter/Blocking Type Mapping Table
+      (authoritative cat= code → meaning; 36 = "Web reputation",
+      32 = "URL blocking", 33 = "URL filtering", 7 = "User-defined"):
+      https://docs.trendmicro.com/en-us/documentation/article/trend-micro-apex-central-patch-4-cef-filter-blocking-
+    - Apex Central CEF Protocol Mapping Table
+      (app= numeric vocab: 5=HTTP, 32=HTTPS, 6=FTP, ...):
+      https://docs.trendmicro.com/en-us/documentation/article/apex-central-online-help-cef-protocol-table
+    - Apex Central Patch 3 CEF Web Security Logs
+      (independent confirmation of the same field list + reason A–G
+      letter vocabulary: A=APT / B=Social engineering /
+      C=Vulnerability / D=Lateral movement / E=Unknown /
+      F=C&C / G=Ransomware):
+      https://docs.trendmicro.com/en-us/documentation/article/trend-micro-apex-central-patch-3-cef-web-security-log
+    - Apex One Web Reputation Risk Level vocabulary
+      (Dangerous / Highly suspicious / Suspicious):
+      https://servicecentral-prod.trendmicro.com/en-us/documentation/article/trend-micro-apex-one-service-pack-1-online-help-web-reputation
+
+  Real raw sample (verbatim from Apex Central Patch 3 CEF Web Security
+  Logs official docs — full extension list including reason / TMCM /
+  ApexCentralHost fields):
+    CEF:0|Trend Micro|Apex Central|2019|WB:7|7|3|deviceExternalId=38
+    rt=Nov 15 2017 08:43:57 GMT+00:00 app=17 cntLabel=AggregatedCount
+    cnt=1 dpt=80 act=1 src=10.1.128.46 cs1Label=SLF_PolicyName
+    cs1=External User Policy deviceDirection=2 cat=7 dvchost=ApexOneClient08
+    fname=test.txt request=http://www.violetsoft.net/counter/insert.php?dbserver\=db1&c_pcode\=25&c_pid\=funpop1&c_kind\=4&c_mac\=FE-ED-BE-EF-0C-E1
+    deviceFacility=Apex One shost=ABC-HOST-WKS12 reason=G
+    deviceNtDomain=APEXTMCM dntdom=OSCEDomain1
+    TMCMLogDetectedHost=ABC-HOST-WKS12 TMCMLogDetectedIP=10.1.128.46
+    ApexCentralHost=TW-CHRIS-W2019
+    devicePayloadId=1C00290C0360-9CDE11EB-D4B8-F51F-C697
+    TMCMdevicePlatform=Windows 7 6.1 (Build 7601) Service Pack 1
+
+  Note: the verbatim sample uses `WB:7` / `cat=7` ("User-defined")
+  because that's what Trend Micro chose to ship in the docs. This
+  catalog emits `WB:36` / `cat=36` ("Web reputation") because that
+  is the Filter/Blocking Type ArcSight rule 130036 is hunting —
+  identical wire skeleton, different Filter/Blocking Type code.
+  Real WRS samples in the wild also show `eventName=Web reputation`
+  (human-readable form) alongside `WB:36`.
+
+  SIEM rule mapping: target of rule 130036
+  「AV_TrendMicro_伺服器連線惡意網址_全區_2.0」. Companion to the
+  `av-detect.yaml` catalog in this same vendor/version dir, which covers
+  the other 8 AV_TrendMicro rules. Since the rule fires only on
+  server hosts (伺服器), this catalog generates server-only events;
+  workstation traffic is out of scope.
+
+format: cef
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+detections:
+  wazuh:
+    # Wazuh built-in `cef` decoder parses the CEF header + extensions; the
+    # ArcSight-derived SOC-side rule id is preserved across the
+    # 2026-05-14 wire-format audit.
+    - decoder: cef
+    - rule_id: 130036  # AV_TrendMicro_伺服器連線惡意網址
+      level: 7
+  sigma:
+    - rule: trendmicro_apex_one_web_reputation
+      ref: https://github.com/SigmaHQ/sigma  # community contrib pending
+  elk_detection:
+    - kibana_rule_id: cef-web-reputation-block
+      severity: high
+
+mythos_alignment:
+  # R2 Initial Access via web (drive-by, malicious URL click)
+  # R3 C2 Egress — server reaching out to malicious infra
+  # PA10 Automated Response (Apex One blocks the request)
+  risk_refs: [R2, R3]
+  pa_refs: [PA10]
+  ttx_class: rapid
+
+regression:
+  # 500 events × server-only → all should resolve to a SRV-* / WEB-* / DB-* /
+  # APP-* hostname and exercise rule 130036 every time. Rule fires on
+  # cat=36 + dst hitting a known-bad URL; reputation score is bucketed
+  # by Severity Level (cn2: 100=High .. 900=Low) but rule does not gate
+  # on score, only on Filter/Blocking Type.
+  baseline_alert_count: 500
+  baseline_ttd_ms: 4000
+
+params:
+  syslog_host:
+    default: "apexcentral.lab.local"
+  apex_central_host:
+    default: "TW-APEXCENTRAL-01"
+  apex_central_domain:
+    default: "APEXTMCM"
+  apex_central_dntdom:
+    default: "OSCEDomain1"
+  apex_one_server:
+    default: "ApexOneServer01"
+  server_pool:
+    default:
+      - "SRV-FILE01"
+      - "SRV-DC01"
+      - "WEB-PRD-02"
+      - "DB-MSSQL-01"
+      - "APP-ERP-03"
+  server_subnet:
+    default: "10.0.50.0/24"
+  malicious_remote_pool:
+    default:
+      - "45.142.213.18"
+      - "194.165.16.99"
+      - "185.234.218.43"
+      - "103.224.182.247"
+      - "172.93.179.115"
+  user_pool:
+    default: ["alice", "svc_iis", "svc_app", "admin_b"]
+
+fields:
+  - name: pri
+    type: fixed
+    value: 134   # local0.info — Apex Central Syslog Forwarder default
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  # rt= inside CEF body uses "%b %d %Y %H:%M:%S GMT+00:00" — Apex Central
+  # always emits UTC with explicit "GMT+00:00" suffix per real samples.
+  - name: cef_ts
+    type: datetime
+    format: "%b %d %Y %H:%M:%S GMT+00:00"
+
+  # Affected endpoint (server-only per ArcSight rule 130036 scope).
+  - name: shost
+    type: choice
+    choices: ${params.server_pool}
+
+  # dvchost mirrors shost in real samples (the endpoint that initiated
+  # the blocked request). TMCMLogDetectedHost also duplicates this.
+  - name: src_ip
+    type: cidr
+    cidr: ${params.server_subnet}
+
+  - name: user_name
+    type: choice
+    choices: ${params.user_pool}
+
+  # Destination — remote malicious host
+  - name: dst_ip
+    type: choice
+    choices: ${params.malicious_remote_pool}
+
+  - name: dhost
+    type: weighted_choice
+    choices:
+      "malware-cdn.attacker.tld":      0.20
+      "c2.evilcorp.tld":               0.18
+      "phish-login.microsoft-365.io":  0.15
+      "fake-update.bank-sec.tld":      0.13
+      "downloads.payload-staging.tld": 0.12
+      "ad-fraud.tracker.tld":          0.12
+      "exploit-kit.malv4d.tld":        0.10
+
+  - name: request_path
+    type: weighted_choice
+    choices:
+      "/payload.exe":                     0.20
+      "/admin/console.php":               0.15
+      "/dl/setup.msi":                    0.13
+      "/feed/cmd?id=42":                  0.12
+      "/login.php?next=oauth_grant":      0.12
+      "/checkin?h=ENDPOINT":              0.10
+      "/static/jquery-3.6.1.min.js":      0.08
+      "/img/tracker.gif":                 0.10
+
+  # Protocol — per Apex Central Protocol Mapping Table:
+  #   5=HTTP, 32=HTTPS. WRS most frequently sees HTTPS now;
+  #   weighted 65/30/5 (HTTPS / HTTP / Unknown) to mirror reality.
+  - name: app_proto
+    type: weighted_choice
+    choices:
+      "32": 0.65   # HTTPS
+      "5":  0.30   # HTTP
+      "0":  0.05   # Unknown
+
+  - name: url_scheme
+    type: template
+    template: "{% if app_proto == '32' %}https{% else %}http{% endif %}"
+
+  - name: url
+    type: template
+    template: "{{url_scheme}}://{{dhost}}{{request_path}}"
+
+  # Server port — 80 for HTTP, 443 for HTTPS.
+  - name: dpt
+    type: template
+    template: "{% if app_proto == '32' %}443{% else %}80{% endif %}"
+
+  # WRS Reputation Score (cn3 / ReputationScore label per docs).
+  # Apex One scale: 0–100, LOWER = riskier. All-malicious for this
+  # catalog → 1..49.
+  - name: reputation_score
+    type: int_range
+    min: 1
+    max: 49
+
+  # SLF_SeverityLevel (cn2) — Apex Central documented vocab:
+  #   100=High, 300=Medium high, 500=Medium, 700=Medium low, 900=Low.
+  # WRS hits on malicious URLs skew High / Medium-high.
+  - name: severity_level
+    type: weighted_choice
+    choices:
+      "100": 0.50   # High
+      "300": 0.30   # Medium high
+      "500": 0.15   # Medium
+      "700": 0.05   # Medium low
+
+  # CLF_SeverityCode (cn1) — 0..4 (Unknown / Information / Warning /
+  # Error / Critical) per docs. WRS blocks usually Error (3) or
+  # Critical (4); occasional Warning (2) for "Monitor" actions.
+  - name: severity_code
+    type: weighted_choice
+    choices:
+      "3": 0.55   # Error
+      "4": 0.35   # Critical
+      "2": 0.10   # Warning
+
+  # Header severity (right of pipe in CEF prefix) — real samples
+  # consistently show 3 for WRS events (parallels AV samples).
+  - name: header_severity
+    type: weighted_choice
+    choices:
+      "3": 0.70
+      "5": 0.20
+      "7": 0.10
+
+  # CEF deviceExternalId — Apex Central internal endpoint id
+  # (integer per real samples: 38, 104, 3541).
+  - name: device_external_id
+    type: int_range
+    min: 100
+    max: 9999
+
+  # Action — per Apex Central CEF Web Security Logs Action vocab
+  # (0=Unknown / 1=Pass / 2=Block / 3=Monitor / 4=Delete /
+  # 5=Quarantine / 6=Warn / 7=Warn and continue / 8=Override).
+  # WRS rule 130036 fires on Block (2) primarily; Monitor (3) and
+  # Warn (6) are also valid Apex One responses.
+  - name: act_code
+    type: weighted_choice
+    choices:
+      "2": 0.75   # Block
+      "3": 0.15   # Monitor
+      "6": 0.10   # Warn
+
+  # Traffic direction — 0=None, 1=Inbound, 2=Outbound. Server reaching
+  # out to malicious infra = Outbound (2). Occasional 0 for legacy
+  # agents that don't populate direction.
+  - name: device_direction
+    type: weighted_choice
+    choices:
+      "2": 0.92   # Outbound
+      "0": 0.08
+
+  # CLF_ReasonCode (cs4) — for WRS the documented vocab includes
+  # "access" (URL access blocked). Real samples consistently show
+  # "access" for outbound URL block events.
+  - name: reason_code
+    type: fixed
+    value: "access"
+
+  # CLF_ReasonCodeSource (cs5) — for WRS this is always "web" per docs.
+  - name: reason_code_source
+    type: fixed
+    value: "web"
+
+  # SLF_PolicyName (cs1) — Apex Central Web Reputation policy name
+  # the URL matched. Real samples show admin-defined names like
+  # "External User Policy"; lab catalog uses representative names.
+  - name: policy_name
+    type: weighted_choice
+    choices:
+      "Server Web Reputation Policy":  0.45
+      "Critical Asset Web Policy":     0.30
+      "External Server Policy":        0.15
+      "Default Web Reputation Policy": 0.10
+
+  # Blocking Rule (cs2 / Blocking_Rule label) — describes the
+  # specific match logic. Real samples show strings like
+  # "content filter"; for WRS the typical values map to Risk Level
+  # buckets.
+  - name: blocking_rule
+    type: weighted_choice
+    choices:
+      "Dangerous":          0.50
+      "Highly suspicious":  0.30
+      "Suspicious":         0.20
+
+  # reason letter (A..G) — Apex Central documented vocab:
+  #   A=APT / B=Social engineering / C=Vulnerability /
+  #   D=Lateral movement / E=Unknown / F=C&C / G=Ransomware.
+  # WRS verbatim sample in docs shows G. We bias toward the
+  # threat categories most likely to be malicious-URL related.
+  - name: reason_letter
+    type: weighted_choice
+    choices:
+      "G": 0.30   # Ransomware (drive-by, payload)
+      "F": 0.25   # C&C
+      "B": 0.20   # Social engineering (phishing)
+      "E": 0.15   # Unknown
+      "A": 0.05   # APT
+      "C": 0.03   # Vulnerability
+      "D": 0.02   # Lateral movement
+
+  # Process that initiated the request (deviceProcessName per docs).
+  - name: process_name
+    type: weighted_choice
+    choices:
+      "C:\\Program Files\\Internet Explorer\\iexplore.exe":              0.15
+      "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe": 0.25
+      "C:\\Windows\\System32\\svchost.exe":                              0.20
+      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe":       0.15
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe":   0.10
+      "C:\\Windows\\System32\\curl.exe":                                 0.08
+      "C:\\Windows\\System32\\bitsadmin.exe":                            0.07
+
+  # File requested (fname) — Apex Central docs show fname=test.txt in
+  # the canonical sample. Mirror the request_path final segment.
+  - name: file_name
+    type: weighted_choice
+    choices:
+      "payload.exe":     0.20
+      "console.php":     0.15
+      "setup.msi":       0.13
+      "cmd":             0.12
+      "login.php":       0.12
+      "checkin":         0.10
+      "jquery.min.js":   0.08
+      "tracker.gif":     0.10
+
+  # Aggregated count — Apex Central rolls multiple identical events
+  # into one with cnt > 1. Most WRS events are cnt=1; a long-tail
+  # of repeated attempts (C&C beacon, retry) hits cnt > 1.
+  - name: agg_count
+    type: weighted_choice
+    choices:
+      "1":  0.70
+      "3":  0.15
+      "10": 0.10
+      "25": 0.05
+
+  - name: device_payload_id
+    type: faker
+    method: uuid4
+
+  # Apex One agent platform — real samples emit full Windows
+  # version-build string in TMCMdevicePlatform.
+  - name: platform_string
+    type: weighted_choice
+    choices:
+      "Windows Server 2022 Datacenter 10.0 (Build 20348)":  0.35
+      "Windows Server 2019 Datacenter 10.0 (Build 17763)":  0.30
+      "Windows Server 2016 Standard 10.0 (Build 14393)":    0.20
+      "Windows Server 2012 R2 Standard 6.3 (Build 9600)":   0.15
+
+# Template emits real Apex Central WRS CEF wire format. Field order
+# matches the canonical raw sample in the description block:
+#   <PRI>RFC3164_TS HOST CEF:0|Trend Micro|Apex Central|2019|WB:36|Web reputation|<sev>|<extensions>
+# All CEF extension keys (cn1..cn3, cs1..cs5, c6a2 etc) and their
+# Label values are verbatim from the official Apex Central CEF Web
+# Security Logs mapping table. cat=36 + WB:36 = "Web reputation"
+# Filter/Blocking Type per the Filter/Blocking Type Mapping Table.
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{params.syslog_host}} CEF:0|Trend Micro|Apex Central|2019|WB:36|Web reputation|{{header_severity}}|deviceExternalId={{device_external_id}} rt={{cef_ts}} app={{app_proto}} cntLabel=AggregatedCount cnt={{agg_count}} dpt={{dpt}} act={{act_code}} src={{src_ip}} cs1Label=SLF_PolicyName cs1={{policy_name}} deviceDirection={{device_direction}} cat=36 dvchost={{shost}} cn1Label=CLF_SeverityCode cn1={{severity_code}} fname={{file_name}} request={{url}} deviceFacility=Apex One duser={{params.apex_central_domain}}\\{{user_name}} shost={{shost}} cs2Label=Blocking_Rule cs2={{blocking_rule}} deviceProcessName={{process_name}} cn3Label=ReputationScore cn3={{reputation_score}} dst={{dst_ip}} cn2Label=SLF_SeverityLevel cn2={{severity_level}} cs4Label=CLF_ReasonCode cs4={{reason_code}} cs5Label=CLF_ReasonCodeSource cs5={{reason_code_source}} reason={{reason_letter}} deviceNtDomain={{params.apex_central_domain}} dntdom={{params.apex_central_dntdom}} TMCMLogDetectedHost={{shost}} TMCMLogDetectedIP={{src_ip}} ApexCentralHost={{params.apex_central_host}} devicePayloadId={{device_payload_id}} TMCMdevicePlatform={{platform_string}}

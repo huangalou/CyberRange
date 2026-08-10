@@ -1,0 +1,586 @@
+vendor: fortinet
+product: fortiweb
+version: "7.x"
+log_type: attack
+description: |
+  Fortinet FortiWeb 7.x Attack Log — native Fortinet key=value syslog
+  wire format, RFC3164 wrapped. Each event corresponds to one entry in
+  the FortiWeb attack log table (Log & Report → Log Access → Attack).
+
+  Wire-format provenance (verbatim raw samples extracted from
+  Fortinet-published FortiWeb 7.x Log Reference PDFs and the public
+  attack_logs documentation):
+
+    date=2019-08-03 time=10:16:34 log_id=20000001 msg_id=000000225550
+    device_id=FV-1KE4417900002 vd="root"
+    timezone="(GMT+8:00)Beijing,ChongQing,HongKong,Urumgi"
+    timezone_dayst="GMTa-8" type=attack pri=alert
+    main_type="Allow Method" sub_type="N/A" trigger_policy=""
+    severity_level=Low proto=tcp service=http action=Alert_Deny
+    policy="FWB_Policy_Default_AutoTest" src=10.200.10.100
+    src_port=61330 dst=10.101.0.1 dst_port=80 http_method=trace
+    http_url="/74lyJ2d0QY" http_host="fortinet.fortiweb.com"
+    http_agent="python-for-fortiweb" http_session_id=none
+    msg="HTTP Method Violation" signature_subclass="N/A"
+    signature_id="N/A" signature_cve_id="N/A" srccountry="Reserved"
+    content_switch_name="none" server_pool_name="FWB_server_pool"
+    false_positive_mitigation="none" user_name="Unknown"
+    monitor_status="Disabled" http_refer="none" http_version="1.x"
+    dev_id="none" threat_weight=10 history_threat_weight=0
+
+    date=2016-02-19 time=11:23:45 log_id=20000010 msg_id=000139289631
+    device_id=FV-1KD3A15800072 vd="root" type=attack
+    subtype="waf_signature_detection" severity_level=Medium proto=tcp
+    service=http action=Alert src=172.22.6.234 src_port=60554
+    dst=10.0.9.13 dst_port=80 http_method=get
+    http_url="/preview.php?file==../" signature_subclass="Directory
+    Traversal" signature_id="060150002"
+
+  Wire-format invariants confirmed against Fortinet docs:
+    - field NAMES use underscores: `log_id` `msg_id` `device_id`
+      `src` `dst` `src_port` `dst_port` `http_url` `http_host`
+      `http_agent` `http_method` `http_session_id` `http_refer`
+      `http_version` `signature_subclass` `signature_id`
+      `signature_cve_id` `severity_level` `srccountry`
+      `content_switch_name` `server_pool_name`
+      `false_positive_mitigation` `user_name` `monitor_status`
+      `trigger_policy` `threat_weight` `history_threat_weight`
+      `timezone` `timezone_dayst` `dev_id` `vd`.
+    - NOT `logid`/`devid`/`srcip`/`dstip`/`http_referer` (the
+      previous catalog used those — wrong; corrected here).
+    - `pri` is a STRING enum (alert/critical/warning/notice), NOT a
+      syslog PRI integer. The RFC3164 PRI integer is `<NNN>` at the
+      very start of the line (separate envelope).
+    - Two attack-classification schemes coexist in real FortiWeb 7.x
+      output. Newer wire (FortiWeb 7.x) emits `main_type` + `sub_type`
+      (e.g. main_type="Signature Detection" sub_type="Cross Site
+      Scripting"). Older wire (6.x, some 7.0 builds) emits `subtype`
+      (e.g. subtype="waf_signature_detection"). We default to the
+      newer 7.x main_type/sub_type pairing — Wazuh decoder should
+      handle both.
+    - `action` values appear in the wire in CamelCase (Alert_Deny,
+      Alert, Block_Period, Deny_No_Log) per real PDF samples — the
+      lowercase variants (`alert_deny`, `block-period`) shown in CLI
+      reference docs are the CONFIG enum, not the WIRE token.
+    - `signature_subclass` enum (Signature Detection main_type):
+      "SQL Injection", "Cross Site Scripting", "Generic Attacks",
+      "Known Exploits", "Information Disclosure", "Bad Robot",
+      "Trojans", "Personally Identifiable Information",
+      "Directory Traversal" (also referenced as part of Generic
+      Attacks in some builds), and "N/A" for non-signature
+      classifications.
+
+  Sources (all public Fortinet documentation):
+    - FortiWeb 7.4.0 Log Reference (PDF, fortinetweb.s3.amazonaws.com)
+    - FortiWeb 7.0 Log Reference (PDF)
+    - help.fortinet.com FortiWeb 5.5.1 Attack log fields
+      (`fortiweb-log/Attack_log_fields.htm`) — field-name canonical
+      source (still authoritative for 7.x field names; FortiWeb's
+      attack-log schema has been additive since 5.5).
+    - docs.fortinet.com FortiWeb 7.4.2 "How to check attack logs"
+      (administration-guide/856978)
+    - docs.fortinet.com FortiWeb 7.6.0 Attack log message reference
+      (log-message-reference/445549)
+    - Splunk Connect for Syslog (SC4S) Fortinet FortiWeb source
+      docs: sourcetypes `fwb_attack` / `fwb_traffic` / `fwb_event`,
+      legacy BSD format on UDP/514.
+
+  SIEM rule mapping: feeds the same vendor-agnostic WAF
+  rule family (32 rules from a reference SIEM ruleset) shared
+  with F5 ASM, Imperva SecureSphere, Citrix NetScaler ADC AppFW.
+  Coverage of 內/外 主機 軸 + 已阻擋/未阻擋 軸 + 各 attack_type 需
+  靠 src/srccountry × action × signature_subclass 三軸組合驅動 —
+  identical strategy to the F5 ASM violation.yaml catalog.
+
+format: key_value
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: web_resources_activity
+  category_uid: 6
+  class_uid: 6004
+
+detections:
+  wazuh:
+    # FortiWeb uses Fortinet-native KV (NOT CEF) — needs a dedicated
+    # `fortinet-fortiweb` decoder. Wazuh built-in `fortigate` decoder
+    # will NOT match (different field layout, FortiGate uses
+    # `srcip/dstip/devname/devid`, FortiWeb uses `src/dst/device_id`).
+    - decoder: fortinet-fortiweb
+    # Vendor-agnostic WAF rule family (same 32 rules covering all
+    # 內/外 × scenario × 已阻擋/未阻擋 axes that F5/Imperva/NetScaler
+    # feed). FortiWeb fires the same rule_id list — vendor-agnostic.
+    - rule_id: 130005   # WAF_外部主機嘗試SQL-Injection攻擊
+      level: 7
+    - rule_id: 130079   # WAF_外部主機嘗試SQL-Injection攻擊
+      level: 7
+    - rule_id: 130021   # WAF_內部主機嘗試SQL-Injection攻擊
+      level: 7
+    - rule_id: 130082   # WAF_內部主機嘗試SQL-Injection攻擊
+      level: 7
+    - rule_id: 130108   # WAF_外部主機嘗試XSS攻擊
+      level: 7
+    - rule_id: 130145   # WAF_外部主機嘗試XSS攻擊
+      level: 7
+    - rule_id: 130035   # WAF_內部主機嘗試XSS攻擊
+      level: 7
+    - rule_id: 130091   # WAF_內部主機嘗試XSS攻擊
+      level: 7
+    - rule_id: 130081   # WAF_外部主機嘗試密碼暴力破解
+      level: 7
+    - rule_id: 130131   # WAF_外部主機嘗試密碼暴力破解
+      level: 7
+    - rule_id: 130019   # WAF_內部主機嘗試密碼暴力破解
+      level: 7
+    - rule_id: 130038   # WAF_內部主機嘗試密碼暴力破解
+      level: 7
+    - rule_id: 130002   # WAF_外部主機執行弱點掃描攻擊 by_name 1m.10
+      level: 7
+    - rule_id: 130126   # WAF_外部主機執行弱點掃描攻擊 by_name 1m.5
+      level: 7
+    - rule_id: 130049   # WAF_外部主機執行弱點掃描攻擊 by_自訂字串4 1m.5
+      level: 7
+    - rule_id: 130086   # WAF_外部主機執行弱點掃描攻擊 by_自訂字串4 1m.10
+      level: 7
+    - rule_id: 130065   # WAF_內部主機執行弱點掃描攻擊 by_name 1m.5
+      level: 7
+    - rule_id: 130146   # WAF_內部主機執行弱點掃描攻擊 by_name 1m.5
+      level: 7
+    - rule_id: 130139   # WAF_內部主機執行弱點掃描攻擊 by_自訂字串4 1m.5
+      level: 7
+    - rule_id: 130147   # WAF_內部主機執行弱點掃描攻擊 by_自訂字串4 1m.5
+      level: 7
+    - rule_id: 130054   # WAF_外部主機疑似進行緩衝區溢位攻擊
+      level: 7
+    - rule_id: 130125   # WAF_外部主機疑似進行緩衝區溢位攻擊
+      level: 7
+    - rule_id: 130078   # WAF_內部主機疑似進行緩衝區溢位攻擊
+      level: 7
+    - rule_id: 130095   # WAF_內部主機疑似進行緩衝區溢位攻擊
+      level: 7
+    - rule_id: 130015   # WAF_伺服器主機觸發大量已阻擋事件
+      level: 7
+    - rule_id: 130070   # WAF_伺服器主機觸發大量已阻擋事件
+      level: 7
+    - rule_id: 130003   # WAF_資安設備偵測內對內伺服器高風險未阻擋
+      level: 7
+    - rule_id: 130056   # WAF_資安設備偵測內對內伺服器高風險未阻擋
+      level: 7
+    - rule_id: 130014   # WAF_資安設備偵測內對外高風險未阻擋
+      level: 7
+    - rule_id: 130124   # WAF_資安設備偵測內對外高風險未阻擋
+      level: 7
+    - rule_id: 130121   # WAF_資安設備偵測外對內高風險未阻擋
+      level: 7
+    - rule_id: 130127   # WAF_資安設備偵測外對內高風險未阻擋
+      level: 7
+  sigma:
+    - rule: fortinet_fortiweb_attack
+      ref: https://github.com/SigmaHQ/sigma  # community contrib pending
+  elk_detection:
+    - kibana_rule_id: fortinet-fortiweb-attack-blocked
+      severity: high
+    - kibana_rule_id: fortinet-fortiweb-sqli-by-source
+      severity: high
+
+mythos_alignment:
+  # R1 Accelerated Threat (web-app exploit waves)
+  # R4 Detection Velocity (WAF must alert within seconds)
+  risk_refs: [R1, R4]
+  pa_refs: [PA1]
+  ttx_class: rapid
+
+regression:
+  # 1000 events with 4 signature_subclasses × 2 軸(內/外) × 2
+  # action(已阻擋 Alert_Deny / 未阻擋 Alert) covers the 32-rule
+  # vendor-agnostic family. Mass-blocked aggregation (130015/130070)
+  # needs >= 5 Alert_Deny events on the same dst within 1 min —
+  # protected_dest_pool fanout of 5 keeps it dense.
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 3000
+
+params:
+  device_id:
+    default: "FV-1KD3A15800072"
+  devname:
+    default: "FWB-LAB-01"
+  vd:
+    default: "root"
+  policy_name:
+    default: "FWB_Policy_Default_Prod"
+  trigger_policy_name:
+    default: ""
+  server_pool_name:
+    default: "FWB_server_pool"
+  # External attackers — drives 外部主機 axis rules
+  external_attacker_pool:
+    default:
+      - "203.0.113.45"
+      - "198.51.100.77"
+      - "45.142.213.18"
+      - "194.165.16.99"
+      - "172.93.179.115"
+  # Internal sources — drives 內部主機 axis rules
+  internal_source_pool:
+    default: "10.0.20.0/24"
+  # Protected web servers behind the WAF
+  protected_dest_pool:
+    default:
+      - "10.0.50.10"
+      - "10.0.50.11"
+      - "10.0.50.12"
+      - "10.0.50.13"
+      - "10.0.50.14"
+  protected_host:
+    default: "app.example.lab"
+
+fields:
+  # RFC3164 envelope PRI: local7.alert = 13*8+1 = 105. FortiWeb
+  # default facility is local7 (configurable). Inner pri= is a string
+  # enum (alert/critical/warning/notice), NOT this number.
+  - name: envelope_pri
+    type: fixed
+    value: 105
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  - name: date
+    type: datetime
+    format: "%Y-%m-%d"
+
+  - name: time
+    type: datetime
+    format: "%H:%M:%S"
+
+  # msg_id — per-event monotonic counter; real boxes emit 12-digit
+  # zero-padded decimal. Engine has no fixed-width-decimal faker;
+  # use uppercase hex_8 as opaque correlator.
+  - name: msg_id
+    type: faker
+    method: hex_8
+
+  - name: device_id
+    type: param
+    param: device_id
+
+  - name: devname
+    type: param
+    param: devname
+
+  - name: vd
+    type: param
+    param: vd
+
+  - name: timezone
+    type: fixed
+    value: "(GMT+8:00)Taipei"
+
+  - name: timezone_dayst
+    type: fixed
+    value: "GMTa-8"
+
+  # main_type — drives the Signature Detection vs HTTP Protocol vs
+  # Access Control classification. Real wire emits human-readable
+  # strings (per FortiWeb Log Reference "Attack logs by main type,
+  # subtype & ID" table). 70% weight on Signature Detection because
+  # that is where the 32-rule WAF family actually fires.
+  - name: main_type
+    type: weighted_choice
+    choices:
+      "Signature Detection":   0.70
+      "Allow Method":          0.08
+      "Protected Hostnames":   0.05
+      "URL Access":            0.05
+      "Brute Force Login":     0.05
+      "CSRF Protection":       0.04
+      "HTTP Method Violation": 0.03
+
+  # sub_type / signature_subclass pairing — drives ArcSight scenario
+  # rule. Values are the literal FortiWeb signature_subclass tokens
+  # from "Attack log fields" doc + 7.0 Log Reference.
+  - name: signature_subclass
+    type: weighted_choice
+    choices:
+      "SQL Injection":          0.25
+      "Cross Site Scripting":   0.20
+      "Generic Attacks":        0.15
+      "Known Exploits":         0.10
+      "Information Disclosure": 0.08
+      "Directory Traversal":    0.08
+      "Bad Robot":              0.07
+      "N/A":                    0.07
+
+  # log_id values per FortiWeb 7.x Log Message Reference (codes
+  # confirmed in `log-message-reference/445549/attack` index):
+  #   20000001 — Allow Method violation
+  #   20000010 — Signature detection (signature_subclass populated)
+  #   20000011 — Signature detection variant
+  #   20000012 — Signature detection variant
+  - name: log_id
+    type: weighted_choice
+    choices:
+      "20000010": 0.55
+      "20000011": 0.15
+      "20000012": 0.10
+      "20000001": 0.20
+
+  # signature_id — real FortiWeb numeric signature IDs from the
+  # public Known Attacks signature DB. Drawn verbatim from FortiWeb
+  # 7.x Log Reference attack-log samples.
+  - name: signature_id
+    type: weighted_choice
+    choices:
+      "010000063": 0.20   # Cross Site Scripting parameter
+      "060150002": 0.20   # Directory Traversal preview.php
+      "090000001": 0.15   # SQL Injection generic
+      "030000001": 0.15   # Generic Attacks
+      "020000001": 0.10   # Known Exploits
+      "050000001": 0.10   # Information Disclosure
+      "040000001": 0.05   # Bad Robot
+      "N/A":       0.05
+
+  - name: signature_cve_id
+    type: weighted_choice
+    choices:
+      "N/A":            0.70
+      "CVE-2021-44228": 0.10  # Log4Shell — common WAF hit
+      "CVE-2017-5638":  0.07  # Struts2
+      "CVE-2014-6271":  0.05  # Shellshock
+      "CVE-2022-22965": 0.05  # Spring4Shell
+      "CVE-2017-9805":  0.03
+
+  # severity_level — FortiWeb wire enum (per attack_logs doc):
+  #   Informational | Low | Medium | High | Critical
+  - name: severity_level
+    type: weighted_choice
+    choices:
+      "Critical":      0.25
+      "High":          0.35
+      "Medium":        0.25
+      "Low":           0.10
+      "Informational": 0.05
+
+  # pri — wire STRING enum mapped from severity_level:
+  #   Critical/High → alert, Medium → warning, Low → notice,
+  #   Informational → information. (Per FortiWeb Log Reference
+  #   "Header & body fields".) Picked independently to keep field
+  #   templating simple; downstream decoders treat pri + severity_level
+  #   as redundant.
+  - name: pri
+    type: weighted_choice
+    choices:
+      "alert":       0.60
+      "critical":    0.20
+      "warning":     0.15
+      "notice":      0.05
+
+  # action — wire-format CamelCase tokens per FortiWeb 7.x Log
+  # Reference sample (Alert_Deny / Alert / Block_Period /
+  # Deny_No_Log). CLI config uses lowercase (alert_deny, block-period)
+  # — different layer.
+  # 已阻擋 軸 = Alert_Deny | Block_Period | Deny_No_Log
+  # 未阻擋 軸 = Alert
+  - name: action
+    type: weighted_choice
+    choices:
+      "Alert_Deny":   0.55  # blocked + logged
+      "Block_Period": 0.15  # period-block follow-on
+      "Deny_No_Log":  0.05  # blocked silently (rare in attack log)
+      "Alert":        0.25  # detect-only / transparent mode
+
+  # src_zone drives 內 vs 外 axis. 60% external (perimeter exposure),
+  # 40% internal (insider / pivoted-attacker scenarios).
+  - name: src_zone
+    type: weighted_choice
+    choices:
+      external: 0.60
+      internal: 0.40
+
+  - name: external_src
+    type: choice
+    choices: ${params.external_attacker_pool}
+
+  - name: internal_src
+    type: cidr
+    cidr: ${params.internal_source_pool}
+
+  - name: src
+    type: template
+    template: "{% if src_zone == 'external' %}{{external_src}}{% else %}{{internal_src}}{% endif %}"
+
+  - name: dst
+    type: choice
+    choices: ${params.protected_dest_pool}
+
+  - name: src_port
+    type: int_range
+    min: 1024
+    max: 65535
+
+  - name: dst_port
+    type: weighted_choice
+    choices:
+      "443": 0.75
+      "80":  0.25
+
+  - name: service
+    type: template
+    template: "{% if dst_port == '443' %}https{% else %}http{% endif %}"
+
+  - name: proto
+    type: fixed
+    value: "tcp"
+
+  - name: srccountry
+    type: weighted_choice
+    choices:
+      "Russian Federation": 0.18
+      "China":              0.22
+      "United States":      0.25
+      "Brazil":             0.12
+      "Romania":            0.08
+      "Reserved":           0.15
+
+  - name: http_host
+    type: param
+    param: protected_host
+
+  # http_method — FortiWeb wire emits lowercase (per real PDF
+  # samples: http_method=get / http_method=trace / http_method=post).
+  - name: http_method
+    type: weighted_choice
+    choices:
+      "post":   0.55
+      "get":    0.35
+      "put":    0.05
+      "delete": 0.05
+
+  - name: http_url
+    type: weighted_choice
+    choices:
+      "/login.php?id=1' OR '1'='1":                  0.18
+      "/search.aspx?q=<script>alert(1)</script>":    0.13
+      "/preview.php?file==../":                      0.10  # verbatim from 7.0 LR sample
+      "/exec?cmd=cat%20/etc/passwd":                 0.12
+      "/admin/upload?file=../../etc/shadow":         0.10
+      "/checkout?coupon=' UNION SELECT NULL--":      0.12
+      "/static/../config.yaml":                      0.08
+      "/wp-login.php":                               0.12
+      "/api/Rapport/ApplyRGCIOnRapport":             0.05
+
+  - name: http_agent
+    type: weighted_choice
+    choices:
+      "sqlmap/1.7":                                         0.18
+      "Nikto/2.5.0":                                        0.12
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36": 0.35
+      "curl/7.81":                                          0.10
+      "python-requests/2.31":                               0.10
+      "python-for-fortiweb":                                0.05  # FWB self-test UA
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)":          0.10
+
+  - name: http_refer
+    type: fixed
+    value: "none"
+
+  - name: http_version
+    type: weighted_choice
+    choices:
+      "1.x": 0.80
+      "2":   0.20
+
+  - name: http_session_id
+    type: weighted_choice
+    choices:
+      "none":  0.60
+      "hex16": 0.40
+
+  - name: session_hex
+    type: faker
+    method: hex_16
+
+  # msg — human-readable summary tied to main_type/sub_type. Real
+  # FortiWeb format: "<event-class summary>" (e.g. "HTTP Method
+  # Violation", "Parameter(?picfilename) triggered signature ID
+  # 010000063 of Signatures policy <name>").
+  - name: msg
+    type: template
+    template: |-
+      {%- if main_type == 'Signature Detection' -%}
+      Parameter triggered signature ID {{signature_id}} of Signatures policy {{params.policy_name}}
+      {%- elif main_type == 'HTTP Method Violation' -%}
+      HTTP Method Violation
+      {%- elif main_type == 'Allow Method' -%}
+      HTTP Method Violation
+      {%- elif main_type == 'Protected Hostnames' -%}
+      HTTP Host Violation
+      {%- elif main_type == 'URL Access' -%}
+      URL Access Violation
+      {%- elif main_type == 'Brute Force Login' -%}
+      Brute Force Login attack detected
+      {%- elif main_type == 'CSRF Protection' -%}
+      CSRF token violation
+      {%- else -%}
+      {{main_type}}
+      {%- endif %}
+
+  - name: policy
+    type: param
+    param: policy_name
+
+  - name: trigger_policy
+    type: param
+    param: trigger_policy_name
+
+  - name: content_switch_name
+    type: fixed
+    value: "none"
+
+  - name: server_pool_name
+    type: param
+    param: server_pool_name
+
+  - name: false_positive_mitigation
+    type: fixed
+    value: "none"
+
+  - name: user_name
+    type: weighted_choice
+    choices:
+      "Unknown": 0.85
+      "guest":   0.05
+      "admin":   0.05
+      "user1":   0.05
+
+  - name: monitor_status
+    type: fixed
+    value: "Disabled"
+
+  - name: dev_id
+    type: fixed
+    value: "none"
+
+  - name: backend_service
+    type: fixed
+    value: "unknown"
+
+  - name: threat_weight
+    type: int_range
+    min: 5
+    max: 50
+
+  - name: history_threat_weight
+    type: int_range
+    min: 0
+    max: 200
+
+# Wire format: single physical line. RFC3164 PRI envelope + native
+# Fortinet KEY=VALUE body. Quoting follows FortiWeb 7.x convention —
+# string values that may contain spaces are double-quoted; bare
+# tokens (numerics, lowercase enums like proto=tcp/service=http,
+# pri=alert) are unquoted. Field order matches the verbatim 7.0/7.4
+# Log Reference samples cited in the description.
+template: |-
+  <{{envelope_pri}}>{{rfc3164_ts}} {{devname}} date={{date}} time={{time}} log_id={{log_id}} msg_id={{msg_id}} device_id={{device_id}} vd="{{vd}}" timezone="{{timezone}}" timezone_dayst="{{timezone_dayst}}" type=attack pri={{pri}} main_type="{{main_type}}" sub_type="{{signature_subclass}}" trigger_policy="{{trigger_policy}}" severity_level={{severity_level}} proto={{proto}} service={{service}} backend_service={{backend_service}} action={{action}} policy="{{policy}}" src={{src}} src_port={{src_port}} dst={{dst}} dst_port={{dst_port}} http_method={{http_method}} http_url="{{http_url}}" http_host="{{http_host}}" http_agent="{{http_agent}}" http_session_id={% if http_session_id == 'hex16' %}{{session_hex}}{% else %}none{% endif %} msg="{{msg}}" signature_subclass="{{signature_subclass}}" signature_id="{{signature_id}}" signature_cve_id="{{signature_cve_id}}" srccountry="{{srccountry}}" content_switch_name="{{content_switch_name}}" server_pool_name="{{server_pool_name}}" false_positive_mitigation="{{false_positive_mitigation}}" user_name="{{user_name}}" monitor_status="{{monitor_status}}" http_refer="{{http_refer}}" http_version="{{http_version}}" dev_id="{{dev_id}}" threat_weight={{threat_weight}} history_threat_weight={{history_threat_weight}}

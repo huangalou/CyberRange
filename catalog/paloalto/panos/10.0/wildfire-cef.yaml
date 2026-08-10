@@ -1,0 +1,145 @@
+vendor: paloalto
+product: panos
+version: "10.0"
+log_type: wildfire-cef
+description: |
+  PAN-OS 10.0 WildFire Submissions log emitted in CEF. Fires after
+  WildFire returns a verdict (benign / grayware / malicious / phishing)
+  for a file that was forwarded for analysis.
+
+  Per-dispatch customization via cef_extension_overrides /
+  cef_header_overrides; see `traffic-cef.yaml`.
+
+  Source-of-truth:
+    - PAN-OS 10.0 CEF Configuration Guide:
+        https://docs.paloaltonetworks.com/content/dam/techdocs/en_US/pdf/cef/pan-os-10-0-cef-configuration-guide.pdf
+
+format: cef
+transport: [udp_syslog, tcp_syslog, file, beats]
+
+ocsf:
+  class: security_finding
+  category_uid: 2
+  class_uid: 2004
+
+cef_header:
+  device_vendor:  "Palo Alto Networks"
+  device_product: "PAN-OS"
+  device_version: "10.0.0"
+  signature_id:   "wildfire"
+  name:           "WILDFIRE"
+  severity:       6
+
+cef_mapping:
+  - { pa_field: receive_time,        cef_key: rt }
+  - { pa_field: serial,              cef_key: deviceExternalId }
+  - { pa_field: src_ip,              cef_key: src }
+  - { pa_field: dst_ip,              cef_key: dst }
+  - { pa_field: rule_name,           cef_key: PanOSRuleName }
+  - { pa_field: src_user,            cef_key: suser }
+  - { pa_field: application,         cef_key: app }
+  - { pa_field: virtual_system,      cef_key: PanOSVsys }
+  - { pa_field: session_id,          cef_key: externalId }
+  - { pa_field: src_port,            cef_key: spt }
+  - { pa_field: dst_port,            cef_key: dpt }
+  - { pa_field: protocol,            cef_key: proto }
+  - { pa_field: action,              cef_key: act }
+  - { pa_field: report_id,           cef_key: cn1 }
+  - { pa_field: verdict,             cef_key: cs1 }
+  - { pa_field: file_name,           cef_key: fname }
+  - { pa_field: file_type,           cef_key: fileType }
+  - { pa_field: file_hash,           cef_key: fileHash }
+  - { pa_field: file_url,            cef_key: request }
+  - { pa_field: direction,           cef_key: PanOSDirection }
+  - { pa_field: cloud,               cef_key: PanOSCloud }
+
+params:
+  hostname: { default: "PA-VM-01.example.local" }
+  serial:   { default: "001234567890" }
+  src_cidr: { default: "10.50.0.0/24" }
+  dst_pool:
+    default:
+      - "151.101.1.140"
+      - "104.18.32.7"
+      - "203.0.113.99"
+
+fields:
+  - { name: pri, type: fixed, value: 134 }
+  - { name: rfc3164_ts, type: datetime, format: "%b %d %Y %H:%M:%S" }
+  - { name: hostname, type: param, param: hostname }
+
+  - { name: receive_time, type: datetime, format: "%b %d %Y %H:%M:%S" }
+  - { name: serial, type: param, param: serial }
+  - name: src_ip
+    type: cidr
+    cidr: ${params.src_cidr}
+  - name: dst_ip
+    type: choice
+    choices: ${params.dst_pool}
+  - name: rule_name
+    type: weighted_choice
+    choices: { "outbound-web": 0.50, "dmz-to-inside": 0.30, "block-malicious": 0.20 }
+  - name: src_user
+    type: weighted_choice
+    choices:
+      "":                  0.60
+      'CORP\alice':        0.20
+      'CORP\bob':          0.20
+  - name: application
+    type: weighted_choice
+    choices: { "web-browsing": 0.50, "ssl": 0.30, "smtp": 0.10, "ftp": 0.10 }
+  - { name: virtual_system, type: fixed, value: "vsys1" }
+  - { name: session_id, type: int_range, min: 100000, max: 9999999 }
+  - { name: src_port, type: int_range, min: 1024, max: 65535 }
+  - name: dst_port
+    type: weighted_choice
+    choices: { "443": 0.60, "80": 0.30, "25": 0.10 }
+  - { name: protocol, type: fixed, value: "tcp" }
+  - name: action
+    type: weighted_choice
+    choices: { "verdict": 0.85, "alert": 0.15 }
+  - { name: report_id, type: int_range, min: 1000000, max: 9999999999 }
+  - name: verdict
+    type: weighted_choice
+    choices:
+      "benign":     0.60
+      "grayware":   0.15
+      "malicious":  0.15
+      "phishing":   0.10
+  - name: file_name
+    type: weighted_choice
+    choices:
+      "invoice.pdf":    0.25
+      "malware.exe":    0.25
+      "update.dll":     0.20
+      "macro.xlsm":     0.15
+      "installer.msi":  0.15
+  - name: file_type
+    type: weighted_choice
+    choices:
+      "PE":       0.40
+      "PDF":      0.25
+      "MSOffice": 0.20
+      "DLL":      0.10
+      "MSI":      0.05
+  - name: file_hash
+    type: weighted_choice
+    choices:
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef": 0.34
+      "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210": 0.33
+      "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef": 0.33
+  - name: file_url
+    type: weighted_choice
+    choices:
+      "evil.example.com/malware.exe":     0.40
+      "files.dropbox.example.com/payload": 0.30
+      "raw.malicious.example.io/exploit.bin": 0.30
+  - name: direction
+    type: weighted_choice
+    choices: { "client-to-server": 0.80, "server-to-client": 0.20 }
+  - name: cloud
+    type: weighted_choice
+    choices: { "public-cloud": 0.80, "private-cloud": 0.20 }
+
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} CEF:0|{{cef_header.device_vendor}}|{{cef_header.device_product}}|{{cef_header.device_version}}|{{cef_header.signature_id}}|{{cef_header.name}}|{{cef_header.severity}}|{{cef_extensions}}

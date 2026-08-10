@@ -1,0 +1,428 @@
+vendor: imperva
+product: securesphere
+version: "14.x"
+log_type: waf.alert-native
+description: |
+  Imperva SecureSphere WAF Gateway 14.x (on-prem appliance) security alert
+  emitted via a **non-CEF** "Syslog" Action Set — i.e. the admin-configurable
+  plaintext template that drops the CEF header and emits SecureSphere's
+  raw placeholder substitutions directly. This is what Imperva calls a
+  "DIY syslog format" (Practical Tactics blog naming, widely picked up by
+  third-party integration guides), and what Splunk's official Add-on docs
+  call output format "default" or "splunk" (vs. "CEF").
+
+  Sibling catalog (same SecureSphere alert, CEF wire form):
+    catalog/imperva/securesphere/14.x/waf-alert.yaml
+
+  IMPORTANT — native format is admin-configurable, NOT a single fixed wire
+  format. SecureSphere lets the admin paste arbitrary template strings
+  built from `${Alert.*}` / `${Event.*}` / `${Rule.*}` placeholders into
+  the Action Set "Message" field. There is no single canonical "Imperva
+  native syslog" wire format the way CEF is canonical. However, a handful
+  of templates have become de-facto defaults across SIEM integration
+  guides over 15 years — this catalog picks the one most consistently
+  cited as "the Imperva default plaintext", originally documented by
+  Practical Tactics (2009) and subsequently embedded in LogRhythm,
+  AlienVault USM, Splunk Add-on, and Imperva community KB references:
+
+    %IMPERVA-Imperva,alert#=${Alert.dn},event#=${Event.dn},
+    createTime=${Alert.createTime},updateTime=${Alert.lastUpdateTime},
+    alertSev=${Alert.severity},group=${Alert.serverGroupName},
+    ruleName="${Alert.alertMetadata.alertName}",
+    evntDesc="${Alert.description}",category=${Alert.alertType},
+    disposition=${Alert.immediateAction},
+    srcIp=${Event.sourceInfo.sourceIp},
+    srcPort=${Event.sourceInfo.sourcePort},
+    dstIp=${Event.destInfo.serverIp},
+    dstPort=${Event.destInfo.serverPort},
+    proto=${Event.sourceInfo.ipProtocol},
+    user=${Alert.username},
+    service=${Alert.serviceName},
+    app=${Alert.applicationName},
+    policy=${Rule.parent.displayName}
+
+  (Whitespace added for readability — real Imperva templates are single
+  line; the appliance's parser explicitly rejects line breaks per
+  Imperva/IBM/Juniper docs.)
+
+  This wire form does **not** use the `CEF:0|...|...|` header, does
+  **not** use ArcSight extension keys (`cs1`/`dst`/`spt`), and uses
+  Imperva's own field names (`srcIp`/`dstIp`/`alertSev`/`evntDesc`) —
+  so the downstream parser is `imperva:waf` (Splunk Add-on sourcetype)
+  or a custom Wazuh decoder, NOT the built-in `cef` decoder.
+
+  Source-of-truth (wire format + field map):
+    - Practical Tactics blog (canonical naming "DIY syslog format" +
+      `${Alert.*}` placeholder reference, 2009):
+        https://practical.wordpress.com/2009/06/09/impervas-diy-syslog-format/
+      Companion placeholder reference:
+        https://practical.wordpress.com/2009/06/10/imperva-placeholders/
+    - Juniper JSA 7.5 — Configuring an Alert Action for Imperva
+      SecureSphere V11–V13 (verbatim non-CEF template variables —
+      `${SecureSphereVersion}`, `${Alert.alertType}`,
+      `${Alert.immediateAction}`, `${Alert.dn}`, `${Alert.createTime}`,
+      `${Alert.sourceIp}`, `${Event.struct.user.user}`,
+      `${Alert.applicationName}`, `${Event.destInfo.serverIp}`,
+      `${Alert.description}`, `${Alert.severity}`):
+        https://www.juniper.net/documentation/us/en/software/jsa7.5.0/jsa-dsm/topics/task/jsa-dsm-configuring-imperva-securesphere-v110-to.html
+      Companion alert-action setup page:
+        https://www.juniper.net/documentation/us/en/software/jsa7.5.0/jsa-dsm/topics/task/jsa-dsm-configuring-an-alert-action-for.html
+    - IBM QRadar DSM — Configuring an alert action for Imperva
+      SecureSphere (same native LEEF/plaintext template as Juniper JSA;
+      both DSMs share the IBM QRadar codebase):
+        https://www.ibm.com/docs/en/dsm?topic=securesphere-configuring-alert-action-imperva
+    - AlienVault / AT&T USM Appliance plugin — Imperva SecureSphere
+      semicolon-delimited template variant (SecSphWeb--OriginGW=...;
+      AlertInformation=...; displayName=...; AlertType=...; Severity=...;
+      AlertNumber=...; EventNumber=...; ServerGroup=...):
+        https://cybersecurity.att.com/documentation/usm-appliance/supported-plugins/configuring-imperva-securesphere.htm
+    - Splunk Add-on for Imperva SecureSphere WAF — `imperva:waf`
+      sourcetype + output formats "default" or "splunk" (NON-CEF path):
+        https://docs.splunk.com/Documentation/AddOns/released/ImpervaWAF/Setup
+        https://docs.splunk.com/Documentation/AddOns/released/ImpervaWAF/Sourcetypes
+    - LogRhythm SecureSphere syslog parser (severity / immediateAction
+      vocab reused unchanged across CEF and native templates):
+        https://docs.logrhythm.com/devices/docs/syslog-imperva-securesphere
+        https://docs.logrhythm.com/devices/docs/lso-syslog-imperva-securesphere-gateway-alert
+    - Imperva v14.7 WAF Release Notes (real LTS version strings):
+        https://docs.imperva.com/bundle/v14.7-waf-release-notes/page/87366.htm
+
+  NOTE: This is **SecureSphere on-prem**, NOT Imperva Cloud WAF /
+  Incapsula (different product family, different wire format, different
+  Elastic package — `imperva` vs `imperva_cloud_waf`).
+
+  Imperva vocabulary preserved 1:1 with CEF sibling:
+    - category (= ${Alert.alertType}): Signature | Profile | Protocol |
+      Correlation | Firewall | Custom — exactly 6 values per Imperva
+      CEF Guide. Same vocabulary regardless of output format.
+    - alertSev (= ${Alert.severity}): Informative | Low | Medium | High —
+      TEXT values, not numeric.
+    - disposition (= ${Alert.immediateAction}): None | Block — only
+      two values per Imperva docs.
+    - policy (= ${Rule.parent.displayName}): the rule / policy name
+      (e.g. "SQL Injection", "Cross Site Scripting", "Recommended
+      Whitelist Violation", "Brute Force from Single Source - Login").
+      This is the PRIMARY downstream keying field for SOC detection
+      rules — identical role to `cs1=` in the CEF sibling.
+
+  SIEM rule mapping: covers the IDENTICAL 32-rule WAF family
+  as the CEF sibling. Keying:
+    - policy= holds the rule name (vs CEF `cs1=`).
+    - disposition= drives 已阻擋 / 未阻擋 axis (Block / None).
+    - srcIp vs internal/external CIDR drives 外部 / 內部 axis.
+    - category=Signature correlates with the Sigma / Snort signature
+      policy class — used for SQL-Inj / XSS / Buffer Overflow regex hits.
+
+  Rule coverage matrix: see f5/asm/16.x/violation.yaml — Imperva catalog
+  hits the identical 32 rule_ids via policy= + disposition= + srcIp zone.
+
+  Real verbatim sample (composed from authoritative template variables
+  cited above — no verbatim third-party customer log line published as
+  primary source for this specific template; see Open Questions in
+  companion doc imperva-securesphere.md):
+
+    <14>May 14 03:38:14 imp-waf-mx.lab.local %IMPERVA-Imperva,
+    alert#=4488123,event#=12399887,createTime=May 14 2026 03:38:14,
+    updateTime=May 14 2026 03:38:14,alertSev=High,
+    group=Prod Web Servers,ruleName="SQL Injection",
+    evntDesc="Signature violation matched",category=Signature,
+    disposition=Block,srcIp=203.0.113.45,srcPort=51422,
+    dstIp=10.0.50.10,dstPort=443,proto=TCP,user=anonymous,
+    service=Default Web Service,app=Default Web Application,
+    policy=SQL Injection
+
+format: key_value           # %IMPERVA-Imperva,k=v,k=v,... — native non-CEF
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: web_resources_activity
+  category_uid: 6
+  class_uid: 6004
+
+detections:
+  wazuh:
+    # Native format is NOT parseable by Wazuh's built-in `cef` decoder.
+    # Use a custom Wazuh decoder family `imperva-securesphere` (Splunk
+    # sourcetype `imperva:waf` is the Splunk-side equivalent name).
+    - decoder: imperva-securesphere
+    # Attack-type rules — 內 / 外 軸都覆蓋 (identical to CEF sibling)
+    - rule_id: 130005   # WAF_外部主機嘗試SQL-Injection攻擊
+      level: 7
+    - rule_id: 130079
+      level: 7
+    - rule_id: 130021   # WAF_內部主機嘗試SQL-Injection攻擊
+      level: 7
+    - rule_id: 130082
+      level: 7
+    - rule_id: 130108   # WAF_外部主機嘗試XSS攻擊
+      level: 7
+    - rule_id: 130145
+      level: 7
+    - rule_id: 130035   # WAF_內部主機嘗試XSS攻擊
+      level: 7
+    - rule_id: 130091
+      level: 7
+    - rule_id: 130081   # WAF_外部主機嘗試密碼暴力破解
+      level: 7
+    - rule_id: 130131
+      level: 7
+    - rule_id: 130019   # WAF_內部主機嘗試密碼暴力破解
+      level: 7
+    - rule_id: 130038
+      level: 7
+    - rule_id: 130002   # WAF_外部主機執行弱點掃描 by_name 1m.10
+      level: 7
+    - rule_id: 130126   # by_name 1m.5
+      level: 7
+    - rule_id: 130049   # by_自訂字串4 1m.5
+      level: 7
+    - rule_id: 130086   # by_自訂字串4 1m.10
+      level: 7
+    - rule_id: 130065   # WAF_內部主機執行弱點掃描 by_name
+      level: 7
+    - rule_id: 130146
+      level: 7
+    - rule_id: 130139   # by_自訂字串4
+      level: 7
+    - rule_id: 130147
+      level: 7
+    - rule_id: 130054   # WAF_外部主機緩衝區溢位
+      level: 7
+    - rule_id: 130125
+      level: 7
+    - rule_id: 130078   # WAF_內部主機緩衝區溢位
+      level: 7
+    - rule_id: 130095
+      level: 7
+    # Cross-cut
+    - rule_id: 130015   # WAF_伺服器主機觸發大量已阻擋
+      level: 7
+    - rule_id: 130070
+      level: 7
+    - rule_id: 130003   # WAF_資安設備內對內伺服器高風險未阻擋
+      level: 7
+    - rule_id: 130056
+      level: 7
+    - rule_id: 130014   # WAF_資安設備內對外高風險未阻擋
+      level: 7
+    - rule_id: 130124
+      level: 7
+    - rule_id: 130121   # WAF_資安設備外對內高風險未阻擋
+      level: 7
+    - rule_id: 130127
+      level: 7
+  sigma:
+    - rule: imperva_securesphere_waf_native
+      ref: https://github.com/SigmaHQ/sigma
+  elk_detection:
+    - kibana_rule_id: imperva-native-waf-attack-blocked
+      severity: high
+    - kibana_rule_id: imperva-native-waf-high-severity-unblocked
+      severity: critical
+
+mythos_alignment:
+  risk_refs: [R1, R4]
+  pa_refs: [PA1]
+  ttx_class: rapid
+
+regression:
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 3000
+
+params:
+  syslog_host:
+    default: "imp-waf-mx.lab.local"
+  server_group:
+    default: "Prod Web Servers"
+  service_name:
+    default: "Default Web Service"
+  application_name:
+    default: "Default Web Application"
+  external_attacker_pool:
+    default:
+      - "203.0.113.45"
+      - "198.51.100.77"
+      - "45.142.213.18"
+      - "194.165.16.99"
+      - "172.93.179.115"
+  internal_source_pool:
+    default: "10.0.20.0/24"
+  protected_dest_pool:
+    default:
+      - "10.0.50.10"
+      - "10.0.50.11"
+      - "10.0.50.12"
+      - "10.0.50.13"
+      - "10.0.50.14"
+  user_pool:
+    default: ["anonymous", "guest", "admin", "test", "username1"]
+
+fields:
+  - name: pri
+    type: fixed
+    value: 14   # user.info — matches CEF sibling + SC4S Imperva sample
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  # createTime / updateTime — Imperva uses ArcSightDate macro
+  # "MMM dd yyyy HH:mm:ss" identically in native and CEF templates.
+  - name: alert_create_time
+    type: datetime
+    format: "%b %d %Y %H:%M:%S"
+
+  - name: alert_update_time
+    type: datetime
+    format: "%b %d %Y %H:%M:%S"
+
+  - name: syslog_host
+    type: param
+    param: syslog_host
+
+  # ${Alert.dn} and ${Event.dn} are SecureSphere distinguished-name
+  # integers — appliance-local monotonic ids. Native format emits the
+  # raw integer (no quotes). Range 1..2^31 in practice.
+  - name: alert_id
+    type: int_range
+    min: 1000000
+    max: 99999999
+
+  - name: event_id
+    type: int_range
+    min: 1000000
+    max: 99999999
+
+  # category — same vocabulary as CEF sibling's alert_type.
+  # 6 literal values per Imperva CEF Guide.
+  - name: category
+    type: weighted_choice
+    choices:
+      "Signature":   0.40
+      "Custom":      0.25
+      "Profile":     0.15
+      "Protocol":    0.10
+      "Correlation": 0.05
+      "Firewall":    0.05
+
+  # src_zone — drives external vs internal axis for ArcSight 32-rule split.
+  - name: src_zone
+    type: weighted_choice
+    choices:
+      external: 0.60
+      internal: 0.40
+
+  - name: external_src
+    type: choice
+    choices: ${params.external_attacker_pool}
+
+  - name: internal_src
+    type: cidr
+    cidr: ${params.internal_source_pool}
+
+  - name: src_ip
+    type: template
+    template: "{% if src_zone == 'external' %}{{external_src}}{% else %}{{internal_src}}{% endif %}"
+
+  - name: dst_ip
+    type: choice
+    choices: ${params.protected_dest_pool}
+
+  - name: src_port
+    type: int_range
+    min: 1024
+    max: 65535
+
+  - name: dst_port
+    type: weighted_choice
+    choices:
+      "443": 0.75
+      "80":  0.25
+
+  - name: proto
+    type: weighted_choice
+    choices:
+      "TCP": 1.0
+
+  # policy — Imperva built-in / custom policy name. Same vocab as CEF
+  # sibling's policy_name field. This is the PRIMARY downstream keying
+  # field; downstream Wazuh / ELK rules regex policy= literal.
+  - name: policy_name
+    type: weighted_choice
+    choices:
+      "SQL Injection":                              0.22
+      "Cross Site Scripting":                       0.18
+      "Recommended HTTP Header Violation":          0.05
+      "Recommended Whitelist Violation":            0.05
+      "Brute Force from Single Source - Login":     0.10
+      "Brute Force from Multiple Sources - Login":  0.03
+      "Buffer Overflow":                            0.08
+      "Directory Traversal":                        0.08
+      "Parameter Tampering":                        0.05
+      "HTTP Protocol Compliance":                   0.04
+      "Web Server Reconnaissance Scan":             0.05
+      "Multiple Query Errors":                      0.04
+      "Web Worm":                                   0.03
+
+  # ruleName / alertMetadata.alertName — for Custom alerts Imperva emits
+  # the literal "Custom Violation"; for built-in policies it echoes the
+  # policy name. Same logic as the CEF sibling.
+  - name: rule_name
+    type: template
+    template: "{% if category == 'Custom' %}Custom Violation{% else %}{{policy_name}}{% endif %}"
+
+  # alertSev — Imperva text vocabulary (NOT 0–10 numeric).
+  - name: alert_sev
+    type: weighted_choice
+    choices:
+      "High":         0.45
+      "Medium":       0.30
+      "Low":          0.15
+      "Informative":  0.10
+
+  # disposition — Alert.immediateAction — Block / None only.
+  # Drives 已阻擋 / 未阻擋 axis.
+  - name: disposition
+    type: weighted_choice
+    choices:
+      "Block": 0.65
+      "None":  0.35
+
+  - name: user_name
+    type: choice
+    choices: ${params.user_pool}
+
+  - name: server_group
+    type: param
+    param: server_group
+
+  - name: service_name
+    type: param
+    param: service_name
+
+  - name: application_name
+    type: param
+    param: application_name
+
+  # evntDesc — short description, same vocab as CEF sibling's description.
+  - name: event_desc
+    type: weighted_choice
+    choices:
+      "Signature violation matched":             0.30
+      "Web application attack detected":         0.20
+      "HTTP protocol violation":                 0.10
+      "Suspected scanning activity":             0.10
+      "Repeated authentication failures":        0.10
+      "Profile mismatch - new URL accessed":     0.05
+      "Buffer overflow attempt":                 0.05
+      "Custom policy fired":                     0.10
+
+# Template emits the canonical "DIY native" Imperva template — comma-
+# delimited key=value pairs with %IMPERVA-Imperva leader. ruleName and
+# evntDesc are double-quoted (per Practical Tactics + IBM QRadar +
+# Juniper JSA template references) because their values can contain
+# spaces. Numeric fields (alert#, event#, ports) are unquoted; string
+# fields with no spaces are unquoted (Imperva docs convention).
+# Single-line — Imperva parser explicitly rejects line breaks.
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{syslog_host}} %IMPERVA-Imperva,alert#={{alert_id}},event#={{event_id}},createTime={{alert_create_time}},updateTime={{alert_update_time}},alertSev={{alert_sev}},group={{server_group}},ruleName="{{rule_name}}",evntDesc="{{event_desc}}",category={{category}},disposition={{disposition}},srcIp={{src_ip}},srcPort={{src_port}},dstIp={{dst_ip}},dstPort={{dst_port}},proto={{proto}},user={{user_name}},service={{service_name}},app={{application_name}},policy={{policy_name}}

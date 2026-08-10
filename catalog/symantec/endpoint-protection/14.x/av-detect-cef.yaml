@@ -1,0 +1,486 @@
+vendor: symantec
+product: endpoint-protection
+version: "14.x"
+log_type: av.detection-cef
+description: |
+  Symantec Endpoint Protection (SEP) 14.x Risk Log event AFTER an
+  upstream transform has re-emitted it as ArcSight Common Event Format
+  (CEF). This is the wire form that arrives at SIEMs running
+  ArcSight ESM / ArcSight Logger or any CEF-only ingest path (Splunk
+  Connect for Syslog, Microsoft Sentinel CEF-via-AMA, IBM QRadar
+  CEF DSM, Securonix, etc.).
+
+  Sibling catalog (same SEPM event, NATIVE wire form):
+    catalog/symantec/endpoint-protection/14.x/av-detect.yaml
+
+  IMPORTANT — SEPM does NOT emit CEF natively. The SEPM External
+  Logging (Admin > Servers > Local Site > Configure External Logging
+  > Export Logs to a Syslog Server) only produces the comma-delimited
+  `SymantecServer:` key-value body documented in the native sibling.
+  A CEF line appears only after one of these upstream re-emitters
+  has parsed the native event and re-shaped it:
+
+    1. ArcSight SmartConnector for Symantec Endpoint Protection
+       Syslog (the canonical CEF emitter — its 8.3.0 Configuration
+       Guide § "Device Event Mapping to ArcSight Fields" pages 15-16
+       defines the authoritative field map this catalog implements).
+    2. Splunk Connect for Syslog (SC4S) Broadcom Endpoint source —
+       offers a CEF re-emit transform on top of its sourcetype.
+    3. Custom rsyslog / syslog-ng / NXLog / fluent-bit relay running
+       an admin-authored template that wraps the parsed SEPM body in
+       a CEF header.
+
+  This sibling exists because real SOC deployments receive the SAME
+  SEPM event in BOTH wire forms depending on the path the log took
+  to reach the SIEM:
+
+    device  →  native syslog (UDP/514)   →  Wazuh `symantec-ep` decoder
+    device  →  ArcSight SmartConnector   →  CEF on TCP/514  →
+                  Wazuh built-in `cef` decoder  (THIS CATALOG)
+
+  Source-of-truth (URLs fetched 2026-05-14):
+    - ArcSight SmartConnector for Symantec Endpoint Protection
+      Syslog Configuration Guide 8.3.0, page 15-16 "Symantec
+      Endpoint Protection Syslog Mappings to ArcSight ESM Fields":
+        https://www.microfocus.com/documentation/arcsight/arcsight-smartconnectors/pdfdoc/symantec-epdb-syslog/symantec-epdb-syslog.pdf
+      (Device Vendor=Symantec, Device Product=Endpoint Protection,
+      Device Host Name=SymantecServer, deviceCustomNumber1=Occurrences,
+      deviceCustomNumber2=SID, deviceCustomString1=Rule,
+      deviceCustomString2=Policy Name, deviceCustomString4=Site Name,
+      deviceCustomString5=Location, deviceCustomString6=Version,
+      Device Custom Date 1=Event time, dhost=Server Name,
+      duser=Client User, act=Action, externalId=Scan ID,
+      filePath=file, fsize=Size (bytes), name=Event Description,
+      sourceDnsDomain=Domain, destinationDnsDomain=Domain Name,
+      spid=PID, sproc=Application, suser=User.)
+    - Connector catalog index (vendor/product page):
+        https://community.opentext.com/cybersec/threat-detect-response/f/discussions/289902/arcsight-connectors-master-index-smart-cef-flex-and-more
+    - Microsoft Sentinel CEF key → CommonSecurityLog field mapping:
+        https://learn.microsoft.com/en-us/azure/sentinel/cef-name-mapping
+      (confirms ArcSight extension keys are the lingua franca every
+      downstream CEF parser normalizes against)
+    - Native SEPM Risk Log fields (the source the SmartConnector
+      parses BEFORE re-emitting as CEF) — Elastic integration sample:
+        https://github.com/elastic/integrations/blob/main/packages/symantec_endpoint/docs/README.md
+    - Broadcom KB 155205 "External Logging settings and log event
+      severity levels for Endpoint Protection Manager":
+        https://knowledge.broadcom.com/external/article/155205/external-logging-settings-and-log-event.html
+
+  Real CEF wire-format example (composed strictly from the
+  authoritative ArcSight SmartConnector 8.3.0 mapping cited above —
+  no verbatim third-party customer sample published primary-source;
+  see Open Questions in companion doc symantec-sep.md):
+
+    <51>Oct 3 10:38:14 SymantecServer CEF:0|Symantec|Endpoint Protection|14.3 RU6|GL_RISK|Security risk found|7|act=Cleaned by deletion dhost=SEPM-PROD-01 dst=10.0.20.45 dvchost=symantec.sepm.lab.local duser=alice externalId=20261003-001 filePath=C:\\Users\\alice\\AppData\\Local\\Temp\\update.exe fname=update.exe fsize=524288 cnt=1 cat=Malware rt=Oct 03 2026 10:38:14 cn1=1 cn1Label=Occurrences cn2=12345 cn2Label=SID cs1=AllScans cs1Label=Rule cs2=Default cs2Label=PolicyName cs4=Site_HQ cs4Label=SiteName cs5=HQ-OTS Managed Client - Online cs5Label=Location cs6=14.3 RU6 cs6Label=Version sourceDnsDomain=Default destinationDnsDomain=Default spid=4488 sproc=Real Time Scan suser=alice fileHash=SHA#0123abcd...
+
+  SIEM rule mapping: covers the SAME 16 AV_Symantec rules
+  (8 scenario × 來源/目的 zone variant) from a reference SIEM ruleset
+  as the native sibling. The SmartConnector populates `src` AND `dst`
+  to the same endpoint IP (and `shost`==`dhost`) → one CEF line
+  triggers both 來源 and 目的 axis rules, matching the native sibling.
+
+  Rule coverage matrix (scenario × 來源/目的):
+    單一主機偵測大量病毒          來源 130066 / 目的 130024
+    單一主機偵測勒索病毒          來源 130028 / 目的 130114
+    單一主機偵測病毒(已刪除)      來源 130123 / 目的 130029
+    單一主機偵測病毒(未刪除)      來源 130136 / 目的 130060
+    伺服器主機偵測大量病毒        來源 130099 / 目的 130089
+    伺服器主機偵測病毒(已刪除)    來源 130043 / 目的 130075
+    伺服器主機偵測病毒(未刪除)    來源 130046 / 目的 130143
+    伺服器主機感染勒索軟體病毒    來源 130128 / 目的 130040
+
+format: cef
+transport: [udp_syslog, tcp_syslog, file, beats]
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+detections:
+  wazuh:
+    # CEF lines are decoded by Wazuh's built-in `cef` decoder (no
+    # custom symantec-ep decoder needed — SmartConnector already
+    # normalized the body into named extensions). The 16 rule_ids
+    # match the native sibling exactly; only the upstream decoder
+    # path differs.
+    - decoder: cef
+    - rule_id: 130066
+      level: 7
+    - rule_id: 130024
+      level: 7
+    - rule_id: 130028
+      level: 7
+    - rule_id: 130114
+      level: 7
+    - rule_id: 130123
+      level: 7
+    - rule_id: 130029
+      level: 7
+    - rule_id: 130136
+      level: 7
+    - rule_id: 130060
+      level: 7
+    - rule_id: 130099
+      level: 7
+    - rule_id: 130089
+      level: 7
+    - rule_id: 130043
+      level: 7
+    - rule_id: 130075
+      level: 7
+    - rule_id: 130046
+      level: 7
+    - rule_id: 130143
+      level: 7
+    - rule_id: 130128
+      level: 7
+    - rule_id: 130040
+      level: 7
+  sigma:
+    - rule: symantec_sep_risk_log
+      ref: https://github.com/SigmaHQ/sigma  # community contrib pending
+  elk_detection:
+    - kibana_rule_id: symantec-ep-virus-found
+      severity: high
+    - kibana_rule_id: symantec-ep-ransomware-detected
+      severity: critical
+
+mythos_alignment:
+  risk_refs: [R1, R4]
+  pa_refs: [PA10]
+  ttx_class: rapid
+
+regression:
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 4000
+
+params:
+  syslog_host:
+    default: "symantec.sepm.lab.local"
+  sepm_server:
+    default: "SEPM-PROD-01"
+  sepm_domain:
+    default: "Default"
+  sepm_site:
+    default: "Site_HQ"
+  sepm_policy:
+    default: "Default"
+  sepm_rule:
+    default: "AllScans"
+  sepm_version:
+    default: "14.3 RU6"
+  workstation_pool:
+    default:
+      - "DESKTOP-WIN10-A1"
+      - "DESKTOP-WIN11-B2"
+      - "LAPTOP-USR-23"
+      - "LAPTOP-CONS-04"
+      - "DESKTOP-MKT-09"
+  server_pool:
+    default:
+      - "SRV-FILE01"
+      - "SRV-DC01"
+      - "WEB-PRD-02"
+      - "DB-MSSQL-01"
+      - "APP-ERP-03"
+  internal_subnet:
+    default: "10.0.20.0/24"
+  server_subnet:
+    default: "10.0.50.0/24"
+  user_pool:
+    default: ["alice", "bob", "svc_backup", "contractor_a", "admin_b"]
+  location_pool:
+    default:
+      - "HQ-OTS Managed Client - Online"
+      - "Branch-TPE Managed Client - Online"
+      - "Remote-VPN Managed Client - Online"
+
+fields:
+  - name: pri
+    type: fixed
+    value: 51   # local6.notice — matches SEPM External Logging default
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  # CEF `rt` extension format — ArcSight canonical "MMM dd yyyy HH:mm:ss"
+  # (see ArcSight Console User's Guide CEF date format).
+  - name: cef_rt
+    type: datetime
+    format: "%b %d %Y %H:%M:%S"
+
+  - name: syslog_host
+    type: param
+    param: syslog_host
+
+  # SmartConnector populates Device Host Name from the SEPM
+  # `SymantecServer:` syslog header (PDF page 15-16) — emitted as
+  # the syslog APP-NAME slot in the CEF line.
+  - name: device_host_name
+    type: fixed
+    value: "SymantecServer"
+
+  # CEF header — event name field. SEPM SmartConnector uses the
+  # native event marker as the human-readable `name` extension.
+  - name: event_marker
+    type: weighted_choice
+    choices:
+      "Virus found":          0.45
+      "Security risk found":  0.55
+
+  # signature_id (DeviceEventClassId) — the SmartConnector emits a
+  # symbolic class id rather than a numeric SEPM event-type. Two
+  # forms observed in ArcSight-side audit content: GL_RISK (generic
+  # Risk Log) and GL_VIRUS (legacy virus signature hit). Map to the
+  # native `event_marker` 1:1 so detection rules can pivot off
+  # either form.
+  - name: signature_id
+    type: template
+    template: "{% if event_marker == 'Virus found' %}GL_VIRUS{% else %}GL_RISK{% endif %}"
+
+  # CEF severity — ArcSight scale 0..10. SEPM Risk Log is "Critical"
+  # category-equivalent → CEF sev 7..10. Use 7 as the floor (matches
+  # wazuh rule_id level=7 above) with occasional spike to 9 for
+  # ransom/heuristic high-confidence hits.
+  - name: cef_severity
+    type: weighted_choice
+    choices:
+      "7": 0.70
+      "8": 0.15
+      "9": 0.10
+      "10": 0.05
+
+  # host_class drives workstation vs server ArcSight rule family
+  # (same logic as native sibling).
+  - name: host_class
+    type: weighted_choice
+    choices:
+      workstation: 0.60
+      server:      0.40
+
+  - name: workstation_host
+    type: choice
+    choices: ${params.workstation_pool}
+
+  - name: server_host
+    type: choice
+    choices: ${params.server_pool}
+
+  - name: computer_name
+    type: template
+    template: "{% if host_class == 'server' %}{{server_host}}{% else %}{{workstation_host}}{% endif %}"
+
+  - name: workstation_ip
+    type: cidr
+    cidr: ${params.internal_subnet}
+
+  - name: server_ip
+    type: cidr
+    cidr: ${params.server_subnet}
+
+  - name: endpoint_ip
+    type: template
+    template: "{% if host_class == 'server' %}{{server_ip}}{% else %}{{workstation_ip}}{% endif %}"
+
+  # Source scan — SEPM `Source` field → CEF `sproc` (Source Process
+  # Name) per SmartConnector PDF page 16 mapping (Source Process
+  # Name ← Application). SmartConnector treats the scan-engine label
+  # as the originating "application".
+  - name: source_scan
+    type: weighted_choice
+    choices:
+      "Real Time Scan":      0.40
+      "Auto-Protect scan":   0.30
+      "Scheduled scan":      0.10
+      "Manual scan":         0.10
+      "SONAR":               0.05
+      "Download Insight":    0.05
+
+  # Real Symantec naming — SEPM `Risk name` field → CEF `name`
+  # extension is the human-readable event description (SmartConnector
+  # PDF page 15: Name ← Event Description). For threat-name pivot,
+  # the canonical place is `fileHash`/`fname` plus the `name` slot;
+  # SmartConnector does NOT publish a dedicated Threat-Name cs slot
+  # for SEPM (unlike SEDR's native CEF which uses cs1=ThreatName).
+  - name: risk_name
+    type: weighted_choice
+    choices:
+      "WS.Reputation.1":         0.18
+      "Heur.AdvML.B":            0.15
+      "Trojan.Gen.MBT":          0.12
+      "Trojan.Gen.NPE":          0.08
+      "Ransom.Conti":            0.10
+      "Ransom.LockBit":          0.08
+      "Ransom.Ryuk":             0.05
+      "Trojan.Dropper":          0.07
+      "Backdoor.Trojan":         0.05
+      "SONAR.SuspBeh!gen101":    0.05
+      "EICAR Test String":       0.04
+      "PUA.CoinMiner":           0.03
+
+  # cn1 = Occurrences (SmartConnector PDF page 15: Device Custom
+  # Number 1 ← Occurrences). Pick the same distribution as native.
+  - name: occurrences
+    type: weighted_choice
+    choices:
+      "1": 0.85
+      "2": 0.10
+      "3": 0.03
+      "5": 0.02
+
+  # SEPM SID (signature id of the detection engine rule) — cn2.
+  - name: sid
+    type: int_range
+    min: 10000
+    max: 99999
+
+  # File path → CEF `filePath` (SmartConnector PDF page 15:
+  # File Path ← file).
+  - name: file_path
+    type: weighted_choice
+    choices:
+      "C:\\Users\\Public\\Downloads\\invoice_2026.exe":             0.18
+      "C:\\Users\\alice\\AppData\\Local\\Temp\\update.exe":         0.15
+      "C:\\Users\\bob\\AppData\\Roaming\\Microsoft\\svchost.exe":   0.13
+      "C:\\ProgramData\\Symantec\\quarantine\\suspicious.bin":      0.10
+      "C:\\inetpub\\wwwroot\\uploads\\shell.aspx":                  0.10
+      "D:\\Share\\HR\\readme_decrypt.txt":                          0.10
+      "C:\\Windows\\Temp\\7z_extract\\payload.dll":                 0.12
+      "e:\\removablemediaaccessutility.exe":                        0.07
+      "C:\\Windows\\System32\\spool\\drivers\\evil.dll":            0.05
+
+  # fname = basename of file_path (CEF standard extension). Derived
+  # at template time so the two stay consistent.
+  - name: file_basename
+    type: template
+    template: "{{file_path.split('\\\\')[-1]}}"
+
+  # act = SEPM Actual action (SmartConnector PDF page 15: Device
+  # Action ← Action). Keep the native vocabulary unchanged so rules
+  # pivoting on action verbs match both wire forms.
+  - name: actual_action
+    type: weighted_choice
+    choices:
+      "Cleaned by deletion":               0.30
+      "Quarantined":                       0.20
+      "Left alone":                        0.15
+      "All actions failed":                0.10
+      "Process terminate pending restart": 0.10
+      "Reboot processing":                 0.05
+      "Blocked":                           0.05
+      "Action invalid":                    0.05
+
+  # suser = SEPM User (SmartConnector PDF page 16: Source User Name
+  # ← User). duser = SEPM Client User (PDF page 15: Destination User
+  # Name ← Client User). For SEPM endpoint-originated risk events
+  # these typically carry the same logged-on user value; we keep
+  # them aligned (matches real SmartConnector behavior).
+  - name: user_name
+    type: choice
+    choices: ${params.user_pool}
+
+  - name: file_size_bytes
+    type: int_range
+    min: 1024
+    max: 16777216
+
+  # Category — SEPM `Category set` field. ArcSight does NOT have a
+  # dedicated CEF extension for this; SmartConnector emits it as
+  # the `cat` extension (CEF standard "Device Event Category").
+  - name: category_set
+    type: weighted_choice
+    choices:
+      "Malware":      0.55
+      "Adware":       0.10
+      "Heuristic":    0.20
+      "Spyware":      0.05
+      "Hack Tool":    0.05
+      "Test":         0.05
+
+  - name: location
+    type: choice
+    choices: ${params.location_pool}
+
+  - name: hash_hex
+    type: faker
+    method: sha256
+
+  # SEPM hash field literal form "SHA#<hex>" is preserved here.
+  # SmartConnector PDF page 15 does NOT map this to a named CEF
+  # extension; community parsers (Sentinel, Splunk SC4S) commonly
+  # surface it as `fileHash` so we emit that. See Open Questions
+  # in symantec-sep.md.
+  - name: file_hash_cef
+    type: template
+    template: "SHA#{{hash_hex}}"
+
+  # External Id (Scan ID per SmartConnector PDF page 15). Real
+  # samples show date-stamped sequential ids; emit a synthetic
+  # form that follows that pattern.
+  - name: scan_id
+    type: faker
+    method: hex_16
+
+  # SmartConnector emits the SEPM Group hierarchy verbatim — used
+  # for the sourceDnsDomain extension. Domain (sourceDnsDomain ←
+  # Domain, PDF page 15) and Domain Name (destinationDnsDomain ←
+  # Domain Name) are both populated; for SEPM both default to the
+  # same SEPM domain string.
+  - name: sepm_domain
+    type: fixed
+    value: "Default"
+
+  # PID (Source Process Id ← PID per PDF page 16) — SEPM emits the
+  # scanner process pid; fake within plausible range.
+  - name: source_pid
+    type: int_range
+    min: 100
+    max: 65535
+
+# CEF template — strict layout per ArcSight CEF spec:
+#   CEF:Version|DeviceVendor|DeviceProduct|DeviceVersion|SignatureID|Name|Severity|Extension
+# Extensions are space-separated key=value pairs. Field-mapping
+# inline comments in this template trace directly back to PDF
+# pages 15-16 of the SmartConnector 8.3.0 Configuration Guide:
+#
+#   act           ← Action                  (Device Action,    p15)
+#   cat           ← Category set            (community convention; SC field, p15 has no direct CEF key)
+#   cnt           ← Occurrences             (mirrors cn1, kept for ArcSight ESM convenience)
+#   cn1           ← Occurrences             (Device Custom Number 1, p15)
+#   cn1Label      = "Occurrences"
+#   cn2           ← SID                     (Device Custom Number 2, p15)
+#   cn2Label      = "SID"
+#   cs1           ← Rule                    (Device Custom String 1, p15)
+#   cs1Label      = "Rule"
+#   cs2           ← Policy Name             (Device Custom String 2, p15)
+#   cs2Label      = "PolicyName"
+#   # NB: cs3 unused — SmartConnector skips it (PDF p15 lists 1,2,4,5,6)
+#   cs4           ← Site Name               (Device Custom String 4, p15)
+#   cs4Label      = "SiteName"
+#   cs5           ← Location                (Device Custom String 5, p15)
+#   cs5Label      = "Location"
+#   cs6           ← Version                 (Device Custom String 6, p15)
+#   cs6Label      = "Version"
+#   deviceCustomDate1 ← Event time          (Device Custom Date 1, p15) emitted as `rt`
+#   dhost         ← Server Name             (Destination Host Name, p15)
+#   dst           ← endpoint IP             (community convention — matches native sibling 來源/目的 dual-axis)
+#   destinationDnsDomain ← Domain Name      (PDF p15)
+#   duser         ← Client User             (Destination User Name, p15)
+#   dvchost       ← syslog source host      (CEF standard, taken from SEPM `Server` slot)
+#   externalId    ← Scan ID                 (PDF p15)
+#   filePath      ← file                    (PDF p15)
+#   fname         = basename of filePath    (CEF standard)
+#   fsize         ← Size (bytes)            (PDF p15)
+#   fileHash      ← Application hash        (community convention; PDF p15 doesn't map, SEDR-style)
+#   name          ← Event Description       (PDF p15)
+#   shost         ← computer hostname       (community convention — matches dhost for endpoint events)
+#   sourceDnsDomain ← Domain                (PDF p15)
+#   spid          ← PID                     (PDF p16)
+#   sproc         ← Application             (Source Process Name, p16)
+#   src           ← endpoint IP             (community convention — populated to same value as dst)
+#   suser         ← User                    (Source User Name, p16)
+
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{syslog_host}} {{device_host_name}}: CEF:0|Symantec|Endpoint Protection|{{params.sepm_version}}|{{signature_id}}|{{event_marker}}|{{cef_severity}}|act={{actual_action}} cat={{category_set}} cnt={{occurrences}} cn1={{occurrences}} cn1Label=Occurrences cn2={{sid}} cn2Label=SID cs1={{params.sepm_rule}} cs1Label=Rule cs2={{params.sepm_policy}} cs2Label=PolicyName cs4={{params.sepm_site}} cs4Label=SiteName cs5={{location}} cs5Label=Location cs6={{params.sepm_version}} cs6Label=Version dhost={{computer_name}} dst={{endpoint_ip}} destinationDnsDomain={{sepm_domain}} duser={{user_name}} dvchost={{params.sepm_server}} externalId={{scan_id}} filePath={{file_path}} fname={{file_basename}} fsize={{file_size_bytes}} fileHash={{file_hash_cef}} name={{risk_name}} rt={{cef_rt}} shost={{computer_name}} sourceDnsDomain={{sepm_domain}} spid={{source_pid}} sproc={{source_scan}} src={{endpoint_ip}} suser={{user_name}}

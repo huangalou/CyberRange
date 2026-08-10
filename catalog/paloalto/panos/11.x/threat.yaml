@@ -1,0 +1,789 @@
+vendor: paloalto
+product: panos
+version: "11.x"
+log_type: threat
+description: |
+  Palo Alto Networks PAN-OS 11.x THREAT log — native CSV emitted by a
+  Syslog Server Profile with NO Custom Log Format set (default PAN-OS
+  field layout, same envelope as the TRAFFIC catalog, different body
+  schema). This is the on-prem firewall wire format that a generic
+  SIEM (Wazuh, ELK / Filebeat, Splunk panw add-on) ingests directly.
+
+  Sibling catalogs:
+    catalog/paloalto/panos/11.x/traffic.yaml      — native CSV TRAFFIC (117 cols)
+    catalog/paloalto/panos/11.x/threat-leef.yaml  — LEEF 2.0 THREAT (QRadar wire flavor)
+
+  Wire grammar:
+    <PRI>BSD_TS HOSTNAME CSV_BODY
+
+    Envelope identical to TRAFFIC. PRI default 190 (local7.info)
+    — PAN-OS uses the same facility for all log types unless the
+    operator pins different Syslog Server Profiles per type.
+
+  Body schema:
+    PAN-OS 11.1 THREAT log has **127 comma-separated fields** per the
+    PAN-OS 11.1 Admin Guide → Threat Log Fields reference. The exact
+    count drifts by PAN-OS minor version — 11.0 has 121, 11.1 has 127,
+    11.2 adds two 5G/IoT fields for 129. This catalog targets 11.1
+    (current LTS at the time of writing) and ends with the trailing
+    empty so the line finishes `,...,last_value,`.
+
+    Field-order source:
+      - PAN-OS 11.1 Admin Guide — Threat Log Fields (positional table):
+        https://docs.paloaltonetworks.com/pan-os/11-1/pan-os-admin/monitoring/use-syslog-for-monitoring/syslog-field-descriptions/threat-log-fields
+      - Splunk Add-on for Palo Alto Networks `pan:threat` sourcetype
+        (cross-check on positional regex):
+        https://splunkbase.splunk.com/app/2757
+      - Wazuh `0420-paloalto_decoders.xml` THREAT decoder family
+        (cross-check on which columns are anchored by the decoder):
+        https://github.com/wazuh/wazuh/blob/master/ruleset/decoders/0420-paloalto_decoders.xml
+
+  Embedded-comma columns wrapped in double quotes per RFC 4180:
+    - col 33  Threat/Content Name      — "Name(Number)" may contain commas in name
+    - col 50  Referer                  — URL may contain commas
+    - col 52  Subject                  — email subject may contain commas
+    - col 75  HTTPHeaders              — header bundle may contain commas
+    - col 116 ApplicationCharacteristic — comma-separated list (same as TRAFFIC col 110)
+
+  Engine notes:
+    - Same as TRAFFIC: multiple `datetime` fields each call `now()` so
+      sub-µs drift between cols 2/7/22/107 is normal.
+    - `Rule UUID` (col 77) via `faker: uuid4` is upper-case — see
+      TRAFFIC catalog note. SIEM parsers don't care about case here.
+    - `Cloud` (col 45) is empty by default — set if simulating WildFire
+      cloud verdicts.
+    - HTTP-only fields (col 47 UserAgent, 49 XFF, 50 Referer, 64 HTTPMethod,
+      75 HTTPHeaders) only populate for `subtype: url` rows on real
+      devices. We populate them by default for stress testing the URL
+      decoder path; non-URL parsers ignore them.
+
+format: csv
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: security_finding
+  category_uid: 2
+  class_uid: 2001
+
+detections:
+  wazuh:
+    - decoder: paloalto                # 0420-paloalto_decoders.xml THREAT family
+    - rule_id: 63100                   # paloalto-threat-detected (sev varies by Severity col)
+      level: 7
+  sigma:
+    - rule: net_paloalto_threat_detected
+      ref: https://github.com/SigmaHQ/sigma/tree/master/rules/network/firewall
+  elk_detection:
+    - kibana_rule_id: panw-threat-high-severity
+      severity: high
+
+mythos_alignment:
+  # Same alignment as the LEEF sibling — wire format change doesn't
+  # shift the underlying Mythos risk; this catalog exists so the
+  # generic-SIEM (Wazuh/ELK) CSV ingest path can be validated
+  # independently of the QRadar LEEF path.
+  risk_refs: [R4, R10]
+  pa_refs: [PA10]
+  ttx_class: rapid
+
+regression:
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 3000
+
+params:
+  # ─── identity (override per deployment) ───
+  hostname:     { default: "PA-VM-01.example.local" }
+  device_name:  { default: "PA-VM-01" }
+  serial:       { default: "001234567890" }
+  vsys:         { default: "vsys1" }
+  vsys_name:    { default: "VSYS-DEFAULT" }
+  log_action:   { default: "default" }
+  panos_ver:    { default: "11.1.0" }
+  # ─── network shape ───
+  src_cidr:     { default: "10.50.0.0/24" }
+  dst_pool:
+    default:
+      - "172.217.0.10"
+      - "151.101.1.140"
+      - "104.18.32.7"
+      - "203.0.113.99"
+
+fields:
+  # ──────────── syslog header ────────────
+  - name: pri
+    type: fixed
+    value: 190
+  - name: bsd_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+  - name: hostname
+    type: param
+    param: hostname
+
+  # ──────────── CSV body (127 fields, PAN-OS 11.1) ────────────
+  # col 1 — FUTURE_USE
+  - name: f01_future_use
+    type: fixed
+    value: 1
+
+  # col 2 — ReceiveTime
+  - name: f02_receive_time
+    type: datetime
+    format: "%Y/%m/%d %H:%M:%S"
+
+  # col 3 — SerialNumber
+  - name: f03_serial
+    type: param
+    param: serial
+
+  # col 4 — Type
+  - name: f04_type
+    type: fixed
+    value: "THREAT"
+
+  # col 5 — Subtype
+  - name: f05_subtype
+    type: weighted_choice
+    choices:
+      vulnerability: 0.40
+      spyware:       0.20
+      url:           0.15
+      virus:         0.10
+      wildfire:      0.05
+      file:          0.05
+      dns:           0.03
+      data:          0.02
+
+  # col 6 — FUTURE_USE (config version)
+  - name: f06_future_use
+    type: int_range
+    min: 1000
+    max: 9999
+
+  # col 7 — GeneratedTime
+  - name: f07_generated_time
+    type: datetime
+    format: "%Y/%m/%d %H:%M:%S"
+
+  # col 8 — SourceAddress
+  - name: f08_src_ip
+    type: cidr
+    cidr: ${params.src_cidr}
+
+  # col 9 — DestinationAddress
+  - name: f09_dst_ip
+    type: choice
+    choices: ${params.dst_pool}
+
+  # col 10 — NATSourceIP
+  - name: f10_nat_src_ip
+    type: fixed
+    value: "0.0.0.0"
+
+  # col 11 — NATDestinationIP
+  - name: f11_nat_dst_ip
+    type: fixed
+    value: "0.0.0.0"
+
+  # col 12 — RuleName
+  - name: f12_rule_name
+    type: weighted_choice
+    choices:
+      "outbound-web":   0.40
+      "default-allow":  0.25
+      "dmz-to-inside":  0.20
+      "guest-internet": 0.15
+
+  # col 13 — SourceUser
+  - name: f13_src_user
+    type: weighted_choice
+    choices: { "": 0.6, "lab\\alice": 0.20, "lab\\bob": 0.15, "lab\\svc-app": 0.05 }
+
+  # col 14 — DestinationUser
+  - name: f14_dst_user
+    type: fixed
+    value: ""
+
+  # col 15 — Application
+  - name: f15_application
+    type: weighted_choice
+    choices:
+      web-browsing:  0.40
+      ssl:           0.30
+      dns-base:      0.10
+      smtp:          0.05
+      ms-rdp:        0.05
+      ssh:           0.05
+      ftp:           0.05
+
+  # col 16 — VirtualSystem
+  - name: f16_vsys
+    type: param
+    param: vsys
+
+  # col 17-18 — Zones
+  - name: f17_src_zone
+    type: weighted_choice
+    choices: { trust: 0.6, dmz: 0.2, guest: 0.1, mgmt: 0.1 }
+  - name: f18_dst_zone
+    type: weighted_choice
+    choices: { untrust: 0.7, dmz: 0.15, trust: 0.1, mgmt: 0.05 }
+
+  # col 19-20 — Interfaces
+  - name: f19_in_iface
+    type: weighted_choice
+    choices: { "ethernet1/1": 0.5, "ethernet1/2": 0.3, "ethernet1/16": 0.2 }
+  - name: f20_out_iface
+    type: weighted_choice
+    choices: { "ethernet1/3": 0.4, "ethernet1/4": 0.3, "ethernet1/18.1": 0.3 }
+
+  # col 21 — LogAction
+  - name: f21_log_action
+    type: param
+    param: log_action
+
+  # col 22 — FUTURE_USE (timestamp echo)
+  - name: f22_future_use
+    type: datetime
+    format: "%Y/%m/%d %H:%M:%S"
+
+  # col 23 — SessionID
+  - name: f23_session_id
+    type: int_range
+    min: 100000
+    max: 9999999
+
+  # col 24 — RepeatCount
+  - name: f24_repeat_count
+    type: fixed
+    value: 1
+
+  # col 25-28 — ports
+  - name: f25_src_port
+    type: int_range
+    min: 1024
+    max: 65535
+  - name: f26_dst_port
+    type: weighted_choice
+    choices: { "443": 0.55, "80": 0.20, "53": 0.10, "22": 0.05, "3389": 0.05, "25": 0.05 }
+  - name: f27_nat_src_port
+    type: int_range
+    min: 1024
+    max: 65535
+  - name: f28_nat_dst_port
+    type: fixed
+    value: 0
+
+  # col 29 — Flags
+  - name: f29_flags
+    type: weighted_choice
+    choices: { "0x80000000": 0.40, "0x80800000": 0.30, "0x400000": 0.15, "0x100000": 0.10, "0x0": 0.05 }
+
+  # col 30 — Proto
+  - name: f30_proto
+    type: weighted_choice
+    choices: { tcp: 0.85, udp: 0.13, icmp: 0.02 }
+
+  # col 31 — Action
+  - name: f31_action
+    type: weighted_choice
+    choices:
+      alert:        0.50
+      drop:         0.20
+      reset-both:   0.10
+      reset-client: 0.05
+      reset-server: 0.05
+      block-url:    0.05
+      sinkhole:     0.03
+      allow:        0.02
+
+  # col 32 — URL / Filename (Misc)
+  - name: f32_misc
+    type: weighted_choice
+    choices:
+      "evil.example.com/malware.exe":      0.25
+      "phishing-site.example.org":         0.20
+      "/wp-login.php?cmd=whoami":          0.15
+      "cryptominer.bad/pool.json":         0.15
+      "powershell-downloader.example/dl":  0.15
+      "":                                   0.10
+
+  # col 33 — Threat/Content Name (Name(Number) form; may contain commas → wrap in "")
+  - name: f33_threat_name
+    type: weighted_choice
+    choices:
+      "Apache Log4j Remote Code Execution Vulnerability(91991)":  0.20
+      "Cross Site Scripting Attempt(35601)":                       0.20
+      "SSH User Authentication Brute Force Attempt(40015)":        0.20
+      "Suspicious User-Agent Strings(13235)":                      0.20
+      "CoinHive JavaScript Cryptocurrency Miner Detection(40026)": 0.20
+
+  # col 34 — Category (URLCategory)
+  - name: f34_url_category
+    type: weighted_choice
+    choices:
+      command-and-control: 0.25
+      malware:             0.30
+      exploit-kit:         0.15
+      phishing:            0.20
+      bruteforce:          0.10
+
+  # col 35 — Severity (lowercase enum)
+  - name: f35_severity
+    type: weighted_choice
+    choices: { critical: 0.10, high: 0.25, medium: 0.40, low: 0.20, informational: 0.05 }
+
+  # col 36 — Direction
+  - name: f36_direction
+    type: weighted_choice
+    choices: { client-to-server: 0.7, server-to-client: 0.3 }
+
+  # col 37 — SequenceNumber
+  - name: f37_seqno
+    type: int_range
+    min: 1000000000000000000
+    max: 9999999999999999999
+
+  # col 38 — ActionFlags
+  - name: f38_action_flags
+    type: weighted_choice
+    choices: { "0x8000000000000000": 0.95, "0x0": 0.05 }
+
+  # col 39 — SourceLocation
+  - name: f39_src_location
+    type: fixed
+    value: "10.0.0.0-10.255.255.255"
+
+  # col 40 — DestinationLocation
+  - name: f40_dst_location
+    type: weighted_choice
+    choices: { US: 0.4, JP: 0.15, TW: 0.10, SG: 0.10, RU: 0.10, CN: 0.10, NL: 0.05 }
+
+  # col 41 — FUTURE_USE
+  - name: f41_future_use
+    type: fixed
+    value: ""
+
+  # col 42 — ContentType
+  - name: f42_content_type
+    type: weighted_choice
+    choices: { "": 0.5, "text/html": 0.2, "application/octet-stream": 0.15, "application/x-msdownload": 0.15 }
+
+  # col 43 — PCAP_ID
+  - name: f43_pcap_id
+    type: int_range
+    min: 0
+    max: 9999999999
+
+  # col 44 — FileDigest
+  - name: f44_file_digest
+    type: weighted_choice
+    choices:
+      "":                                                                  0.5
+      "44d88612fea8a8f36de82e1278abb02f":                                  0.25
+      "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f":  0.25
+
+  # col 45 — Cloud
+  - name: f45_cloud
+    type: fixed
+    value: ""
+
+  # col 46 — URLIndex
+  - name: f46_url_index
+    type: fixed
+    value: 0
+
+  # col 47 — UserAgent
+  - name: f47_user_agent
+    type: weighted_choice
+    choices:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36": 0.50
+      "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0": 0.20
+      "curl/7.88.1": 0.15
+      "python-requests/2.31.0": 0.10
+      "": 0.05
+
+  # col 48 — FileType
+  - name: f48_file_type
+    type: weighted_choice
+    choices: { "": 0.50, "PE32 executable": 0.20, "ZIP archive": 0.15, "Microsoft Office Document": 0.15 }
+
+  # col 49 — XForwardedFor
+  - name: f49_xff
+    type: fixed
+    value: ""
+
+  # col 50 — Referer (may contain commas → wrap in "")
+  - name: f50_referer
+    type: weighted_choice
+    choices:
+      "https://example.com/search?q=download": 0.30
+      "https://www.google.com/":                0.30
+      "":                                       0.40
+
+  # col 51-53 — email-specific (Sender / Subject / Recipient) — empty for non-mail
+  - name: f51_sender
+    type: fixed
+    value: ""
+  - name: f52_subject
+    type: fixed
+    value: ""
+  - name: f53_recipient
+    type: fixed
+    value: ""
+
+  # col 54 — ReportID
+  - name: f54_report_id
+    type: fixed
+    value: 0
+
+  # col 55-58 — Device Group Hierarchy
+  - name: f55_dg_h1
+    type: fixed
+    value: 0
+  - name: f56_dg_h2
+    type: fixed
+    value: 0
+  - name: f57_dg_h3
+    type: fixed
+    value: 0
+  - name: f58_dg_h4
+    type: fixed
+    value: 0
+
+  # col 59 — VsysName
+  - name: f59_vsys_name
+    type: param
+    param: vsys_name
+
+  # col 60 — DeviceName
+  - name: f60_device_name
+    type: param
+    param: device_name
+
+  # col 61 — FUTURE_USE
+  - name: f61_future_use
+    type: fixed
+    value: ""
+
+  # col 62-63 — VM UUIDs
+  - name: f62_src_vm_uuid
+    type: fixed
+    value: ""
+  - name: f63_dst_vm_uuid
+    type: fixed
+    value: ""
+
+  # col 64 — HTTPMethod
+  - name: f64_http_method
+    type: weighted_choice
+    choices: { "GET": 0.55, "POST": 0.30, "HEAD": 0.05, "PUT": 0.05, "": 0.05 }
+
+  # col 65 — TunnelID/IMSI
+  - name: f65_tunnel_id_imsi
+    type: fixed
+    value: 0
+
+  # col 66 — MonitorTag/IMEI
+  - name: f66_monitor_tag_imei
+    type: fixed
+    value: ""
+
+  # col 67 — ParentSessionID
+  - name: f67_parent_session_id
+    type: fixed
+    value: 0
+
+  # col 68 — ParentStartTime
+  - name: f68_parent_start_time
+    type: fixed
+    value: ""
+
+  # col 69 — TunnelType
+  - name: f69_tunnel_type
+    type: weighted_choice
+    choices: { "N/A": 0.95, "IPSec": 0.03, "GRE": 0.02 }
+
+  # col 70 — ThreatCategory
+  - name: f70_threat_category
+    type: weighted_choice
+    choices:
+      "code-execution":     0.25
+      "info-leak":          0.20
+      "brute-force":        0.15
+      "exploit-kit":        0.15
+      "phishing":           0.15
+      "dns-c2":             0.10
+
+  # col 71 — ContentVersion (Apps+Threats / WildFire content pack version)
+  - name: f71_content_version
+    type: weighted_choice
+    choices:
+      "AppThreat-8870-9015": 0.40
+      "AppThreat-8869-9012": 0.30
+      "AppThreat-8868-9010": 0.30
+
+  # col 72 — FUTURE_USE
+  - name: f72_future_use
+    type: fixed
+    value: ""
+
+  # col 73 — SCTPAssociationID
+  - name: f73_sctp_assoc_id
+    type: fixed
+    value: 0
+
+  # col 74 — PayloadProtocolID
+  - name: f74_payload_proto_id
+    type: fixed
+    value: -1
+
+  # col 75 — HTTPHeaders (may contain commas → wrap in "")
+  - name: f75_http_headers
+    type: weighted_choice
+    choices:
+      "":                                                                          0.40
+      "Host: evil.example.com;Accept: */*;Cookie: PHPSESSID=abc123":                0.30
+      "Host: phishing-site.example.org;Accept-Language: en-US,en;q=0.9":            0.30
+
+  # col 76 — URLCategoryList (semicolon-delimited)
+  - name: f76_url_category_list
+    type: weighted_choice
+    choices: { "malware": 0.40, "command-and-control": 0.30, "phishing": 0.20, "": 0.10 }
+
+  # col 77 — RuleUUID
+  - name: f77_rule_uuid
+    type: faker
+    method: uuid4
+
+  # col 78 — HTTP/2 Connection
+  - name: f78_http2_conn
+    type: fixed
+    value: 0
+
+  # col 79 — DynamicUserGroupName
+  - name: f79_dyn_user_group
+    type: fixed
+    value: ""
+
+  # col 80 — XFFAddress
+  - name: f80_xff_address
+    type: fixed
+    value: ""
+
+  # col 81-86 — SourceDevice* (IoT fingerprinting; empty without Device-ID)
+  - name: f81_src_device_category
+    type: fixed
+    value: ""
+  - name: f82_src_device_profile
+    type: fixed
+    value: ""
+  - name: f83_src_device_model
+    type: fixed
+    value: ""
+  - name: f84_src_device_vendor
+    type: fixed
+    value: ""
+  - name: f85_src_device_os_family
+    type: fixed
+    value: ""
+  - name: f86_src_device_os_version
+    type: fixed
+    value: ""
+
+  # col 87 — SourceHostname
+  - name: f87_src_hostname
+    type: fixed
+    value: ""
+
+  # col 88 — SourceMACAddress
+  - name: f88_src_mac
+    type: fixed
+    value: ""
+
+  # col 89-94 — DestinationDevice*
+  - name: f89_dst_device_category
+    type: fixed
+    value: ""
+  - name: f90_dst_device_profile
+    type: fixed
+    value: ""
+  - name: f91_dst_device_model
+    type: fixed
+    value: ""
+  - name: f92_dst_device_vendor
+    type: fixed
+    value: ""
+  - name: f93_dst_device_os_family
+    type: fixed
+    value: ""
+  - name: f94_dst_device_os_version
+    type: fixed
+    value: ""
+
+  # col 95 — DestinationHostname
+  - name: f95_dst_hostname
+    type: fixed
+    value: ""
+
+  # col 96 — DestinationMACAddress
+  - name: f96_dst_mac
+    type: fixed
+    value: ""
+
+  # col 97-99 — Container/POD metadata (K8s-aware deployments only)
+  - name: f97_container_id
+    type: fixed
+    value: ""
+  - name: f98_pod_namespace
+    type: fixed
+    value: ""
+  - name: f99_pod_name
+    type: fixed
+    value: ""
+
+  # col 100-101 — External Dynamic List sources
+  - name: f100_src_edl
+    type: fixed
+    value: ""
+  - name: f101_dst_edl
+    type: fixed
+    value: ""
+
+  # col 102-103 — Host/User device serial
+  - name: f102_host_id
+    type: fixed
+    value: ""
+  - name: f103_user_device_serial
+    type: fixed
+    value: ""
+
+  # col 104-105 — Dynamic Address Group bindings
+  - name: f104_src_dyn_addr_group
+    type: fixed
+    value: ""
+  - name: f105_dst_dyn_addr_group
+    type: fixed
+    value: ""
+
+  # col 106 — PartialHash
+  - name: f106_partial_hash
+    type: fixed
+    value: 0
+
+  # col 107 — HighResolutionTimestamp
+  - name: f107_hires_ts
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S.%f+00:00"
+
+  # col 108 — Reason (e.g., "decrypt-cert-validation")
+  - name: f108_reason
+    type: fixed
+    value: ""
+
+  # col 109 — Justification
+  - name: f109_justification
+    type: fixed
+    value: ""
+
+  # col 110-111 — 5G NSSAI SST / SD
+  - name: f110_nssai_sst
+    type: fixed
+    value: ""
+  - name: f111_nssai_sd
+    type: fixed
+    value: ""
+
+  # col 112 — ApplicationSubcategory
+  - name: f112_app_subcategory
+    type: weighted_choice
+    choices:
+      "web-browsing":   0.35
+      "networking":     0.20
+      "email":          0.15
+      "infrastructure": 0.10
+      "encrypted":      0.10
+      "file-sharing":   0.10
+
+  # col 113 — ApplicationCategory
+  - name: f113_app_category
+    type: weighted_choice
+    choices:
+      "general-internet":     0.40
+      "encrypted-tunnel":     0.25
+      "business-systems":     0.15
+      "collaboration":        0.10
+      "media":                0.10
+
+  # col 114 — ApplicationTechnology
+  - name: f114_app_technology
+    type: weighted_choice
+    choices:
+      "browser-based":   0.55
+      "client-server":   0.25
+      "network-protocol": 0.15
+      "peer-to-peer":    0.05
+
+  # col 115 — ApplicationRisk
+  - name: f115_app_risk
+    type: weighted_choice
+    choices: { "1": 0.05, "2": 0.10, "3": 0.20, "4": 0.35, "5": 0.30 }
+
+  # col 116 — ApplicationCharacteristic (comma-list → wrap in "")
+  - name: f116_app_characteristic
+    type: weighted_choice
+    choices:
+      "used-by-malware,able-to-transfer-file,has-known-vulnerability,pervasive-use": 0.35
+      "able-to-transfer-file,has-known-vulnerability,pervasive-use": 0.25
+      "used-by-malware,has-known-vulnerability": 0.20
+      "pervasive-use,tunnel-other-application": 0.10
+      "pervasive-use": 0.10
+
+  # col 117 — ApplicationContainer
+  - name: f117_app_container
+    type: fixed
+    value: ""
+
+  # col 118 — TunneledApplication
+  - name: f118_tunneled_app
+    type: weighted_choice
+    choices: { "": 0.5, ssl: 0.3, "web-browsing": 0.2 }
+
+  # col 119 — ApplicationSaaS
+  - name: f119_app_saas
+    type: weighted_choice
+    choices: { "no": 0.85, "yes": 0.15 }
+
+  # col 120 — ApplicationSanctionedState
+  - name: f120_app_sanctioned
+    type: weighted_choice
+    choices: { "no": 0.90, "yes": 0.10 }
+
+  # col 121-126 — late-tail PAN-OS 11.1 additions (assessed-severity,
+  # threat-tags, etc.; exact label varies in docs — left empty/0 by default)
+  - name: f121_assessed_severity
+    type: fixed
+    value: ""
+  - name: f122_threat_tags
+    type: fixed
+    value: ""
+  - name: f123_misc_2
+    type: fixed
+    value: ""
+  - name: f124_partial_hash_2
+    type: fixed
+    value: 0
+  - name: f125_reserved_1
+    type: fixed
+    value: ""
+  - name: f126_reserved_2
+    type: fixed
+    value: ""
+
+# ─────────────── template ───────────────
+# Body grammar: 127 comma-separated columns + trailing comma.
+# Five columns may contain commas in their value and are wrapped in
+# double quotes per RFC 4180: col 33 ThreatName, col 50 Referer,
+# col 52 Subject, col 75 HTTPHeaders, col 116 AppCharacteristic.
+template: |-
+  <{{pri}}>{{bsd_ts}} {{hostname}} {{f01_future_use}},{{f02_receive_time}},{{f03_serial}},{{f04_type}},{{f05_subtype}},{{f06_future_use}},{{f07_generated_time}},{{f08_src_ip}},{{f09_dst_ip}},{{f10_nat_src_ip}},{{f11_nat_dst_ip}},{{f12_rule_name}},{{f13_src_user}},{{f14_dst_user}},{{f15_application}},{{f16_vsys}},{{f17_src_zone}},{{f18_dst_zone}},{{f19_in_iface}},{{f20_out_iface}},{{f21_log_action}},{{f22_future_use}},{{f23_session_id}},{{f24_repeat_count}},{{f25_src_port}},{{f26_dst_port}},{{f27_nat_src_port}},{{f28_nat_dst_port}},{{f29_flags}},{{f30_proto}},{{f31_action}},{{f32_misc}},"{{f33_threat_name}}",{{f34_url_category}},{{f35_severity}},{{f36_direction}},{{f37_seqno}},{{f38_action_flags}},{{f39_src_location}},{{f40_dst_location}},{{f41_future_use}},{{f42_content_type}},{{f43_pcap_id}},{{f44_file_digest}},{{f45_cloud}},{{f46_url_index}},{{f47_user_agent}},{{f48_file_type}},{{f49_xff}},"{{f50_referer}}",{{f51_sender}},"{{f52_subject}}",{{f53_recipient}},{{f54_report_id}},{{f55_dg_h1}},{{f56_dg_h2}},{{f57_dg_h3}},{{f58_dg_h4}},{{f59_vsys_name}},{{f60_device_name}},{{f61_future_use}},{{f62_src_vm_uuid}},{{f63_dst_vm_uuid}},{{f64_http_method}},{{f65_tunnel_id_imsi}},{{f66_monitor_tag_imei}},{{f67_parent_session_id}},{{f68_parent_start_time}},{{f69_tunnel_type}},{{f70_threat_category}},{{f71_content_version}},{{f72_future_use}},{{f73_sctp_assoc_id}},{{f74_payload_proto_id}},"{{f75_http_headers}}",{{f76_url_category_list}},{{f77_rule_uuid}},{{f78_http2_conn}},{{f79_dyn_user_group}},{{f80_xff_address}},{{f81_src_device_category}},{{f82_src_device_profile}},{{f83_src_device_model}},{{f84_src_device_vendor}},{{f85_src_device_os_family}},{{f86_src_device_os_version}},{{f87_src_hostname}},{{f88_src_mac}},{{f89_dst_device_category}},{{f90_dst_device_profile}},{{f91_dst_device_model}},{{f92_dst_device_vendor}},{{f93_dst_device_os_family}},{{f94_dst_device_os_version}},{{f95_dst_hostname}},{{f96_dst_mac}},{{f97_container_id}},{{f98_pod_namespace}},{{f99_pod_name}},{{f100_src_edl}},{{f101_dst_edl}},{{f102_host_id}},{{f103_user_device_serial}},{{f104_src_dyn_addr_group}},{{f105_dst_dyn_addr_group}},{{f106_partial_hash}},{{f107_hires_ts}},{{f108_reason}},{{f109_justification}},{{f110_nssai_sst}},{{f111_nssai_sd}},{{f112_app_subcategory}},{{f113_app_category}},{{f114_app_technology}},{{f115_app_risk}},"{{f116_app_characteristic}}",{{f117_app_container}},{{f118_tunneled_app}},{{f119_app_saas}},{{f120_app_sanctioned}},{{f121_assessed_severity}},{{f122_threat_tags}},{{f123_misc_2}},{{f124_partial_hash_2}},{{f125_reserved_1}},{{f126_reserved_2}},

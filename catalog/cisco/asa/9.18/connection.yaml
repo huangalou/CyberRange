@@ -1,0 +1,318 @@
+vendor: cisco
+product: asa
+version: "9.18"
+log_type: connection
+description: |
+  Cisco ASA 9.18 syslog "connection-family" mnemonics — the four
+  base connection-lifecycle events (302013/302014/302015/302016)
+  plus inbound ACL deny (106023) and ACL permit (106100) which a
+  real SOC almost always co-onboards with the connection feed.
+
+  Wire-format authority (URLs fetched 2026-05-15):
+
+    - Cisco ASA 9.18 Syslog Messages Reference — official message
+      templates and severity-level digits:
+        https://www.cisco.com/c/en/us/td/docs/security/asa/syslog/b_syslog.html
+      (302013 / 302014 / 302015 / 302016 documented under "Syslog
+      Messages 302001 to 302038"; 106023 / 106100 under "Syslog
+      Messages 106001 to 106101".)
+    - Elastic integration `cisco_asa` — pipeline test corpus and
+      sample_event.json (real-customer-shaped lines, verbatim):
+        https://github.com/elastic/integrations/tree/main/packages/cisco_asa
+      (canonical RFC3164 prefix:
+       `Mmm dd yyyy HH:MM:SS HOSTNAME CiscoASA[PID]: %ASA-N-NNNNNN: ...`)
+    - Splunk Add-on for Cisco ASA `cisco:asa` sourcetype:
+        https://docs.splunk.com/Documentation/AddOns/released/CiscoASA
+      (confirms same message-tag layout and the parenthesized NAT
+      address idiom `IP/PORT (natIP/natPort)` for 302013/302015.)
+
+  Real wire-format samples (verbatim, from Elastic pipeline corpus):
+
+    Oct 10 2018 12:34:56 localhost CiscoASA[999]: %ASA-6-302013: Built outbound TCP connection 11757 for outside:192.168.205.104/80 (192.168.205.104/80) to inside:172.31.98.44/1772 (172.31.98.44/1772)
+    Oct 10 2018 12:34:56 localhost CiscoASA[999]: %ASA-6-302014: Teardown TCP connection 11749 for outside:192.168.211.242/80 to inside:172.31.98.44/1758 duration 0:01:07 bytes 38110 TCP Reset-I
+    Oct 10 2018 12:34:56 localhost CiscoASA[999]: %ASA-6-302015: Built outbound UDP connection 11758 for outside:192.168.80.32/53 (192.168.80.32/53) to inside:172.31.98.44/56132 (172.31.98.44/56132)
+    Oct 10 2018 12:34:56 localhost CiscoASA[999]: %ASA-6-302016: Teardown UDP connection 11758 for outside:192.168.80.32/53 to inside:172.31.98.44/56132 duration 0:00:00 bytes 148
+    Oct 10 2018 12:34:56 localhost CiscoASA[999]: %ASA-4-106023: Deny tcp src outside:192.168.19.254/80 dst inside:172.31.98.44/8277 by access-group "inbound" [0x0, 0x0]
+    Oct 10 2018 12:34:56 localhost CiscoASA[999]: %ASA-6-106100: access-list inbound permitted tcp outside/192.168.19.254(80) -> inside/172.31.98.44(8277) hit-cnt 1 first hit [0x0, 0x0]
+
+  Mnemonic / severity-level table (cited above):
+    %ASA-6-302013  Built inbound/outbound TCP connection         (sev 6, info)
+    %ASA-6-302014  Teardown TCP connection                       (sev 6, info)
+    %ASA-6-302015  Built inbound/outbound UDP connection         (sev 6, info)
+    %ASA-6-302016  Teardown UDP connection                       (sev 6, info)
+    %ASA-4-106023  Deny <proto> ... by access-group              (sev 4, warning)
+    %ASA-6-106100  access-list <name> permitted/denied ...       (sev 6, info)
+
+  Syslog facility: Cisco ASA defaults to `logging facility 20`
+  (local4). PRI = facility*8 + severity:
+    local4.info     (20*8 + 6) = 166
+    local4.warning  (20*8 + 4) = 164
+  Older deployments or admins matching the Cisco IOS legacy ship
+  facility 23 (local7) — the catalog defaults to the documented
+  9.18 default (local4) and leaves a comment so PRI can be retuned
+  per site if needed.
+
+format: cisco_mnemonic
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: network_activity
+  category_uid: 4
+
+# ──────────────── DetectOps v2 metadata ────────────────
+# Mix of baseline lifecycle events (302013/302014/302015/302016) and
+# security-relevant ACL action events (106023 deny / 106100 permit).
+# Wazuh ships a built-in `cisco-asa` decoder family that decodes the
+# %ASA-N-NNNNNN tag and emits canonical srcip/dstip/srcport/dstport
+# fields. Default ruleset rule_id 4150 (group rule) fires on
+# 106023-class deny events.
+detections:
+  wazuh:
+    - decoder: cisco-asa
+    - rule_id: 4150  # Cisco PIX/ASA: ACL deny — group rule, fires on 106023
+      level: 5
+  sigma: []  # ASA connection baseline has no canonical Sigma rule
+  elk_detection: []
+
+mythos_alignment:
+  # Mixed baseline + ACL-deny visibility. Deny events feed
+  # lateral-movement detection (R8) but catalog itself is a
+  # network-fabric telemetry source, not a direct exploit simulation.
+  risk_refs: [R6, R8]
+  pa_refs: []
+  ttx_class: weeks
+
+regression:
+  # Default weights below give ~7% deny mix → ~70 deny alerts per
+  # 1000 rendered lines if the entire stream is consumed by the
+  # `cisco-asa` decoder. Exact ratio depends on `msg_kind` weights.
+  baseline_alert_count: 70
+  baseline_ttd_ms: 5000
+
+params:
+  hostname:
+    default: "asa-fw-01"
+  # ASA process slot — Cisco emits `CiscoASA[PID]:` between hostname
+  # and the %ASA tag. PID is per-asa-process; pinned here so the
+  # rendered sample stays stable.
+  process_pid:
+    default: "999"
+  inside_cidr:
+    default: "10.10.10.0/24"
+  outside_pool:
+    default:
+      - "1.1.1.1"
+      - "8.8.8.8"
+      - "151.101.1.140"
+      - "203.0.113.55"
+  # Attacker pool — sources of inbound deny (106023). RFC 5737
+  # documentation-only addresses + a couple of real-world common
+  # scan sources, matching what a SOC actually sees on the deny feed.
+  attacker_pool:
+    default:
+      - "198.51.100.23"
+      - "198.51.100.77"
+      - "203.0.113.99"
+      - "185.220.101.45"      # well-known Tor exit (lab demo only)
+      - "192.0.2.66"
+  # ACL names — match real-world ASA naming where access-groups are
+  # bound per-interface and per-direction.
+  acl_inbound:
+    default: "outside_access_in"
+  acl_outbound:
+    default: "inside_access_out"
+
+fields:
+  # PRI (RFC3164) — facility*8 + severity. Cisco ASA 9.18 default
+  # facility is local4 (20). 166 = local4.info, 164 = local4.warning.
+  # Skew toward info (302xxx baseline traffic dominates real SOC feeds).
+  - name: pri
+    type: weighted_choice
+    choices:
+      "166": 0.93                            # local4.info  (302013/14/15/16, 106100)
+      "164": 0.07                            # local4.warning (106023 deny)
+
+  # RFC3164 timestamp — Cisco ASA emits `Mmm dd yyyy HH:MM:SS` when
+  # `logging timestamp` is enabled (default since 9.x). Note the
+  # 4-digit year inserted between day and time — distinctive from
+  # plain RFC3164 `%b %d %H:%M:%S` and required so Wazuh/Elastic
+  # extract the correct year on rollover boundaries.
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %Y %H:%M:%S"
+
+  - name: hostname
+    type: param
+    param: hostname
+
+  - name: process_pid
+    type: param
+    param: process_pid
+
+  # Distribution mirrors a typical SOC trace where most events are
+  # connection lifecycle (built/teardown) and a small minority are
+  # ACL actions. 302013/302014 dominate (TCP), 302015/302016 a
+  # smaller share (UDP), then ACL deny / permit.
+  - name: msg_kind
+    type: weighted_choice
+    choices:
+      built_tcp:    0.35       # %ASA-6-302013
+      teardown_tcp: 0.32       # %ASA-6-302014
+      built_udp:    0.13       # %ASA-6-302015
+      teardown_udp: 0.10       # %ASA-6-302016
+      acl_deny:     0.07       # %ASA-4-106023
+      acl_permit:   0.03       # %ASA-6-106100
+
+  # ASA connection IDs run high — observed range 10000..1_000_000_000+
+  # across long-uptime ASAs. Catalog picks a realistic mid-band.
+  - name: conn_id
+    type: int_range
+    min: 100000
+    max: 9999999
+
+  # Inside endpoint addresses — emitted as the "to inside:" tail of
+  # the 302013/302015 templates AND the "to inside:" tail of the
+  # 302014/302016 teardowns AND the "dst inside:" of 106023.
+  - name: src_ip
+    type: cidr
+    cidr: ${params.inside_cidr}
+
+  - name: src_port
+    type: int_range
+    min: 1024
+    max: 65535
+
+  # Outside endpoint addresses — emitted as the "for outside:" head
+  # of all 302xxx templates AND the "src outside:" head of 106023.
+  - name: dst_ip
+    type: choice
+    choices: ${params.outside_pool}
+
+  - name: dst_port
+    type: weighted_choice
+    choices:
+      "443":  0.55
+      "80":   0.20
+      "53":   0.10
+      "22":   0.05
+      "3389": 0.05
+      "25":   0.05
+
+  # Attacker side for the 106023 deny direction — inbound denied
+  # traffic where src is OUTSIDE attacker and dst is INSIDE victim.
+  # Real samples ALWAYS have src on outside / dst on inside for
+  # inbound denies hitting the outside_access_in ACL.
+  - name: attacker_ip
+    type: choice
+    choices: ${params.attacker_pool}
+
+  - name: attacker_port
+    type: weighted_choice
+    choices:
+      "80":    0.30
+      "443":   0.20
+      "53":    0.10
+      "23":    0.05       # legacy telnet scan
+      "445":   0.05       # SMB scan
+      "3389":  0.05       # RDP scan
+      "22":    0.05       # SSH scan
+      "8080":  0.05
+      "8443":  0.05
+      "1433":  0.05       # MSSQL scan
+      "5060":  0.05       # SIP scan
+
+  # Victim-side service port (the destination on inside_cidr) — for
+  # 106023 the dst port is typically a well-known service rather
+  # than an ephemeral.
+  - name: victim_port
+    type: weighted_choice
+    choices:
+      "443":  0.30
+      "80":   0.25
+      "22":   0.15
+      "3389": 0.10
+      "8080": 0.10
+      "8443": 0.10
+
+  # Total bytes for teardown lines. Real range spans 100B (DNS
+  # one-shot) to multi-MB (file transfers). Long tail.
+  - name: bytes_total
+    type: int_range
+    min: 200
+    max: 5000000
+
+  # Duration in seconds — rendered as h:mm:ss in the template via
+  # Jinja math. UDP teardowns usually <60s, TCP can be hours.
+  - name: duration_sec
+    type: int_range
+    min: 1
+    max: 3600
+
+  # Teardown reason codes — the trailing token on %ASA-6-302014.
+  # Real codes documented in ASA 9.18 syslog reference. Weights
+  # match a typical mix: clean FIN closes dominate, resets and
+  # idle timeouts mid-frequency, less common ones in the long tail.
+  - name: teardown_reason
+    type: weighted_choice
+    choices:
+      "TCP FINs":         0.45
+      "TCP Reset-I":      0.18
+      "TCP Reset-O":      0.12
+      "Conn-timeout":     0.10
+      "Idle Timeout":     0.08
+      "TCP Invalid SYN":  0.03
+      "Flow closed by inspection": 0.02
+      "SYN Timeout":      0.02
+
+  # Built-direction token for 302013/302015. Real ASA emits
+  # "Built inbound TCP connection" or "Built outbound TCP connection"
+  # based on the initiating interface. Catalog skews outbound
+  # (inside→outside) per typical egress-dominant lab traffic; a
+  # small inbound share covers DMZ ingress and reverse proxy flows.
+  - name: built_direction
+    type: weighted_choice
+    choices:
+      "outbound": 0.85
+      "inbound":  0.15
+
+  # ACL group / list name — emitted in 106023 and 106100. Bind to
+  # the inbound ACL for deny (which always hits the outside interface
+  # access-group) and outbound ACL for permit hit-cnt logging.
+  - name: acl_name_inbound
+    type: param
+    param: acl_inbound
+
+  - name: acl_name_outbound
+    type: param
+    param: acl_outbound
+
+# Jinja2 conditional template — six message-shapes rendered as one
+# selectable line per call. The %ASA-N-NNNNNN tag, severity digit,
+# parenthesized NAT addresses, duration format, teardown reason,
+# and access-group hash tuples are all matched against the verbatim
+# Elastic pipeline corpus + Cisco syslog reference (URLs above).
+#
+# Common prefix (all six shapes):
+#   <PRI>RFC3164_TS HOSTNAME CiscoASA[PID]: %ASA-N-NNNNNN: ...
+#
+# Duration rendering:
+#   Cisco emits H:MM:SS where H is unpadded hours (real samples
+#   show "0:01:07", "0:00:00", "1:23:45" etc.). The Jinja math
+#   below produces the same shape.
+template: |-
+  {%- set hh = (duration_sec|int // 3600) -%}
+  {%- set mm = '%02d' | format((duration_sec|int // 60) % 60) -%}
+  {%- set ss = '%02d' | format(duration_sec|int % 60) -%}
+  {%- if msg_kind == "built_tcp" -%}
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} CiscoASA[{{process_pid}}]: %ASA-6-302013: Built {{built_direction}} TCP connection {{conn_id}} for outside:{{dst_ip}}/{{dst_port}} ({{dst_ip}}/{{dst_port}}) to inside:{{src_ip}}/{{src_port}} ({{src_ip}}/{{src_port}})
+  {%- elif msg_kind == "built_udp" -%}
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} CiscoASA[{{process_pid}}]: %ASA-6-302015: Built {{built_direction}} UDP connection {{conn_id}} for outside:{{dst_ip}}/{{dst_port}} ({{dst_ip}}/{{dst_port}}) to inside:{{src_ip}}/{{src_port}} ({{src_ip}}/{{src_port}})
+  {%- elif msg_kind == "teardown_tcp" -%}
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} CiscoASA[{{process_pid}}]: %ASA-6-302014: Teardown TCP connection {{conn_id}} for outside:{{dst_ip}}/{{dst_port}} to inside:{{src_ip}}/{{src_port}} duration {{hh}}:{{mm}}:{{ss}} bytes {{bytes_total}} {{teardown_reason}}
+  {%- elif msg_kind == "teardown_udp" -%}
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} CiscoASA[{{process_pid}}]: %ASA-6-302016: Teardown UDP connection {{conn_id}} for outside:{{dst_ip}}/{{dst_port}} to inside:{{src_ip}}/{{src_port}} duration {{hh}}:{{mm}}:{{ss}} bytes {{bytes_total}}
+  {%- elif msg_kind == "acl_deny" -%}
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} CiscoASA[{{process_pid}}]: %ASA-4-106023: Deny tcp src outside:{{attacker_ip}}/{{attacker_port}} dst inside:{{src_ip}}/{{victim_port}} by access-group "{{acl_name_inbound}}" [0x0, 0x0]
+  {%- else -%}
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} CiscoASA[{{process_pid}}]: %ASA-6-106100: access-list {{acl_name_outbound}} permitted tcp inside/{{src_ip}}({{src_port}}) -> outside/{{dst_ip}}({{dst_port}}) hit-cnt 1 first hit [0x0, 0x0]
+  {%- endif -%}

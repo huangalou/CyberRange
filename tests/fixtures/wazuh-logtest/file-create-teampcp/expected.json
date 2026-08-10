@@ -1,0 +1,52 @@
+{
+  "catalog_path": "catalog/linux/auditd/3.x/file-create-teampcp.yaml",
+  "catalog_sha": "7a1f2130b879562b46622ff7bcc762af0c4c0bbd",
+  "decoder": "auditd",
+  "fixtures": [
+    {
+      "name": "auditd-sysmon-py",
+      "sample_file": "sample-auditd-sysmon-py.log",
+      "phase2_observe": {
+        "_comment": "觀察用,非 pass-fail;Wazuh stock auditd decoder 抽到算 bonus,不抽也 OK(rule 走 raw match)",
+        "type": "PATH",
+        "name": "/home/dev01/.config/sysmon/sysmon.py",
+        "nametype": "CREATE",
+        "key": "malicious_persistence"
+      },
+      "phase3_must_fire": [132030],
+      "phase3_min_level": 11
+    },
+    {
+      "name": "auditd-sysmon-service",
+      "sample_file": "sample-auditd-sysmon-service.log",
+      "phase2_observe": {
+        "type": "PATH",
+        "name": "/home/dev01/.config/systemd/user/sysmon.service",
+        "nametype": "CREATE",
+        "key": "malicious_persistence"
+      },
+      "phase3_must_fire": [132030],
+      "phase3_min_level": 11
+    },
+    {
+      "name": "auditd-tmp-pglog",
+      "sample_file": "sample-auditd-tmp-pglog.log",
+      "phase2_observe": {
+        "type": "PATH",
+        "name": "/tmp/pglog",
+        "nametype": "CREATE",
+        "key": "tmp_drop"
+      },
+      "phase3_must_fire": [132030],
+      "phase3_min_level": 11
+    }
+  ],
+  "notes": [
+    "Sibling 2 of TeamPCP batch sprint(5 sibling 中第 2)。Catalog 50 events 中 IOC 全命中(沒有 negative case),預期 live-fire 132030 fire 45-50/50(weighted_choice 容差 ±5%)。",
+    "axis-ownership invariant:本 rule 持 path 軸;url 軸由 fortigate rule 132010 持有;hostname/IP 軸由 sysmon 132020/132021 持有;argv 軸由 auditd 132040 持有。",
+    "Fixture 是完整 5-record auditd event(PATH×2 + CWD + SYSCALL + PROCTITLE)共享 audit serial。剝 syslog header(`<PRI>RFC3164_TS HOST `)讓 wazuh-logtest pipe stdin 直吃,行為等同 logcollector 剝 header 後的 internal dispatch。",
+    "wazuh-logtest 對 multi-line pipe 是 line-by-line process:5 條 line 各 dispatch 一次;anchor 132029(match `kernel: type=PATH`)會在 PARENT + CREATE 兩條 PATH line 各觸發一次;child 132030(pcre2 match 5 IOC path)只在 CREATE 含 IOC 的 line 命中。",
+    "Step 2 伴生 SOC 側若 logtest phase 2 沒抽到 audit field,不是 fail signal(rule 走 raw match,不依賴 phase 2)。",
+    "若 Step 3 live-fire 數字偏低,可能是 socat-relay 對 5-record event 有切分問題,需在 expected 補 falsifier 註記。"
+  ]
+}

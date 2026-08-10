@@ -1,0 +1,467 @@
+vendor: symantec
+product: endpoint-protection
+version: "14.x"
+log_type: av.detection
+description: |
+  Symantec Endpoint Protection (SEP) 14.x Risk Log event emitted by SEPM
+  External Logging (Admin > Servers > Local Site > Configure External
+  Logging > Export Logs to a Syslog Server). Wire format is the native
+  SymantecServer comma-delimited key-value layout — NOT CEF. CEF only
+  appears after an upstream transform (ArcSight SmartConnector / Splunk
+  Connect for Syslog / custom relay).
+
+  Source-of-truth for wire format:
+    - Elastic integration sample (full Risk Log raw line, 47 fields):
+      https://github.com/elastic/integrations/blob/main/packages/symantec_endpoint/docs/README.md
+    - Broadcom KB 155205 "External Logging settings and log event severity
+      levels for Endpoint Protection Manager"
+    - Graylog Illuminate Symantec EP content pack samples
+    - Microsoft Sentinel SymantecEndpointProtection parser pattern
+
+  Real SEPM wire format example (Risk Log):
+    <51>Oct 3 10:38:14 symantec.endpointprotection.test SymantecServer:
+    Security risk found,IP Address: 1.128.3.4,Computer name: ...
+
+  Body grammar:
+    <event_marker>,KEY: VALUE,KEY: VALUE,...
+    (with 1 positional file-path slot after Occurrences and 1 empty slot
+    right after, both unkeyed — quirky but real)
+
+  SIEM rule mapping: covers 16 AV_Symantec rules (8 scenario
+  × 來源/目的 zone variant) from a reference SIEM ruleset. ArcSight
+  SmartConnector parses native SEPM and re-emits as CEF, populating both
+  attackerAddress and targetAddress to the same endpoint IP → triggers
+  both 來源 and 目的 axis rules from one event.
+
+  Rule coverage matrix (scenario × 來源/目的):
+    單一主機偵測大量病毒          來源 130066 / 目的 130024
+    單一主機偵測勒索病毒          來源 130028 / 目的 130114
+    單一主機偵測病毒(已刪除)      來源 130123 / 目的 130029
+    單一主機偵測病毒(未刪除)      來源 130136 / 目的 130060
+    伺服器主機偵測大量病毒        來源 130099 / 目的 130089
+    伺服器主機偵測病毒(已刪除)    來源 130043 / 目的 130075
+    伺服器主機偵測病毒(未刪除)    來源 130046 / 目的 130143
+    伺服器主機感染勒索軟體病毒    來源 130128 / 目的 130040
+
+format: csv_keyvalue   # SymantecServer: <event>,KEY: VALUE,... — native SEPM
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+detections:
+  wazuh:
+    # SEPM native format requires a `symantec-ep` decoder family (Wazuh
+    # community decoder or custom). Wazuh built-in `cef` decoder will NOT
+    # parse this — only post-transform CEF lines from ArcSight SmartConnector.
+    - decoder: symantec-ep
+    - rule_id: 130066
+      level: 7
+    - rule_id: 130024
+      level: 7
+    - rule_id: 130028
+      level: 7
+    - rule_id: 130114
+      level: 7
+    - rule_id: 130123
+      level: 7
+    - rule_id: 130029
+      level: 7
+    - rule_id: 130136
+      level: 7
+    - rule_id: 130060
+      level: 7
+    - rule_id: 130099
+      level: 7
+    - rule_id: 130089
+      level: 7
+    - rule_id: 130043
+      level: 7
+    - rule_id: 130075
+      level: 7
+    - rule_id: 130046
+      level: 7
+    - rule_id: 130143
+      level: 7
+    - rule_id: 130128
+      level: 7
+    - rule_id: 130040
+      level: 7
+  sigma:
+    - rule: symantec_sep_risk_log
+      ref: https://github.com/SigmaHQ/sigma  # community contrib pending
+  elk_detection:
+    - kibana_rule_id: symantec-ep-virus-found
+      severity: high
+    - kibana_rule_id: symantec-ep-ransomware-detected
+      severity: critical
+
+mythos_alignment:
+  risk_refs: [R1, R4]
+  pa_refs: [PA10]
+  ttx_class: rapid
+
+regression:
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 4000
+
+params:
+  syslog_host:
+    default: "symantec.sepm.lab.local"
+  sepm_server:
+    default: "SEPM-PROD-01"
+  sepm_domain:
+    default: "Default"
+  sepm_group:
+    default: "My Company\\Workstations"
+  sepm_group_server:
+    default: "My Company\\Servers"
+  workstation_pool:
+    default:
+      - "DESKTOP-WIN10-A1"
+      - "DESKTOP-WIN11-B2"
+      - "LAPTOP-USR-23"
+      - "LAPTOP-CONS-04"
+      - "DESKTOP-MKT-09"
+  server_pool:
+    default:
+      - "SRV-FILE01"
+      - "SRV-DC01"
+      - "WEB-PRD-02"
+      - "DB-MSSQL-01"
+      - "APP-ERP-03"
+  internal_subnet:
+    default: "10.0.20.0/24"
+  server_subnet:
+    default: "10.0.50.0/24"
+  user_pool:
+    default: ["alice", "bob", "svc_backup", "contractor_a", "admin_b"]
+  location_pool:
+    default:
+      - "HQ-OTS Managed Client - Online"
+      - "Branch-TPE Managed Client - Online"
+      - "Remote-VPN Managed Client - Online"
+
+fields:
+  - name: pri
+    type: fixed
+    value: 51   # local6.notice — actual SEPM default per Elastic sample
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  - name: event_iso_ts
+    type: datetime
+    format: "%Y-%m-%d %H:%M:%S"
+
+  - name: syslog_host
+    type: param
+    param: syslog_host
+
+  # event_marker — SEPM body starts with one of these literal strings.
+  # "Virus found" → traditional malware signature hit (AV pattern match).
+  # "Security risk found" → Insight reputation / behavior / heuristic detection.
+  - name: event_marker
+    type: weighted_choice
+    choices:
+      "Virus found":          0.45
+      "Security risk found":  0.55
+
+  # host_class drives workstation vs server ArcSight rule family.
+  - name: host_class
+    type: weighted_choice
+    choices:
+      workstation: 0.60
+      server:      0.40
+
+  - name: workstation_host
+    type: choice
+    choices: ${params.workstation_pool}
+
+  - name: server_host
+    type: choice
+    choices: ${params.server_pool}
+
+  - name: computer_name
+    type: template
+    template: "{% if host_class == 'server' %}{{server_host}}{% else %}{{workstation_host}}{% endif %}"
+
+  - name: workstation_ip
+    type: cidr
+    cidr: ${params.internal_subnet}
+
+  - name: server_ip
+    type: cidr
+    cidr: ${params.server_subnet}
+
+  - name: ip_address
+    type: template
+    template: "{% if host_class == 'server' %}{{server_ip}}{% else %}{{workstation_ip}}{% endif %}"
+
+  - name: sepm_group
+    type: template
+    template: "{% if host_class == 'server' %}{{params.sepm_group_server}}{% else %}{{params.sepm_group}}{% endif %}"
+
+  # Source = scan engine, NOT a hostname (this was my prior misunderstanding).
+  - name: source_scan
+    type: weighted_choice
+    choices:
+      "Real Time Scan":      0.40
+      "Auto-Protect scan":   0.30
+      "Scheduled scan":      0.10
+      "Manual scan":         0.10
+      "SONAR":               0.05
+      "Download Insight":    0.05
+
+  # Real Symantec naming (Risk name field). Sourced from Symantec Insight
+  # signature DB samples — naming convention: <Category>.<Family>[.<Variant>].
+  - name: risk_name
+    type: weighted_choice
+    choices:
+      "WS.Reputation.1":         0.18  # Insight low-reputation
+      "Heur.AdvML.B":            0.15  # ML heuristic
+      "Trojan.Gen.MBT":          0.12  # generic trojan
+      "Trojan.Gen.NPE":          0.08
+      "Ransom.Conti":            0.10
+      "Ransom.LockBit":          0.08
+      "Ransom.Ryuk":             0.05
+      "Trojan.Dropper":          0.07
+      "Backdoor.Trojan":         0.05
+      "SONAR.SuspBeh!gen101":    0.05
+      "EICAR Test String":       0.04
+      "PUA.CoinMiner":           0.03
+
+  - name: occurrences
+    type: weighted_choice
+    choices:
+      "1": 0.85
+      "2": 0.10
+      "3": 0.03
+      "5": 0.02
+
+  # Positional file path slot — NOT key-prefixed in SEPM raw format.
+  # Real samples use forward-slash and backslash interchangeably.
+  - name: file_path
+    type: weighted_choice
+    choices:
+      "C:\\Users\\Public\\Downloads\\invoice_2026.exe":             0.18
+      "C:\\Users\\alice\\AppData\\Local\\Temp\\update.exe":         0.15
+      "C:\\Users\\bob\\AppData\\Roaming\\Microsoft\\svchost.exe":   0.13
+      "C:\\ProgramData\\Symantec\\quarantine\\suspicious.bin":      0.10
+      "C:\\inetpub\\wwwroot\\uploads\\shell.aspx":                  0.10
+      "D:\\Share\\HR\\readme_decrypt.txt":                          0.10
+      "C:\\Windows\\Temp\\7z_extract\\payload.dll":                 0.12
+      "e:\\removablemediaaccessutility.exe":                        0.07
+      "C:\\Windows\\System32\\spool\\drivers\\evil.dll":            0.05
+
+  # Actual action / Requested action / Secondary action — three real SEPM
+  # action fields. Strings copied from Symantec docs + Graylog samples.
+  - name: actual_action
+    type: weighted_choice
+    choices:
+      "Cleaned by deletion":              0.30
+      "Quarantined":                      0.20
+      "Left alone":                       0.15  # 未刪除
+      "All actions failed":               0.10  # 未刪除
+      "Process terminate pending restart": 0.10
+      "Reboot processing":                0.05
+      "Blocked":                          0.05
+      "Action invalid":                   0.05
+
+  - name: requested_action
+    type: weighted_choice
+    choices:
+      "Cleaned":                          0.40
+      "Quarantined":                      0.25
+      "Process terminate pending restart": 0.15
+      "Deleted":                          0.10
+      "Logged":                           0.05  # detect-only
+      "Left alone":                       0.05
+
+  - name: secondary_action
+    type: weighted_choice
+    choices:
+      "Quarantined": 0.40
+      "Deleted":     0.25
+      "Left alone":  0.25
+      "Logged":      0.10
+
+  - name: user_name
+    type: choice
+    choices: ${params.user_pool}
+
+  - name: disposition
+    type: weighted_choice
+    choices:
+      "Bad":     0.70
+      "Unknown": 0.25
+      "Good":    0.05  # false-positive case
+
+  - name: prevalence
+    type: weighted_choice
+    choices:
+      "This file has been seen by fewer than 5 Symantec users.":  0.40
+      "This file has been seen by fewer than 50 Symantec users.": 0.25
+      "This file is rare in the user community.":                  0.20
+      "This file has been seen by many Symantec users.":           0.15
+
+  - name: confidence
+    type: weighted_choice
+    choices:
+      "There is some evidence that this file is untrustworthy.": 0.40
+      "There is strong evidence that this file is untrustworthy.": 0.45
+      "Symantec has high confidence in this detection.":           0.15
+
+  - name: url_tracking_status
+    type: weighted_choice
+    choices:
+      "On":  0.85
+      "Off": 0.15
+
+  - name: first_seen
+    type: weighted_choice
+    choices:
+      "Symantec has known about this file approximately 2 days.":   0.30
+      "Symantec has known about this file approximately 7 days.":   0.25
+      "Symantec has known about this file approximately 30 days.":  0.20
+      "Symantec has known about this file approximately 1 year.":   0.15
+      "Reputation was not used in this detection.":                 0.10
+
+  # Application hash uses SEPM's literal "SHA#<hex>" prefix convention for
+  # the hash field. hash_type field separately names the algorithm.
+  - name: hash_hex
+    type: faker
+    method: sha256
+
+  - name: application_hash
+    type: template
+    template: "SHA#{{hash_hex}}"
+
+  # SEPM 14.x defaults to SHA256 (SHA2) for Application hash. Engine emits
+  # 64-hex hash so hash_type is fixed SHA2 to stay consistent (independent
+  # sampling cannot bind hash algorithm to digest length).
+  - name: hash_type
+    type: fixed
+    value: "SHA2"
+
+  - name: company_name
+    type: weighted_choice
+    choices:
+      "Microsoft Corporation":      0.25
+      "Adobe Inc.":                 0.10
+      "Google LLC":                 0.10
+      "":                           0.30  # unsigned / unknown
+      "Oracle Corporation":         0.10
+      "Compromised Vendor Ltd.":    0.10
+      "JetBrains s.r.o.":           0.05
+
+  - name: application_name
+    type: weighted_choice
+    choices:
+      "Microsoft® Windows® Operating System": 0.20
+      "Java(TM) Platform SE 8":                          0.10
+      "Internet Explorer":                               0.05
+      "":                                                0.40
+      "Adobe Reader":                                    0.10
+      "Notepad++":                                       0.05
+      "Suspicious dropper":                              0.10
+
+  - name: application_version
+    type: weighted_choice
+    choices:
+      "10.0.17763.1": 0.20
+      "11.1.2 (Build 1248)": 0.10
+      "1.0.0.1": 0.20
+      "": 0.30
+      "8.0.0": 0.10
+      "Unknown": 0.10
+
+  # Symantec internal application type code — Risk Log field.
+  - name: application_type
+    type: weighted_choice
+    choices:
+      "127": 0.30  # generic
+      "100": 0.20
+      "94":  0.15
+      "126": 0.15
+      "120": 0.10
+      "131": 0.10
+
+  - name: file_size_bytes
+    type: int_range
+    min: 1024
+    max: 16777216
+
+  - name: category_set
+    type: weighted_choice
+    choices:
+      "Malware":      0.55
+      "Adware":       0.10
+      "Heuristic":    0.20
+      "Spyware":      0.05
+      "Hack Tool":    0.05
+      "Test":         0.05
+
+  - name: category_type
+    type: weighted_choice
+    choices:
+      "Insight Network Threat": 0.30
+      "Trojan Horse":           0.20
+      "Ransomware":             0.15
+      "Generic":                0.15
+      "Suspicious Behavior":    0.10
+      "Worm":                   0.05
+      "Backdoor":               0.05
+
+  - name: location
+    type: choice
+    choices: ${params.location_pool}
+
+  - name: intensive_protection_level
+    type: weighted_choice
+    choices:
+      "0": 0.50
+      "1": 0.30
+      "2": 0.15
+      "3": 0.05
+
+  - name: cert_issuer
+    type: weighted_choice
+    choices:
+      "Symantec Corporation":              0.10
+      "Microsoft Code Signing PCA 2011":   0.20
+      "DigiCert SHA2 Assured ID Code Signing CA": 0.20
+      "Sectigo Public Code Signing CA":    0.15
+      "":                                  0.35
+
+  - name: cert_signer
+    type: weighted_choice
+    choices:
+      "VeriSign Class 3 Code Signing 2010 CA":  0.20
+      "Microsoft Windows":                       0.20
+      "DigiCert Trusted Root G4":                0.15
+      "":                                        0.45
+
+  - name: cert_thumbprint
+    type: faker
+    method: sha1
+
+  - name: signing_timestamp
+    type: int_range
+    min: 1577836800   # 2020-01-01
+    max: 1735689599   # 2024-12-31
+
+  - name: cert_serial
+    type: faker
+    method: hex_16
+
+# Template emits the real SEPM RFC3164 + comma-delimited body.
+# Note: Two unkeyed positional slots after `Occurrences`:
+#   ...Occurrences: N,<file_path>,,Actual action: ...
+# (the empty `,,` after file path is real — Elastic sample shows it.)
+# Domain/Group/Server use SEPM-specific concepts not the Windows domain.
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{syslog_host}} SymantecServer: {{event_marker}},IP Address: {{ip_address}},Computer name: {{computer_name}},Source: {{source_scan}},Risk name: {{risk_name}},Occurrences: {{occurrences}},{{file_path}},,Actual action: {{actual_action}},Requested action: {{requested_action}},Secondary action: {{secondary_action}},Event time: {{event_iso_ts}},Inserted: {{event_iso_ts}},End: {{event_iso_ts}},Last update time: {{event_iso_ts}},Domain: {{params.sepm_domain}},Group: {{sepm_group}},Server: {{params.sepm_server}},User: {{user_name}},Source computer: ,Source IP: ,Disposition: {{disposition}},Download site: ,Web domain: ,Downloaded by: {{file_path}},Prevalence: {{prevalence}},Confidence: {{confidence}},URL Tracking Status: {{url_tracking_status}},First Seen: {{first_seen}},Sensitivity: ,Permitted application reason: Not on the permitted application list,Application hash: {{application_hash}},Hash type: {{hash_type}},Company name: {{company_name}},Application name: {{application_name}},Application version: {{application_version}},Application type: {{application_type}},File size (bytes): {{file_size_bytes}},Category set: {{category_set}},Category type: {{category_type}},Location: {{location}},Intensive Protection Level: {{intensive_protection_level}},Certificate issuer: {{cert_issuer}},Certificate signer: {{cert_signer}},Certificate thumbprint: {{cert_thumbprint}},Signing timestamp: {{signing_timestamp}},Certificate serial number: {{cert_serial}}

@@ -1,0 +1,461 @@
+vendor: citrix
+product: netscaler
+version: "13.x"
+log_type: waf.violation-native
+description: |
+  NetScaler ADC 13.x Web App Firewall (AppFW) security-check violation
+  event emitted over RFC3164 syslog when the **CEF Logging** checkbox is
+  **disabled** in *Security > NetScaler Web App Firewall > Change Engine
+  Settings*. This is the device default — the same `/var/log/ns.log` lines
+  before any CEF transform is applied. Companion catalog to the CEF
+  sibling `waf-violation.yaml`.
+
+  ## Source-of-truth (cited, not invented)
+
+  - NetScaler product docs — "Web App Firewall logs" (current release):
+    https://docs.netscaler.com/en-us/citrix-adc/current-release/application-firewall/logs.html
+  - NetScaler 13.1 syslog message reference (full APPFW_* msgid table):
+    https://developer-docs.netscaler.com/en-us/netscaler-syslog-message-reference/13-1.html
+  - Citrix support article CTX136146 — "Common Event Format (CEF) Logging
+    Support in the Application Firewall" — also documents the native
+    pre-CEF wire shape this catalog models:
+    https://support.citrix.com/article/CTX136146
+  - Microsoft Sentinel ASim parser (CitrixNetScaler) — native regex branch:
+    https://github.com/Azure/Azure-Sentinel/blob/master/Parsers/ASimWebSession/Parsers/ASimWebSessionCitrixNetScaler.yaml
+  - Splunk Connect for Syslog NetScaler source — native pattern in
+    `splunk-connect-for-syslog/.../citrix_netscaler` filter
+  - LogPoint NetScaler ADC normalization package (native APPFW grammar)
+  - norz.at community write-ups on AppFW native logging walk-throughs
+
+  ## Real verbatim native sample (from docs.netscaler.com 13.1)
+
+  StartURL violation (APPFW_STARTURL, msgid 1932):
+
+      Feb 23 08:39:13 <local0.info> 192.168.229.10 02/23/2023:08:39:13 GMT Innsbruck 0-PPE-0 : default APPFW APPFW_STARTURL 1932 0 :  192.168.229.1 1546-PPE0 - waf_prof_test Disallow Illegal URL: http://192.168.229.100/green.htm <blocked>
+
+  ## Native body grammar (positional, NOT key=value)
+
+      <RFC3164_TS> <local0.info> <vserver_ip>
+        <NS_INTERNAL_TS> GMT <hostname>
+        <PPE_ID> : default APPFW APPFW_<EVENT> <msgid> <severity> :
+        <TWO-SPACES><client_ip> <conn>-<PPE_short> <txid_or_dash>
+        <profile_name> <message_body> <<action>>
+
+  Notable shape quirks (verified against verbatim sample, do NOT
+  "regularize" away — SIEM regex parsers depend on them):
+
+  - The syslog priority slot carries the **literal text** `<local0.info>`,
+    not a numeric `<134>` PRI. Some downstream relays rewrite this to the
+    numeric form; on the wire from a vanilla NetScaler it is text.
+  - The NetScaler internal timestamp uses `MM/DD/YYYY:HH:MM:SS` with a
+    colon (not space) between date and time.
+  - **Two literal spaces** sit between the second `:` and the client IP.
+  - The connection slot is `<conn-id>-PPE<N>` (e.g. `1546-PPE0`) — the
+    PPE-id form here is the short variant, distinct from the long form
+    `0-PPE-0` that appears just after the hostname.
+  - `txid_or_dash`: present for some events (multi-digit decimal), `-`
+    when absent. The verbatim sample uses `-`.
+  - The action verb is the **last token**, wrapped in angle brackets:
+    `<blocked>`, `<not blocked>`, `<transformed>`, `<alert>`. CEF strips
+    the brackets and emits `act=blocked`; native keeps them.
+
+  ## Real APPFW_* event + msgid mapping (verbatim from 13.1 ref)
+
+  | Event                          | msgid examples                    |
+  |--------------------------------|-----------------------------------|
+  | `APPFW_STARTURL`               | 1932, 5852 (StartURL violation)   |
+  | `APPFW_DENYURL`                | 1933                              |
+  | `APPFW_SIGNATURE_MATCH`        | 807, 953, 1248, 1657, 4012, 6711  |
+  | `APPFW_SQL`                    | 2008, 3215 (SQL keyword family)   |
+  | `APPFW_XSS`                    | 1234 (cross-site check)           |
+  | `APPFW_BUFFEROVERFLOW_URL`     | 224                               |
+  | `APPFW_BUFFEROVERFLOW_HDR`     | 225                               |
+  | `APPFW_BUFFEROVERFLOW_COOKIE`  | 226                               |
+  | `APPFW_FIELDFORMAT`            | 108                               |
+  | `APPFW_FIELDCONSISTENCY`       | 109                               |
+  | `APPFW_COOKIE`                 | 110                               |
+  | `APPFW_REFERER_HEADER`         | 116                               |
+  | `APPFW_MULTIPLE_HEADER`        | 117                               |
+  | `APPFW_SAFECOMMERCE`           | 140                               |
+  | `APPFW_XML_SQL`                | 318                               |
+
+  The full msgid catalog is not fully enumerated in public docs. This
+  catalog samples the documented cases verbatim and treats the rest
+  as opaque.
+
+  ## SIEM rule mapping (same 32 rule_ids as CEF sibling)
+
+  Same vendor-agnostic WAF 32-rule family covered by the CEF sibling.
+  Native lines feed the same attack_type tokens via the
+  ArcSight SmartConnector's native NetScaler parser, then re-emit as
+  CEF internally — so the catalog mappings stay 1:1 across both
+  variants. The Wazuh decoder family is different (custom
+  `netscaler-appfw` decoder, NOT the built-in `cef` decoder).
+
+  ## Why both variants exist in CyberRange
+
+  Two real-world deployments coexist in this catalog pair:
+
+  1. **CEF Logging enabled** (sibling catalog): used by SIEMs that key
+     off ArcSight CEF parser (Elastic / Sentinel / Splunk / Sekoia /
+     Devo / Wazuh built-in `cef` decoder). Easier to parse.
+  2. **CEF Logging disabled** (this catalog): the device default. Used
+     by Splunk Connect for Syslog NetScaler source, LogPoint, and any
+     site that pre-dates the CEF checkbox or relies on a custom Wazuh
+     decoder. The line is what you get from `tail -f /var/log/ns.log`
+     on the appliance with zero forwarding transforms.
+
+  Engineering a single catalog around both shapes hides the parser
+  decision; two siblings make the wire grammar explicit.
+
+format: custom_native
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: web_resources_activity
+  category_uid: 6
+  class_uid: 6004
+
+detections:
+  wazuh:
+    # Native NetScaler AppFW requires a custom `netscaler-appfw` decoder
+    # family. Wazuh built-in `cef` decoder will NOT parse this shape —
+    # only the CEF sibling. The 32 rule_ids below match the CEF sibling
+    # (same vendor-agnostic WAF rule family as the CEF sibling); they fire after the custom
+    # decoder normalizes to the same vendor-agnostic attack_type tokens.
+    - decoder: netscaler-appfw
+    - rule_id: 130005
+      level: 7
+    - rule_id: 130079
+      level: 7
+    - rule_id: 130021
+      level: 7
+    - rule_id: 130082
+      level: 7
+    - rule_id: 130108
+      level: 7
+    - rule_id: 130145
+      level: 7
+    - rule_id: 130035
+      level: 7
+    - rule_id: 130091
+      level: 7
+    - rule_id: 130081
+      level: 7
+    - rule_id: 130131
+      level: 7
+    - rule_id: 130019
+      level: 7
+    - rule_id: 130038
+      level: 7
+    - rule_id: 130002
+      level: 7
+    - rule_id: 130126
+      level: 7
+    - rule_id: 130049
+      level: 7
+    - rule_id: 130086
+      level: 7
+    - rule_id: 130065
+      level: 7
+    - rule_id: 130146
+      level: 7
+    - rule_id: 130139
+      level: 7
+    - rule_id: 130147
+      level: 7
+    - rule_id: 130054
+      level: 7
+    - rule_id: 130125
+      level: 7
+    - rule_id: 130078
+      level: 7
+    - rule_id: 130095
+      level: 7
+    - rule_id: 130015
+      level: 7
+    - rule_id: 130070
+      level: 7
+    - rule_id: 130003
+      level: 7
+    - rule_id: 130056
+      level: 7
+    - rule_id: 130014
+      level: 7
+    - rule_id: 130124
+      level: 7
+    - rule_id: 130121
+      level: 7
+    - rule_id: 130127
+      level: 7
+  sigma:
+    - rule: citrix_netscaler_appfw_violation_native
+      ref: https://github.com/SigmaHQ/sigma
+  elk_detection:
+    - kibana_rule_id: netscaler-appfw-native-attack-blocked
+      severity: high
+    - kibana_rule_id: netscaler-appfw-native-high-severity-unblocked
+      severity: critical
+
+mythos_alignment:
+  risk_refs: [R1, R4]
+  pa_refs: [PA1]
+  ttx_class: rapid
+
+regression:
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 3000
+
+params:
+  device_name:
+    default: "ns-waf-lab-01"
+  device_id:
+    default: "ns-waf-lab-01.lab.local"
+  vserver_ip:
+    default: "192.168.229.10"        # docs verbatim sample uses this
+  profile_name:
+    default: "pr_ffc"                # docs sample profile
+  external_attacker_pool:
+    default:
+      - "203.0.113.45"
+      - "198.51.100.77"
+      - "45.142.213.18"
+      - "194.165.16.99"
+      - "172.93.179.115"
+  internal_source_pool:
+    default: "10.0.20.0/24"
+  protected_dest_pool:
+    default:
+      - "10.0.50.10"
+      - "10.0.50.11"
+      - "10.0.50.12"
+      - "10.0.50.13"
+      - "10.0.50.14"
+  protected_hostname_pool:
+    default:
+      - "app.example.lab"
+      - "api.example.lab"
+      - "portal.example.lab"
+      - "admin.example.lab"
+      - "store.example.lab"
+
+fields:
+  # RFC3164 outer wrapper — `Mon DD HH:MM:SS` (the relay-attached prefix
+  # that downstream syslog daemons prepend, identical to CEF sibling).
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  # NetScaler internal timestamp slot: `MM/DD/YYYY:HH:MM:SS` with a
+  # colon (not space) between date and clock. Verbatim shape.
+  - name: ns_internal_ts
+    type: datetime
+    format: "%m/%d/%Y:%H:%M:%S"
+
+  - name: src_zone
+    type: weighted_choice
+    choices:
+      external: 0.60
+      internal: 0.40
+
+  - name: external_src
+    type: choice
+    choices: ${params.external_attacker_pool}
+
+  - name: internal_src
+    type: cidr
+    cidr: ${params.internal_source_pool}
+
+  - name: client_ip
+    type: template
+    template: "{% if src_zone == 'external' %}{{external_src}}{% else %}{{internal_src}}{% endif %}"
+
+  - name: dst_ip
+    type: choice
+    choices: ${params.protected_dest_pool}
+
+  - name: dhost
+    type: choice
+    choices: ${params.protected_hostname_pool}
+
+  - name: dst_port
+    type: weighted_choice
+    choices:
+      "443": 0.75
+      "80":  0.25
+
+  - name: scheme
+    type: template
+    template: "{% if dst_port == '443' %}https{% else %}http{% endif %}"
+
+  # NetScaler hostname slot — appliance name, not the protected app.
+  # Docs sample uses `Innsbruck`; real lab deployments use the NS box
+  # hostname configured by `set ns hostName`.
+  - name: ns_hostname
+    type: weighted_choice
+    choices:
+      "Innsbruck": 0.10        # docs verbatim
+      "ns-prod-01": 0.30
+      "ns-prod-02": 0.20
+      "ns-dr-01":   0.20
+      "netscaler-lab": 0.20
+
+  # Long PPE-id form `<N>-PPE-<M>` that sits right after hostname.
+  - name: ppe_long
+    type: weighted_choice
+    choices:
+      "0-PPE-0": 0.50
+      "0-PPE-1": 0.30
+      "0-PPE-2": 0.15
+      "0-PPE-3": 0.05
+
+  # Short PPE form `PPE<N>` used inside the conn-id slot.
+  - name: ppe_short
+    type: weighted_choice
+    choices:
+      "PPE0": 0.50
+      "PPE1": 0.30
+      "PPE2": 0.15
+      "PPE3": 0.05
+
+  # Connection id (5-digit decimal in docs samples like 1546).
+  - name: conn_id
+    type: int_range
+    min: 100
+    max: 99999
+
+  # TransactionID slot — present as a number for some events, `-` when
+  # absent. Verbatim sample uses `-`; we keep mostly `-` but mix in real
+  # numeric forms for variety. NOT the same as CEF's cn1.
+  - name: txid
+    type: weighted_choice
+    choices:
+      "-":      0.50
+      "108":    0.10
+      "140":    0.10
+      "224":    0.10
+      "841":    0.10
+      "1636674": 0.10
+
+  - name: profile_name
+    type: param
+    param: profile_name
+
+  - name: device_name
+    type: param
+    param: device_name
+
+  - name: device_id
+    type: param
+    param: device_id
+
+  - name: vserver_ip
+    type: param
+    param: vserver_ip
+
+  # APPFW_* event types — verbatim from docs.netscaler.com/.../logs.html
+  # and the 13.1 syslog reference. Same vocabulary as the CEF sibling so
+  # both catalogs feed the same ArcSight attack_type tokens.
+  - name: appfw_event
+    type: weighted_choice
+    choices:
+      "APPFW_SIGNATURE_MATCH":       0.22
+      "APPFW_SQL":                   0.18
+      "APPFW_XSS":                   0.15
+      "APPFW_STARTURL":              0.08
+      "APPFW_DENYURL":               0.07
+      "APPFW_BUFFEROVERFLOW_URL":    0.05
+      "APPFW_BUFFEROVERFLOW_HDR":    0.03
+      "APPFW_BUFFEROVERFLOW_COOKIE": 0.02
+      "APPFW_FIELDFORMAT":           0.05
+      "APPFW_FIELDCONSISTENCY":      0.04
+      "APPFW_COOKIE":                0.03
+      "APPFW_REFERER_HEADER":        0.03
+      "APPFW_MULTIPLE_HEADER":       0.02
+      "APPFW_SAFECOMMERCE":          0.02
+      "APPFW_XML_SQL":               0.01
+
+  # Numeric msgid associated with the event. Real-event mapping from the
+  # 13.1 syslog message reference + docs verbatim samples. Some events
+  # share a numeric prefix family (SIGNATURE_MATCH carries the original
+  # Snort rule id, hence the 807/953/1248/... spread).
+  - name: msg_id
+    type: weighted_choice
+    choices:
+      "1932":  0.10   # STARTURL (verbatim docs sample)
+      "5852":  0.05   # STARTURL alt
+      "1933":  0.05   # DENYURL
+      "807":   0.10   # SIGNATURE_MATCH web-cgi
+      "953":   0.08   # SIGNATURE_MATCH
+      "1248":  0.08   # SIGNATURE_MATCH
+      "1657":  0.08   # SIGNATURE_MATCH
+      "2008":  0.08   # SQL
+      "3215":  0.08   # SQL alt
+      "224":   0.05   # BUFFEROVERFLOW_URL
+      "225":   0.03   # BUFFEROVERFLOW_HDR
+      "226":   0.02   # BUFFEROVERFLOW_COOKIE
+      "108":   0.05   # FIELDFORMAT
+      "109":   0.04   # FIELDCONSISTENCY
+      "110":   0.03   # COOKIE
+      "116":   0.03   # REFERER_HEADER
+      "117":   0.02   # MULTIPLE_HEADER
+      "140":   0.02   # SAFECOMMERCE
+      "318":   0.01   # XML_SQL
+
+  # Severity flag — single decimal (0..7). Docs verbatim uses `0`.
+  - name: severity_flag
+    type: weighted_choice
+    choices:
+      "0": 0.60
+      "1": 0.20
+      "6": 0.10
+      "7": 0.10
+
+  # Real action vocabulary in native form — angle-bracket-wrapped
+  # outcome verb at end of line. Mirrors CEF sibling's `act=` field.
+  - name: action
+    type: weighted_choice
+    choices:
+      "blocked":     0.62
+      "not blocked": 0.20
+      "transformed": 0.10
+      "alert":       0.08
+
+  # Per-event-type message body. Native uses prose with embedded URL;
+  # no key=value extension list. Wording verbatim from docs samples for
+  # STARTURL / SIGNATURE_MATCH; rest follows the same documented prose
+  # patterns ("<check> check failed").
+  - name: http_path
+    type: weighted_choice
+    choices:
+      "/login.php?id=1' OR '1'='1":                     0.18
+      "/search.aspx?q=<script>alert(1)</script>":       0.15
+      "/exec?cmd=cat%20/etc/passwd":                    0.13
+      "/admin/upload?file=../../etc/shadow":            0.10
+      "/checkout?coupon=' UNION SELECT NULL--":         0.12
+      "/api/v2/users?filter[id]=1%20AND%20SLEEP(5)":    0.10
+      "/wwwboard/passwd.txt":                           0.10
+      "/static/../../etc/hosts":                        0.07
+      "/wp-login.php":                                  0.05
+
+  - name: http_url
+    type: template
+    template: "{{scheme}}://{{dhost}}{{http_path}}"
+
+  - name: msg_body
+    type: template
+    template: "{% if appfw_event == 'APPFW_STARTURL' %}Disallow Illegal URL: {{http_url}}{% elif appfw_event == 'APPFW_DENYURL' %}URL Denied: {{http_url}}{% elif appfw_event == 'APPFW_SIGNATURE_MATCH' %}Signature violation rule ID {{msg_id}}: {{http_url}} access{% elif appfw_event == 'APPFW_SQL' %}SQL Keyword check failed for field at {{http_url}}{% elif appfw_event == 'APPFW_XSS' %}Cross-site script check failed for field at {{http_url}}{% elif appfw_event == 'APPFW_BUFFEROVERFLOW_URL' %}URL length check failed for {{http_url}}{% elif appfw_event == 'APPFW_BUFFEROVERFLOW_HDR' %}Header length check failed for request to {{http_url}}{% elif appfw_event == 'APPFW_BUFFEROVERFLOW_COOKIE' %}Cookie length check failed for request to {{http_url}}{% elif appfw_event == 'APPFW_FIELDFORMAT' %}Field format check failed for {{http_url}}{% elif appfw_event == 'APPFW_FIELDCONSISTENCY' %}Field consistency check failed for {{http_url}}{% elif appfw_event == 'APPFW_COOKIE' %}Cookie consistency check failed for {{http_url}}{% elif appfw_event == 'APPFW_REFERER_HEADER' %}Referer header check failed for {{http_url}}{% elif appfw_event == 'APPFW_MULTIPLE_HEADER' %}Multiple headers in request to {{http_url}}{% elif appfw_event == 'APPFW_SAFECOMMERCE' %}Safe object violation for {{http_url}}{% else %}XML SQL injection check failed for {{http_url}}{% endif %}"
+
+# Wire format: RFC3164 outer + literal `<local0.info>` text priority +
+# vserver IP + NS internal timestamp (with colon-between-date-time) +
+# GMT + hostname + long PPE id + ` : default APPFW APPFW_<EVENT> ` +
+# msgid + severity_flag + ` :  ` (two spaces) + client IP + conn-PPE +
+# txid + profile + message body + `<action>` (angle-bracket-wrapped).
+#
+# Reproduces the docs verbatim sample line shape:
+#   Feb 23 08:39:13 <local0.info> 192.168.229.10 02/23/2023:08:39:13
+#   GMT Innsbruck 0-PPE-0 : default APPFW APPFW_STARTURL 1932 0 :
+#   192.168.229.1 1546-PPE0 - waf_prof_test Disallow Illegal URL:
+#   http://192.168.229.100/green.htm <blocked>
+template: |-
+  {{rfc3164_ts}} <local0.info> {{vserver_ip}} {{ns_internal_ts}} GMT {{ns_hostname}} {{ppe_long}} : default APPFW {{appfw_event}} {{msg_id}} {{severity_flag}} :  {{client_ip}} {{conn_id}}-{{ppe_short}} {{txid}} {{profile_name}} {{msg_body}} <{{action}}>
