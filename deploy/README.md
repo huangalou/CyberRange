@@ -189,7 +189,7 @@ curl -s -u admin:<password> https://bas.example.com/api/catalog | head -c 400
 # 瀏覽器開 https://bas.example.com/ → 跑 dispatch → 驗 .10/.18 收得到 syslog
 ```
 
-從公司公網 IP:
+從白名單內的公網 IP:
 ```bash
 # 同上,確認外部也能 200
 ```
