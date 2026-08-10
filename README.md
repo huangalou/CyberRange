@@ -1,5 +1,7 @@
 # CyberRange — A DetectOps Harness
 
+**English** | [繁體中文](README.zh-TW.md)
+
 **Vendor-accurate log generation → SIEM ingestion → detection validation, as a repeatable engineering loop.**
 
 CyberRange is a detection-engineering harness built around a simple idea: SOC teams should be able to *prove* their detections work — continuously, against realistic telemetry, with measurable KPIs — instead of assuming rules fire because they parsed once.
