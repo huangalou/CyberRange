@@ -64,7 +64,7 @@ CyberRange/
 ├── CLAUDE.md
 ├── LICENSE
 ├── README.md
-├── catalog/                 ← 53 份 YAML，23 個 vendor/product
+├── catalog/                 ← 57 份 YAML，23 個 vendor/product
 ├── engine/                  ← Python library + CLI
 │   ├── pyproject.toml       ← cyberrange console script
 │   ├── src/cyberrange/

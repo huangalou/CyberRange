@@ -1,0 +1,280 @@
+vendor: sophos
+product: endpoint
+version: "xg"
+log_type: hmpa.prevention
+description: |
+  Sophos Central Intercept X behavioral-prevention event family (HMPA =
+  HitmanPro.Alert engine): exploit prevention, malicious-behavior
+  blocking, CryptoGuard ransomware interception, CredGuard / PrivGuard.
+  Re-emitted as CEF by the official `sophos/Sophos-Central-SIEM-
+  Integration` script (siem.py), same pipeline as the sibling
+  `av-detect.yaml` — see that catalog's description for the SaaS-API-
+  only architecture note and `version: xg` axis-label caveat.
+
+  Source-of-truth (all fetched 2026-08-18):
+    - Official SIEM script (header constants / SEVERITY_MAP / CEF_MAPPING
+      identical to sibling; VERSION 2.1.0):
+        https://raw.githubusercontent.com/sophos/Sophos-Central-SIEM-Integration/master/siem.py
+        https://raw.githubusercontent.com/sophos/Sophos-Central-SIEM-Integration/master/name_mapping.py
+      KEY FACT: Hmpa*/Core* event types are ABSENT from name_mapping.py
+      TYPE_HANDLERS — unlike Event::Endpoint::Threat::* they are NOT
+      regex-split, so `name` carries the full human sentence and NO
+      separate filePath extension is extracted. All JSON keys pass
+      through (mapped: source→suser, when→end, created_at→rt,
+      location→dhost, user_id→duid; rest verbatim).
+    - Sophos SIEM event-type list KB-000038309 (support.sophos.com is
+      bot-blocked; list mirrored verbatim with per-type descriptions in
+      quadrantsec/sagan-rules, each rule referencing that KB):
+        https://github.com/quadrantsec/sagan-rules/blob/master/sophos.rules
+      Hmpa family type strings confirmed there: HmpaExploitPrevented /
+      HmpaBehaviourPrevented / HmpaApplicationHijacking / HmpaCryptoGuard
+      / HmpaCryptoGuardResolved / HmpaCryptoGuardSMB /
+      HmpaCryptoGuardSMBOrigin / HmpaCryptoGuardSMBResolved / HmpaCredGuard
+      / HmpaPrivGuard / HmpaMalwareDetected / HmpaPuaDetected / ...
+    - Production parser corroboration of the literal type strings:
+      Exabeam (cef-sophos-security-alert-8/-34 match literal
+      "Event::Endpoint::HmpaExploitPrevented" / "HmpaCryptoGuard"),
+      UTMStack ransomware rule (HmpaCryptoGuard|SMB|SMBOrigin → T1486),
+      SumoLogic Cloud SIEM mapping af13f637 (full Hmpa* regex),
+      tenzir/library OCSF router (HmpaExploitPrevented → Detection
+      Finding).
+    - Verbatim raw sample, HmpaExploitPrevented (Sekoia intake test
+      `event_exploit_prevention.json` — siem.py JSON output shape,
+      post key-mapping):
+        {"severity":"low","type":"Event::Endpoint::HmpaExploitPrevented",
+         "endpoint_type":"computer","endpoint_id":"1111...","source_info":
+         {"ip":"1.1.1.1"},"customer_id":"3333...","name":"'CodeCave'
+         exploit prevented in Essential Objects Worker Process",
+         "id":"2222...","group":"RUNTIME_DETECTIONS","datastream":"event",
+         "end":"2022-04-25T03:15:31.760Z","suser":"n/a",
+         "rt":"2022-04-25T03:15:31.777Z","dhost":"HOSTNAME"}
+        https://github.com/SEKOIA-IO/intake-formats/blob/main/Sophos/sophos%20edr/tests/event_exploit_prevention.json
+    - CryptoGuard wire evidence (weaker — flagged): NO public verbatim
+      raw HmpaCryptoGuard event exists in the /siem/v1/events shape
+      (searched Elastic/Sekoia/Sentinel/QRadar/vendor docs 2026-08-18).
+      Closest evidence: alerts-feed `data.hmpa_exploit.type:
+      "CryptoGuard"` structure in the Elastic sophos_central alert
+      sample, plus community-observed name text "Cryptoguard detect
+      ransomware in $programfiles\Sophos\Endpoint Defense\SEDService.exe"
+      (community thread 142764) and alert code
+      WIN-PROT-HMPA-MALWARE-CRYPTOGUARD (thread 145525). CryptoGuard
+      types here share the Hmpa envelope pending a captured live sample.
+    - Known trap (do NOT copy): athomo001/simlog circulates an invented
+      `Event::Endpoint::Ransomware::Detected` type — appears in no
+      Sophos source.
+
+  SIEM rule mapping: **best-effort, no direct rule_id**. The lab-side
+  Sophos Wazuh family (131100+) keys on the sibling av.detection CEF
+  stream; no behavioral/HMPA rule family exists yet. Scenario axes for
+  a future family: event type (CryptoGuard* → ransomware behavior),
+  group RUNTIME_DETECTIONS vs RANSOMWARE, severity, endpoint_type.
+
+format: cef
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+detections:
+  wazuh:
+    # Wazuh built-in `cef` decoder parses header + extensions.
+    - decoder: cef
+    # TODO(hmpa-extension): backfill rule_ids when a behavioral rule
+    # family lands SOC-side. Candidate scenarios:
+    #   AV_Sophos_CryptoGuard勒索行為攔截_全區 (type=HmpaCryptoGuard*)
+    #   AV_Sophos_Exploit防護攔截_全區       (type=HmpaExploitPrevented)
+    #   AV_Sophos_憑證竊取防護_全區          (type=HmpaCredGuard)
+  sigma:
+    - rule: sophos_central_hmpa_prevention
+      ref: https://github.com/SigmaHQ/sigma  # community contrib pending
+  elk_detection:
+    - kibana_rule_id: cef-hmpa-cryptoguard-ransomware
+      severity: critical
+    - kibana_rule_id: cef-hmpa-exploit-prevented
+      severity: high
+
+mythos_alignment:
+  # R1 Accelerated Threat Exploitation (exploit/ransomware behavior
+  # blocked pre-payload) / R4 Detection Velocity. PA10 Automated
+  # Response (terminate + rollback).
+  risk_refs: [R1, R4]
+  pa_refs: [PA10]
+  ttx_class: rapid
+
+regression:
+  # baseline pending — back-fill once a behavioral Wazuh rule family
+  # exists; parity with sibling av-detect baseline until then.
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 4000
+
+params:
+  syslog_host:
+    default: "sophos-siem-relay.lab.local"
+  customer_id:
+    default: "6ba044f5-793f-4c97-866c-0c0250a7bff6"
+  endpoint_pool:
+    default:
+      - "DESKTOP-WIN10-A1"
+      - "DESKTOP-WIN11-B2"
+      - "LAPTOP-USR-23"
+      - "SRV-FILE01"
+      - "SRV-DC01"
+      - "WEB-PRD-02"
+  source_subnet:
+    default: "10.0.20.0/24"
+
+fields:
+  - name: pri
+    type: fixed
+    value: 134   # local0.info — SysLogHandler default (same as sibling)
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  - name: syslog_host
+    type: param
+    param: syslog_host
+
+  # created_at -> rt / when -> end: ISO-8601 with ms + Z, copied verbatim
+  # by siem.py (no ArcSight reformatting) — same as sibling.
+  - name: created_at
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S.000Z"
+
+  - name: when_ts
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S.000Z"
+
+  # JSON `type` -> CEF DeviceEventClassId. All strings verbatim from
+  # KB-000038309 (via sagan-rules mirror) and matched literally by
+  # Exabeam / UTMStack / SumoLogic production parsers.
+  # HmpaExploitPrevented carries the only full verbatim raw sample, so
+  # it anchors the envelope; CryptoGuard* weights reflect the ransomware
+  # axis this catalog exists for (envelope confidence: KB-verified type
+  # string, no public raw sample — see description).
+  - name: event_type
+    type: weighted_choice
+    choices:
+      "Event::Endpoint::HmpaExploitPrevented":       0.35
+      "Event::Endpoint::HmpaCryptoGuard":            0.18
+      "Event::Endpoint::HmpaBehaviourPrevented":     0.12
+      "Event::Endpoint::HmpaCryptoGuardSMB":         0.07
+      "Event::Endpoint::HmpaCryptoGuardResolved":    0.05
+      "Event::Endpoint::HmpaApplicationHijacking":   0.08
+      "Event::Endpoint::HmpaCredGuard":              0.08
+      "Event::Endpoint::HmpaPrivGuard":              0.07
+
+  # Exploit mitigation name inside HmpaExploitPrevented's `name`
+  # sentence. "CodeCave" is the SIEM-feed-observed value (Sekoia
+  # sample); ROP / StackPivot are from HitmanPro.Alert's public
+  # mitigation vocabulary, not yet observed in the SIEM feed — kept at
+  # low weight and flagged.
+  - name: mitigation
+    type: weighted_choice
+    choices:
+      "CodeCave":   0.70
+      "ROP":        0.20
+      "StackPivot": 0.10
+
+  - name: app_name
+    type: weighted_choice
+    choices:
+      "Essential Objects Worker Process": 0.25  # observed (Sekoia sample)
+      "Microsoft Office Word":            0.25
+      "Google Chrome":                    0.20
+      "Adobe Acrobat Reader":             0.15
+      "Notepad++":                        0.15
+
+  # Path shown inside CryptoGuard name sentences. `$programfiles` macro
+  # form is community-observed (thread 142764 — a real FP on Sophos'
+  # own service binary, kept at low weight for heterogeneity).
+  - name: cg_path
+    type: weighted_choice
+    choices:
+      "C:\\\\Users\\\\alice\\\\Documents":                                     0.35
+      "D:\\\\Share\\\\HR":                                                     0.30
+      "C:\\\\Users\\\\bob\\\\Desktop":                                         0.20
+      "$programfiles\\\\Sophos\\\\Endpoint Defense\\\\SEDService.exe":         0.15
+
+  # `name` — full human sentence (Hmpa types are not regex-split by
+  # name_mapping.py). Grammar per event family:
+  #   ExploitPrevented: "'<Mitigation>' exploit prevented in <App>"
+  #     (verbatim grammar from Sekoia sample)
+  #   CryptoGuard*: "CryptoGuard detected ransomware in <path>"
+  #     (KB description + community-observed title; grammar confidence
+  #      lower than ExploitPrevented — no raw sample)
+  #   Others: KB-000038309 human description text.
+  - name: event_name
+    type: template
+    template: "{% if event_type == 'Event::Endpoint::HmpaExploitPrevented' %}'{{mitigation}}' exploit prevented in {{app_name}}{% elif event_type == 'Event::Endpoint::HmpaCryptoGuard' %}CryptoGuard detected ransomware in {{cg_path}}{% elif event_type == 'Event::Endpoint::HmpaCryptoGuardSMB' %}CryptoGuard detected a ransomware attack in {{cg_path}}{% elif event_type == 'Event::Endpoint::HmpaCryptoGuardResolved' %}CryptoGuard unblocked process{% elif event_type == 'Event::Endpoint::HmpaBehaviourPrevented' %}Malicious behavior prevented in {{app_name}}{% elif event_type == 'Event::Endpoint::HmpaApplicationHijacking' %}Application hijacking prevented in {{app_name}}{% elif event_type == 'Event::Endpoint::HmpaCredGuard' %}We prevented credential theft in {{app_name}}{% else %}We prevented a privilege escalation exploit in {{app_name}}{% endif %}"
+
+  # JSON severity string -> SEVERITY_MAP {none:0, low:1, medium:5,
+  # high:8, very_high:10}. Observed: ExploitPrevented events ship
+  # severity "low" (Sekoia sample); ransomware interception skews high.
+  - name: severity_base
+    type: weighted_choice
+    choices:
+      "low":    0.40
+      "medium": 0.40
+      "high":   0.20
+
+  - name: severity_label
+    type: template
+    template: "{% if event_type.startswith('Event::Endpoint::HmpaCryptoGuard') and not event_type.endswith('Resolved') %}high{% else %}{{severity_base}}{% endif %}"
+
+  - name: cef_severity
+    type: template
+    template: "{% if severity_label == 'very_high' %}10{% elif severity_label == 'high' %}8{% elif severity_label == 'medium' %}5{% else %}1{% endif %}"
+
+  # JSON `group` — RUNTIME_DETECTIONS observed for HmpaExploitPrevented
+  # (Sekoia); RANSOMWARE is the group Sophos Central uses when
+  # CryptoGuard fires (see sibling catalog's group vocabulary).
+  - name: event_group
+    type: template
+    template: "{% if event_type.startswith('Event::Endpoint::HmpaCryptoGuard') %}RANSOMWARE{% else %}RUNTIME_DETECTIONS{% endif %}"
+
+  - name: endpoint_type
+    type: weighted_choice
+    choices:
+      "computer": 0.60
+      "server":   0.40
+
+  - name: location
+    type: choice
+    choices: ${params.endpoint_pool}
+
+  # `source` -> suser. "n/a" dominant per the ExploitPrevented sample
+  # (kernel-side interception has no user context); NT-style names for
+  # user-context events.
+  - name: source_user
+    type: weighted_choice
+    choices:
+      "n/a":             0.40
+      "DOMAIN\\\\alice": 0.20
+      "DOMAIN\\\\bob":   0.15
+      "alice":           0.15
+      "svc_backup":      0.10
+
+  - name: endpoint_id
+    type: faker
+    method: uuid4
+
+  - name: event_id
+    type: faker
+    method: uuid4
+
+  - name: source_ip
+    type: cidr
+    cidr: ${params.source_subnet}
+
+# CEF template — same siem.py emitter layout as sibling av-detect.yaml
+# (lowercase `sophos|sophos central|1.0` header, CEF_MAPPING swaps,
+# flatten_json `source_info_ip`). Differences vs sibling, both real:
+# NO filePath extension (Hmpa names embed the path in the sentence,
+# name_mapping does not extract it) and NO threat/origin/appSha256
+# keys (absent from the Hmpa envelope per the Sekoia sample).
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{syslog_host}} CEF:0|sophos|sophos central|1.0|{{event_type}}|{{event_name}}|{{cef_severity}}|rt={{created_at}} end={{when_ts}} suser={{source_user}} dhost={{location}} duid= customer_id={{params.customer_id}} endpoint_id={{endpoint_id}} endpoint_type={{endpoint_type}} id={{event_id}} group={{event_group}} severity={{severity_label}} source_info_ip={{source_ip}}

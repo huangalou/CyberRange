@@ -11,7 +11,7 @@ CyberRange 是一套偵測工程(detection engineering)驗證框架,核心理念
 ```
 ┌──────────┐    ┌──────────┐    ┌───────────────┐    ┌──────────────────┐
 │ catalog/ │ →  │ engine/  │ →  │ sinks         │ →  │ verify           │
-│ 53 YAML  │    │ generate │    │ Wazuh / ELK   │    │ rule fired?      │
+│ 57 YAML  │    │ generate │    │ Wazuh / ELK   │    │ rule fired?      │
 │ specs    │    │ + chain  │    │ syslog / file │    │ Time-to-Detect?  │
 └──────────┘    └──────────┘    └───────────────┘    └──────────────────┘
 ```
@@ -28,7 +28,7 @@ VulnOps 管理的是弱點的生命週期;DetectOps 管理的則是**偵測的�
 
 ## 專案內容
 
-- **`catalog/`** — 53 份 YAML 日誌格式規格,涵蓋 23 條廠牌/產品線(Fortinet、Palo Alto、Cisco ASA/Firepower、F5 ASM、Citrix NetScaler、Imperva、Microsoft Windows/Sysmon、Linux auditd/OpenSSH、Kubernetes audit、AWS CloudTrail、OWASP ModSecurity CRS、Trend Micro、Symantec、Sophos、McAfee、Kaspersky、F-Secure、Nginx、Apache…)。Schema v4:欄位產生器(pool/faker/weighted)、OCSF 對映、CEF header/extension 對映、`cti.iocs` 與 `vulnops.cve_refs` 區塊。
+- **`catalog/`** — 57 份 YAML 日誌格式規格,涵蓋 23 條廠牌/產品線(Fortinet、Palo Alto、Cisco ASA/Firepower、F5 ASM、Citrix NetScaler、Imperva、Microsoft Windows/Sysmon、Linux auditd/OpenSSH、Kubernetes audit、AWS CloudTrail、OWASP ModSecurity CRS、Trend Micro、Symantec、Sophos、McAfee、Kaspersky、F-Secure、Nginx、Apache…)。Schema v4:欄位產生器(pool/faker/weighted)、OCSF 對映、CEF header/extension 對映、`cti.iocs` 與 `vulnops.cve_refs` 區塊。
 - **`engine/`** — Python 函式庫 + `cyberrange` CLI。模板驅動的日誌產生,具備貼近真實的欄位分布、速率控制、時間窗回放、多 sink 派送。199 個測試。
 - **`api/` + `web/`** — FastAPI 後端 + Next.js 介面:瀏覽 catalog、預覽樣本、派送任務、查看歷史紀錄、CVE → catalog → 偵測規則反查(`/vulnops`)、CTI 指標儀表板(`/metrics`)。47 個 API 測試。
 - **`runbooks/`** — 端到端驗證 runbook,對應真實攻擊行動,例如 FortiGate SSL-VPN 利用的 **S3→S4 pivot 偵測切片**(認證成功 → AD 帳號建立關聯)、以及帶自訂 Wazuh 規則鏈的供應鏈攻擊行動試點 — 每份都附 TDD fixture(`tests/fixtures/wazuh-logtest/*/expected.json`)、live-fire 雙送(Wazuh + Elastic)與偵測數驗證。

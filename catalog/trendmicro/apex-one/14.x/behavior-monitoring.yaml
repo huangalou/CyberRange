@@ -1,0 +1,325 @@
+vendor: trendmicro
+product: apex-one
+version: "14.x"
+log_type: behavior.monitoring
+description: |
+  Trend Micro Apex One 14.x Behavior Monitoring (AEGIS engine) event
+  forwarded by Apex Central Syslog Forwarder in CEF over RFC3164 syslog —
+  the behavioral axis of Apex One: process behavior blocking, ransomware
+  behavior (unauthorized file encryption), newly-encountered-program
+  blocking, hosts-file / registry persistence tampering. Complements the
+  sibling `av-detect.yaml` (Virus/Malware log) and `web-reputation.yaml`.
+
+  Source-of-truth for wire format (all fetched 2026-08-18):
+    - Apex Central Online Help — CEF Behavior Monitoring Logs, current
+      on-prem patch line (STRING-value variant this catalog implements;
+      authoritative mapping table + canonical log sample):
+      https://docs.trendmicro.com/en-us/documentation/article/apex-central-online-help-cef-behavior-monitor
+    - Apex Central 2019 GA docs (legacy NUMERIC-value variant — cn1/cn2/
+      cn3 + numeric cs2/act; still parsed by SIEMs, see deviations note):
+      https://docs.trendmicro.com/en-us/documentation/article/trend-micro-apex-central-2019-online-help-cef-behavior-monitor
+    - Apex Central as a Service docs (SaaS deltas: TMCMLogTarget replaces
+      cs1, adds TMCMdevicePlatform):
+      https://docs.trendmicro.com/en-us/documentation/article/apex-central-as-a-service-online-help-cef-behavior-monitor
+    - Apex Central Supported Log Types and Formats (BM is one of only
+      three security log types supporting both CEF and Apex Central
+      native format):
+      https://docs.trendmicro.com/en-us/documentation/article/trend-micro-apex-central-patch-4-syslog-log-types-for
+    - Sekoia.io behavior_monitoring_event intake sample (byte-identical
+      to the 2019 GA doc sample — cross-check #1):
+      https://github.com/SEKOIA-IO/documentation/blob/main/_shared_content/operations_center/integrations/generated/064f7e8b-ce5f-474d-802e-e88fe2193365_sample.md
+    - Microsoft Sentinel official CEF sample data (numeric variant parsed
+      end-to-end into CommonSecurityLog — cross-check #2):
+      https://github.com/Azure/Azure-Sentinel/blob/master/Sample%20Data/CEF/TrendMicro_ApexOne.json
+
+  Real raw sample (verbatim from current on-prem Apex Central docs,
+  string variant — hard-wrap joined):
+    CEF:0|Trend Micro|Apex Central|2019|BM:1000|Behavior Monitoring|3|
+    rt=Sep 20 2019 01:02:03 GMT+00:00 dvchost=localhost
+    cs5Label=Risk_Level cs5=1 cs2Label=Policy cs2=Threat Behavior
+    Analysis sproc=subject cs3Label=Event_Type cs3=File system
+    cs1Label=Target cs1=HKCU\Software\Microsoft\Windows\CurrentVersion\
+    Run\COM+ act=Ask cs4Label=Operation cs4=Create Process shost=shost1
+    src=10.0.76.40 deviceFacility=Apex One reason=G
+    deviceNtDomain=APEXTMCM dntdom=OSCEDomain1 TMCMLogDetectedHost=shost1
+    TMCMLogDetectedIP=10.0.76.40 ApexCentralHost=TW-CHRIS-W2019
+    devicePayloadId=1C00290C0360-9CDE11EB-D4B8-F51F-C697
+
+  Wire-format facts worth preserving:
+    - Header is ALWAYS `BM:1000|Behavior Monitoring|3` — every published
+      sample shows eventid BM:1000 (the "policy id" in the eventid slot
+      never varies in any authoritative source) and header severity 3.
+      Policy identity rides on cs2, ransomware classification on
+      reason=G.
+    - NO `cat=` extension — unlike Virus/Malware (cat=1703) or Web
+      Violation (cat=7), BM events carry no cat key in any official or
+      SIEM sample. Class identity = eventid `BM:*` + name.
+    - Two wire generations: 2019 GA numeric (cn1Label=Risk_Level cn1=1
+      cs2=1000 act=3 cn3Label=Operation cn3=302, body ends at
+      deviceFacility) vs current string variant (cs3/cs4/cs5 string
+      values + tail block reason..devicePayloadId). This catalog emits
+      the current string variant; add a `-legacy` sibling if a numeric-
+      variant consumer needs testing.
+    - Custom-string labels on the wire are the underscore short forms
+      (Risk_Level / Policy / Event_Type / Target / Operation), NOT the
+      prose forms in the 2019 doc table.
+    - The SaaS docs page stamps vendor "TrendAI™" — a docs-site
+      rebranding artifact; all wire evidence says `Trend Micro`.
+
+  SIEM rule mapping: **best-effort, no direct rule_id**. The reference
+  SIEM ruleset's AV_TrendMicro family (see sibling av-detect.yaml) keys
+  on Virus/Malware log events; no Behavior Monitoring rule family exists
+  yet. Scenario axes available when one lands: cs2 policy (Unauthorized
+  file encryption → ransomware behavior), reason=G, act Terminated.*
+  rollback family, shost workstation vs server pools.
+
+format: cef
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+detections:
+  wazuh:
+    # Wazuh built-in `cef` decoder parses header + extensions.
+    - decoder: cef
+    # TODO(bm-extension): backfill rule_ids when a BM/behavioral rule
+    # family lands SOC-side. Candidate scenarios:
+    #   AV_TrendMicro_行為監控_勒索加密行為(reason=G / cs2=Unauthorized file encryption)
+    #   AV_TrendMicro_行為監控_持久化竄改(cs2=New startup program / Host file modification)
+    #   AV_TrendMicro_行為監控_未知程式攔截(cs2=Newly encountered programs)
+  sigma:
+    - rule: trendmicro_apex_one_behavior_monitoring
+      ref: https://github.com/SigmaHQ/sigma  # community contrib pending
+  elk_detection:
+    - kibana_rule_id: cef-bm-ransomware-behavior
+      severity: critical
+    - kibana_rule_id: cef-bm-policy-violation
+      severity: medium
+
+mythos_alignment:
+  # R1 Accelerated Threat Exploitation (behavioral engine catches
+  # signatureless tradecraft) / R4 Detection Velocity. PA10 Automated
+  # Response (Terminate / rollback actions).
+  risk_refs: [R1, R4]
+  pa_refs: [PA10]
+  ttx_class: rapid
+
+regression:
+  # baseline pending — back-fill once a BM-specific Wazuh rule family
+  # exists; parity with sibling AV catalog until then.
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 4000
+
+params:
+  syslog_host:
+    default: "apexcentral.lab.local"
+  apex_central_host:
+    default: "TW-APEXCENTRAL-01"
+  apex_central_domain:
+    default: "APEXTMCM"
+  apex_central_dntdom:
+    default: "OSCEDomain1"
+  workstation_pool:
+    default:
+      - "DESKTOP-WIN10-A1"
+      - "DESKTOP-WIN11-B2"
+      - "LAPTOP-USR-23"
+      - "LAPTOP-CONS-04"
+      - "DESKTOP-MKT-09"
+  server_pool:
+    default:
+      - "SRV-FILE01"
+      - "SRV-DC01"
+      - "WEB-PRD-02"
+      - "DB-MSSQL-01"
+      - "APP-ERP-03"
+  internal_subnet:
+    default: "10.0.20.0/24"
+  server_subnet:
+    default: "10.0.50.0/24"
+
+fields:
+  - name: pri
+    type: fixed
+    value: 134   # local0.info — Apex Central Syslog Forwarder default
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  # rt= uses "%b %d %Y %H:%M:%S GMT+00:00" — Apex Central always emits
+  # UTC with explicit "GMT+00:00" suffix (same as sibling AV catalog).
+  - name: cef_ts
+    type: datetime
+    format: "%b %d %Y %H:%M:%S GMT+00:00"
+
+  - name: host_class
+    type: weighted_choice
+    choices:
+      workstation: 0.60
+      server:      0.40
+
+  - name: workstation_host
+    type: choice
+    choices: ${params.workstation_pool}
+
+  - name: server_host
+    type: choice
+    choices: ${params.server_pool}
+
+  - name: shost
+    type: template
+    template: "{% if host_class == 'server' %}{{server_host}}{% else %}{{workstation_host}}{% endif %}"
+
+  - name: workstation_ip
+    type: cidr
+    cidr: ${params.internal_subnet}
+
+  - name: server_ip
+    type: cidr
+    cidr: ${params.server_subnet}
+
+  - name: src_ip
+    type: template
+    template: "{% if host_class == 'server' %}{{server_ip}}{% else %}{{workstation_ip}}{% endif %}"
+
+  # Scenario axis binds Policy / Event_Type / Operation / Target / act /
+  # reason into combinations that make behavioral sense together —
+  # independent sampling would produce impossible tuples (e.g. a
+  # ransomware rollback act on a registry event). Policy strings are
+  # verbatim from the official cs2 vocabulary.
+  - name: bm_scenario
+    type: weighted_choice
+    choices:
+      file_encrypt:     0.25   # Unauthorized file encryption → ransomware axis
+      registry_persist: 0.20   # New startup program
+      threat_behavior:  0.18   # Threat Behavior Analysis (doc-sample combo)
+      new_program:      0.15   # Newly encountered programs
+      dll_injection:    0.12   # Program library injection
+      hostfile_mod:     0.10   # Host file modification
+
+  - name: policy
+    type: template
+    template: "{% if bm_scenario == 'file_encrypt' %}Unauthorized file encryption{% elif bm_scenario == 'registry_persist' %}New startup program{% elif bm_scenario == 'threat_behavior' %}Threat Behavior Analysis{% elif bm_scenario == 'new_program' %}Newly encountered programs{% elif bm_scenario == 'dll_injection' %}Program library injection{% else %}Host file modification{% endif %}"
+
+  # cs3 Event_Type — official string vocabulary: Process / Process image /
+  # Registry / File system / Driver / SDT / System API / User Mode /
+  # Exploit / All.
+  - name: event_type
+    type: template
+    template: "{% if bm_scenario == 'registry_persist' %}Registry{% elif bm_scenario == 'new_program' %}Process{% elif bm_scenario == 'dll_injection' %}Process image{% else %}File system{% endif %}"
+
+  # cs4 Operation — official string vocabulary: Create Process / Open /
+  # Terminate / Delete / Write / Access / Create File / Close / Execute /
+  # Invoke / Exploit / Unhandled Operation.
+  - name: operation
+    type: template
+    template: "{% if bm_scenario == 'new_program' %}Create Process{% elif bm_scenario == 'dll_injection' %}Invoke{% elif bm_scenario == 'threat_behavior' %}Create Process{% else %}Write{% endif %}"
+
+  # sproc — acting process ("Aegis subject"), full path per real samples.
+  - name: sproc
+    type: weighted_choice
+    choices:
+      "C:\\\\Windows\\\\SysWOW64\\\\rundll32.exe":                          0.20
+      "C:\\\\Windows\\\\System32\\\\powershell.exe":                        0.18
+      "C:\\\\Users\\\\alice\\\\AppData\\\\Local\\\\Temp\\\\update.exe":     0.15
+      "C:\\\\Program Files\\\\Microsoft Office\\\\WINWORD.EXE":             0.12
+      "C:\\\\Users\\\\Public\\\\Downloads\\\\invoice_2026.exe":             0.13
+      "C:\\\\Windows\\\\System32\\\\wscript.exe":                           0.10
+      "C:\\\\ProgramData\\\\dropper\\\\dropper.exe":                        0.12
+
+  - name: reg_target
+    type: weighted_choice
+    choices:
+      "HKCU\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\\\\COM+":      0.40
+      "HKLM\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\\\\Updater":   0.30
+      "HKCU\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\RunOnce\\\\svc":   0.30
+
+  - name: file_target
+    type: weighted_choice
+    choices:
+      "C:\\\\Users\\\\alice\\\\Documents\\\\Q3_report.docx":       0.30
+      "D:\\\\Share\\\\HR\\\\payroll_2026.xlsx":                    0.25
+      "C:\\\\Users\\\\bob\\\\Desktop\\\\project_notes.txt":        0.25
+      "C:\\\\Users\\\\Public\\\\Pictures\\\\family.jpg":           0.20
+
+  - name: exe_target
+    type: weighted_choice
+    choices:
+      "C:\\\\Users\\\\Public\\\\Downloads\\\\invoice_2026.exe":    0.35
+      "C:\\\\Users\\\\alice\\\\AppData\\\\Local\\\\Temp\\\\update.exe": 0.35
+      "C:\\\\ProgramData\\\\dropper\\\\payload.dll":               0.30
+
+  # cs1 Target — object the acting process touched; bound to scenario.
+  - name: target
+    type: template
+    template: "{% if bm_scenario == 'registry_persist' %}{{reg_target}}{% elif bm_scenario == 'hostfile_mod' %}C:\\\\Windows\\\\System32\\\\drivers\\\\etc\\\\hosts{% elif bm_scenario == 'file_encrypt' %}{{file_target}}{% elif bm_scenario == 'threat_behavior' %}{{reg_target}}{% else %}{{exe_target}}{% endif %}"
+
+  # act (string variant) — ransomware scenarios draw from the rollback
+  # vocabulary ("Terminated. Files were recovered." family); everything
+  # else from the plain vocabulary. All strings verbatim from the
+  # official act value list.
+  - name: act_ransom
+    type: weighted_choice
+    choices:
+      "Terminated. Files were recovered.":          0.40
+      "Terminate":                                  0.30
+      "Terminated. Some files were not recovered.": 0.20
+      "Deny":                                       0.10
+
+  - name: act_generic
+    type: weighted_choice
+    choices:
+      "Deny":      0.35
+      "Terminate": 0.20
+      "Ask":       0.20
+      "Allow":     0.10
+      "Assess":    0.10
+      "Clean":     0.05
+
+  - name: act_value
+    type: template
+    template: "{% if bm_scenario == 'file_encrypt' %}{{act_ransom}}{% else %}{{act_generic}}{% endif %}"
+
+  # cs5 Risk_Level — 0: Low / 1: High per official docs. Encryption
+  # behavior is always High.
+  - name: risk_level_base
+    type: weighted_choice
+    choices:
+      "1": 0.65
+      "0": 0.35
+
+  - name: risk_level
+    type: template
+    template: "{% if bm_scenario == 'file_encrypt' %}1{% else %}{{risk_level_base}}{% endif %}"
+
+  # reason — Critical threat type A..G; G=Ransomware is bound to the
+  # encryption scenario, others sample the remaining letters (E=Unknown
+  # threats dominant per real-world distribution).
+  - name: reason_base
+    type: weighted_choice
+    choices:
+      "E": 0.50
+      "B": 0.15
+      "C": 0.15
+      "D": 0.10
+      "F": 0.10
+
+  - name: reason_letter
+    type: template
+    template: "{% if bm_scenario == 'file_encrypt' %}G{% else %}{{reason_base}}{% endif %}"
+
+  - name: device_payload_id
+    type: faker
+    method: uuid4
+
+# Template emits the current on-prem string-variant CEF wire format.
+# Field order matches the canonical doc sample verbatim (cs5 → cs2 →
+# sproc → cs3 → cs1 → act → cs4 → shost → src → deviceFacility → tail
+# block). Header is the invariant `BM:1000|Behavior Monitoring|3`;
+# intentionally NO cat= key (BM events carry none on the wire).
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{params.syslog_host}} CEF:0|Trend Micro|Apex Central|2019|BM:1000|Behavior Monitoring|3|rt={{cef_ts}} dvchost={{params.apex_central_host}} cs5Label=Risk_Level cs5={{risk_level}} cs2Label=Policy cs2={{policy}} sproc={{sproc}} cs3Label=Event_Type cs3={{event_type}} cs1Label=Target cs1={{target}} act={{act_value}} cs4Label=Operation cs4={{operation}} shost={{shost}} src={{src_ip}} deviceFacility=Apex One reason={{reason_letter}} deviceNtDomain={{params.apex_central_domain}} dntdom={{params.apex_central_dntdom}} TMCMLogDetectedHost={{shost}} TMCMLogDetectedIP={{src_ip}} ApexCentralHost={{params.apex_central_host}} devicePayloadId={{device_payload_id}}

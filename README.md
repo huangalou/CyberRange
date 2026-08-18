@@ -11,7 +11,7 @@ Point it at a vendor/product/version, and it generates log streams that are fait
 ```
 ┌──────────┐    ┌──────────┐    ┌───────────────┐    ┌──────────────────┐
 │ catalog/ │ →  │ engine/  │ →  │ sinks         │ →  │ verify           │
-│ 53 YAML  │    │ generate │    │ Wazuh / ELK   │    │ rule fired?      │
+│ 57 YAML  │    │ generate │    │ Wazuh / ELK   │    │ rule fired?      │
 │ specs    │    │ + chain  │    │ syslog / file │    │ Time-to-Detect?  │
 └──────────┘    └──────────┘    └───────────────┘    └──────────────────┘
 ```
@@ -28,7 +28,7 @@ VulnOps manages the vulnerability lifecycle; DetectOps manages the **detection l
 
 ## What's inside
 
-- **`catalog/`** — 53 YAML log-format specs across 23 vendor/product lines (Fortinet, Palo Alto, Cisco ASA/Firepower, F5 ASM, Citrix NetScaler, Imperva, Microsoft Windows/Sysmon, Linux auditd/OpenSSH, Kubernetes audit, AWS CloudTrail, OWASP ModSecurity CRS, Trend Micro, Symantec, Sophos, McAfee, Kaspersky, F-Secure, Nginx, Apache, …). Schema v4: field generators (pool/faker/weighted), OCSF mapping, CEF header/extension mapping, `cti.iocs` and `vulnops.cve_refs` blocks.
+- **`catalog/`** — 57 YAML log-format specs across 23 vendor/product lines (Fortinet, Palo Alto, Cisco ASA/Firepower, F5 ASM, Citrix NetScaler, Imperva, Microsoft Windows/Sysmon, Linux auditd/OpenSSH, Kubernetes audit, AWS CloudTrail, OWASP ModSecurity CRS, Trend Micro, Symantec, Sophos, McAfee, Kaspersky, F-Secure, Nginx, Apache, …). Schema v4: field generators (pool/faker/weighted), OCSF mapping, CEF header/extension mapping, `cti.iocs` and `vulnops.cve_refs` blocks.
 - **`engine/`** — Python library + `cyberrange` CLI. Template-driven generation with realistic field distributions, rate control, time-window replay, multi-sink dispatch. 199 tests.
 - **`api/` + `web/`** — FastAPI backend + Next.js UI: browse the catalog, preview samples, dispatch jobs, track history, reverse-lookup CVE → catalog → detection rule (`/vulnops`), CTI metrics dashboard (`/metrics`). 47 API tests.
 - **`runbooks/`** — end-to-end validation runbooks for real campaigns, e.g. a FortiGate SSL-VPN exploitation **S3→S4 pivot detection slice** (auth-success → AD account-creation correlation) and a supply-chain campaign pilot with custom Wazuh rule chains — each with TDD fixtures (`tests/fixtures/wazuh-logtest/*/expected.json`), live-fire dual-shipping (Wazuh + Elastic), and detection-count verification.

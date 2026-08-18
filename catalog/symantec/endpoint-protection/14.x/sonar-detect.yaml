@@ -1,0 +1,503 @@
+vendor: symantec
+product: endpoint-protection
+version: "14.x"
+log_type: sonar.detection
+description: |
+  Symantec Endpoint Protection (SEP) 14.x SONAR / Proactive Detection log
+  event emitted by SEPM External Logging — the behavioral-analysis axis of
+  SEP, complementing the signature-based Risk Log covered by the sibling
+  `av-detect.yaml`. Broadcom's external-logging KB names this log class
+  "Agent Proactive Detection logs (SONAR)"; the SEPM console calls it
+  "SONAR: Behaviorial Analysis logs" [sic — Broadcom's own typo]; the
+  client UI groups it under "Proactive Threat Protection". Wire format is
+  the native SymantecServer comma-delimited layout — NOT CEF.
+
+  Source-of-truth for wire format (all fetched 2026-08-18):
+    - Broadcom KB 155205 "External Logging settings and log event severity
+      levels for Endpoint Protection Manager" (authoritative ordered field
+      list for "Agent Proactive Detection logs (SONAR)"):
+      https://knowledge.broadcom.com/external/article/155205/external-logging-settings-and-log-event.html
+    - Elastic symantec_endpoint integration pipeline fixture (2 verbatim
+      SONAR raw lines: pure-heuristic without cert block + System Change
+      with cert block; classifies lines with `Detection type:` as
+      event.provider "Agent Proactive Detection Log"):
+      https://github.com/elastic/integrations/blob/main/packages/symantec_endpoint/data_stream/log/_dev/test/pipeline/test-agent-proactive-detection-sonar.log
+    - Hunters device docs (full SEP 14.3-era SONAR syslog line incl.
+      RFC3164 envelope + `SymantecServer:` tag):
+      https://docs.hunters.ai/docs/symantec
+    - Broadcom TechDocs SONAR console log help (action string vocabulary):
+      https://techdocs.broadcom.com/us/en/symantec-security-software/endpoint-security-and-management/endpoint-protection/all/Dialog-Overview/cs-help-logs-console-v23098856-d37e1061/sonar-logs-v9046562-d37e2546.html
+    - Broadcom KB 154622 (SONAR System Change / hosts-file event wording):
+      https://knowledge.broadcom.com/external/article/154622/error-security-risk-found-hosts-file-cha.html
+    - Symantec threat writeups verifying real SONAR risk names:
+      SONAR.SuspDataRun (2014-060411-4957-99), SONAR.SuspBeh!gen8
+      (2014-103023-1113-99), SONAR.Heuristic (2011-122605-0918-99),
+      SONAR.Heur.RGC!g84/!g82 (2016-010408-*), Bloodhound.SONAR.1/.2
+      (2006-070613-*); SONAR.Heuristic.121 observed in the Hunters line.
+
+  Real SEPM wire sample (verbatim from Hunters docs, 14.3-era):
+    Nov 30 10:59:37 EU-SEPM-01 SymantecServer: Security risk found,
+    Computer name: name,IP Address: ip,Detection type: Heuristic,
+    First Seen: Symantec has known about this file for more than 30
+    days.,Application name: socar.exe,...,Detection Submissions No,...,
+    Risk Level: High,Risk type: Heuristic,Source: SONAR Scan,
+    Risk name: SONAR.Heuristic.121,Occurrences: 1,Desktop\socar.exe,,
+    Actual action: Quarantined,...
+
+  Body grammar quirks (all confirmed by ≥2 independent samples):
+    - Two positional (label-less) slots after `Occurrences:` — KB fields
+      "File path for attacked file" and "Description"; the description
+      slot is often empty (`,,`) or literal `''`, sometimes prose like
+      "Realtime deferred scanning".
+    - `Detection Submissions No|Yes` has NO colon — verbatim flag token.
+    - Label drift across 14.x builds: older builds emit `Inserted:` /
+      `End:` / `Domain:` / `Group:` / `Server:` / `User:` / `Source
+      computer:` / `Source IP:`; 14.3 RU-era builds emit `Event Insert
+      Time:` / `End Time:` / `Domain Name:` / `Group Name:` / `Server
+      Name:` / `User Name:` / `Source Computer Name:` / `Source Computer
+      IP:` (+ trailing `Location:`). This catalog emits the older label
+      set for consistency with the Elastic 14.x fixture and the sibling
+      Risk Log catalog; the KB warns "Some fields may not be present in
+      earlier versions ... and vice-versa".
+    - KB 155205 lists 4x IP/MAC/Gateway tuple fields that do NOT appear
+      on the wire in any observed sample — omitted here (samples are
+      ground truth).
+
+  SIEM rule mapping: **best-effort, no direct rule_id**. The reference
+  SIEM ruleset's AV_Symantec family (16 rules, see sibling av-detect.yaml)
+  keys on Risk Log events; no SONAR-specific rule family exists yet.
+  When a SOC-side `AV_Symantec_SONAR_*` / behavioral family is added,
+  back-fill the rule_id list below. Scenario axes available for such
+  rules: detection_type (Heuristic vs System Change), actual_action
+  (Quarantined/Process terminated vs Left alone → 未處置), risk_level.
+
+format: csv_keyvalue   # SymantecServer: <event>,KEY: VALUE,... — native SEPM
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+detections:
+  wazuh:
+    # Same native SEPM comma-delimited stream as the sibling Risk Log —
+    # requires the `symantec-ep` decoder family. Wazuh built-in `cef`
+    # decoder will NOT parse this.
+    - decoder: symantec-ep
+    # TODO(sonar-extension): backfill rule_ids when a SONAR/behavioral
+    # rule family lands SOC-side. Candidate scenarios:
+    #   AV_Symantec_SONAR行為偵測(已處置)_全區
+    #   AV_Symantec_SONAR行為偵測(未處置)_全區
+    #   AV_Symantec_SONAR系統變更(HostFile)_全區
+  sigma:
+    - rule: symantec_sep_sonar_detection
+      ref: https://github.com/SigmaHQ/sigma  # community contrib pending
+  elk_detection:
+    - kibana_rule_id: symantec-ep-sonar-behavioral-detected
+      severity: high
+    - kibana_rule_id: symantec-ep-sonar-left-alone
+      severity: medium
+
+mythos_alignment:
+  # R1 Accelerated Threat Exploitation (behavioral engine catches what
+  # signatures miss) / R4 Detection Velocity. PA10 Automated Response
+  # (quarantine / process-terminate actions).
+  risk_refs: [R1, R4]
+  pa_refs: [PA10]
+  ttx_class: rapid
+
+regression:
+  # baseline pending — back-fill once a SONAR-specific Wazuh rule family
+  # exists; until then parity with sibling Risk Log baseline.
+  baseline_alert_count: 1000
+  baseline_ttd_ms: 4000
+
+params:
+  syslog_host:
+    default: "symantec.sepm.lab.local"
+  sepm_server:
+    default: "SEPM-PROD-01"
+  sepm_domain:
+    default: "Default"
+  sepm_group:
+    default: "My Company\\Workstations"
+  sepm_group_server:
+    default: "My Company\\Servers"
+  workstation_pool:
+    default:
+      - "DESKTOP-WIN10-A1"
+      - "DESKTOP-WIN11-B2"
+      - "LAPTOP-USR-23"
+      - "LAPTOP-CONS-04"
+      - "DESKTOP-MKT-09"
+  server_pool:
+    default:
+      - "SRV-FILE01"
+      - "SRV-DC01"
+      - "WEB-PRD-02"
+      - "DB-MSSQL-01"
+      - "APP-ERP-03"
+  internal_subnet:
+    default: "10.0.20.0/24"
+  server_subnet:
+    default: "10.0.50.0/24"
+  user_pool:
+    default: ["alice", "bob", "svc_backup", "contractor_a", "admin_b"]
+
+fields:
+  - name: pri
+    type: fixed
+    value: 51   # local6.notice — SEPM default (QRadar setup: facility 6)
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  - name: event_iso_ts
+    type: datetime
+    format: "%Y-%m-%d %H:%M:%S"
+
+  - name: syslog_host
+    type: param
+    param: syslog_host
+
+  # Event description — SONAR lines open with one of these two literal
+  # markers per real samples ("SONAR detection now allowed" does NOT
+  # exist on the SEPM syslog wire; verified 2026-08-18).
+  - name: event_marker
+    type: weighted_choice
+    choices:
+      "Potential risk found": 0.55
+      "Security risk found":  0.45
+
+  - name: host_class
+    type: weighted_choice
+    choices:
+      workstation: 0.60
+      server:      0.40
+
+  - name: workstation_host
+    type: choice
+    choices: ${params.workstation_pool}
+
+  - name: server_host
+    type: choice
+    choices: ${params.server_pool}
+
+  - name: computer_name
+    type: template
+    template: "{% if host_class == 'server' %}{{server_host}}{% else %}{{workstation_host}}{% endif %}"
+
+  - name: workstation_ip
+    type: cidr
+    cidr: ${params.internal_subnet}
+
+  - name: server_ip
+    type: cidr
+    cidr: ${params.server_subnet}
+
+  - name: ip_address
+    type: template
+    template: "{% if host_class == 'server' %}{{server_ip}}{% else %}{{workstation_ip}}{% endif %}"
+
+  - name: sepm_group
+    type: template
+    template: "{% if host_class == 'server' %}{{params.sepm_group_server}}{% else %}{{params.sepm_group}}{% endif %}"
+
+  # SONAR's two detection families per Broadcom docs: heuristic
+  # (score-based) and system change (hosts-file / DNS change).
+  - name: detection_type
+    type: weighted_choice
+    choices:
+      "Heuristic":              0.85
+      "System Change HostFile": 0.15
+
+  - name: first_seen
+    type: weighted_choice
+    choices:
+      "Symantec has known about this file approximately 2 days.":   0.30
+      "Symantec has known about this file for more than 30 days.":  0.25
+      "Symantec has known about this file for more than 1 year.":   0.20
+      "Symantec has known about this file approximately 7 days.":   0.15
+      "Reputation was not used in this detection.":                 0.10
+
+  - name: application_name
+    type: weighted_choice
+    choices:
+      "socar.exe":                             0.15
+      "update.exe":                            0.15
+      "Microsoft® Windows® Operating System":  0.15
+      "":                                      0.25
+      "Propsim":                               0.10
+      "invoice_viewer.exe":                    0.10
+      "Suspicious dropper":                    0.10
+
+  # Application type — only 127 observed on the SONAR wire; keep the
+  # sibling Risk Log codes at low weight for heterogeneous realism.
+  - name: application_type
+    type: weighted_choice
+    choices:
+      "127": 0.70
+      "100": 0.10
+      "126": 0.10
+      "120": 0.10
+
+  - name: application_version
+    type: weighted_choice
+    choices:
+      "3.0.60":         0.15
+      "6.1.7600.16385": 0.15
+      "1.0.0.1":        0.15
+      "":               0.45
+      "10.0.17763.1":   0.10
+
+  # SONAR samples label the algorithm "SHA-256" (Risk Log sibling uses
+  # "SHA2" — both are real SEPM strings, class-specific).
+  - name: hash_type
+    type: fixed
+    value: "SHA-256"
+
+  - name: hash_hex
+    type: faker
+    method: sha256
+
+  - name: application_hash
+    type: template
+    template: "SHA#{{hash_hex}}"
+
+  - name: company_name
+    type: weighted_choice
+    choices:
+      "Microsoft Corporation": 0.20
+      "":                      0.45
+      "Dummy Technologies":    0.10
+      "Adobe Inc.":            0.10
+      "Compromised Vendor Ltd.": 0.15
+
+  - name: file_size_bytes
+    type: int_range
+    min: 1024
+    max: 16777216
+
+  # Sensitivity / Detection score — small integers per real samples
+  # (Sensitivity 1|2, Detection score 0|3 observed).
+  - name: sensitivity
+    type: weighted_choice
+    choices:
+      "1": 0.40
+      "2": 0.60
+
+  - name: detection_score
+    type: weighted_choice
+    choices:
+      "0": 0.25
+      "1": 0.15
+      "2": 0.20
+      "3": 0.40
+
+  - name: coh_engine_version
+    type: weighted_choice
+    choices:
+      "12.6.0.106": 0.45
+      "8.1.1.1":    0.20
+      "":           0.35
+
+  # Label-less flag token — literally "Detection Submissions No" (no
+  # colon) per every observed sample.
+  - name: detection_submissions
+    type: weighted_choice
+    choices:
+      "No":  0.85
+      "Yes": 0.15
+
+  - name: permitted_reason
+    type: weighted_choice
+    choices:
+      "Not on the permitted application list": 0.80
+      "MDS":                                   0.20
+
+  - name: disposition
+    type: weighted_choice
+    choices:
+      "Bad":  0.80
+      "Good": 0.20  # false-positive / trusted case (Hunters sample)
+
+  # Downloader process — lowercase forward-slash paths per real samples.
+  - name: downloaded_by
+    type: weighted_choice
+    choices:
+      "c:/windows/explorer.exe":                                    0.35
+      "c:/users/alice/appdata/local/temp/update.exe":               0.15
+      "c:/users/administrator/desktop/tools/tools/xxxtools.exe":    0.15
+      "c:/program files (x86)/google/chrome/application/chrome.exe": 0.15
+      "c:/programdata/oracle/java/javapath_target_2151967445/host126": 0.10
+      "c:/windows/system32/powershell.exe":                         0.10
+
+  - name: prevalence
+    type: weighted_choice
+    choices:
+      "Unknown":                                                    0.35
+      "This file has been seen by fewer than 5 Symantec users.":    0.35
+      "This file has been seen by fewer than 50 Symantec users.":   0.20
+      "This file has been seen by many Symantec users.":            0.10
+
+  - name: confidence
+    type: weighted_choice
+    choices:
+      "There is not enough information about this file to recommend it.": 0.40
+      "There is some evidence that this file is untrustworthy.":          0.30
+      "There is growing evidence that this file is trustworthy.":         0.15
+      "There is strong evidence that this file is untrustworthy.":        0.15
+
+  - name: url_tracking_status
+    type: weighted_choice
+    choices:
+      "On":  0.75
+      "Off": 0.25
+
+  - name: risk_level
+    type: weighted_choice
+    choices:
+      "High":   0.70
+      "Medium": 0.20
+      "Low":    0.10
+
+  # Risk type slot — string form in 14.3 samples, numeric code in the
+  # Elastic 14.x fixture; both real.
+  - name: risk_type
+    type: weighted_choice
+    choices:
+      "Heuristic": 0.60
+      "3":         0.40
+
+  - name: source_scan
+    type: weighted_choice
+    choices:
+      "SONAR Scan":     0.60
+      "Heuristic Scan": 0.40
+
+  # Real SONAR risk names — every entry verified against Symantec threat
+  # writeups / observed wire samples (2026-08-18). Empty value is real:
+  # pure heuristic detections can carry no risk name (Elastic fixture);
+  # System Change events can carry a non-SONAR name (Trojan.Gen.2).
+  - name: risk_name
+    type: weighted_choice
+    choices:
+      "SONAR.Heuristic.121":  0.20
+      "SONAR.SuspBeh!gen8":   0.15
+      "SONAR.SuspLaunch!g11": 0.12
+      "SONAR.SuspDataRun":    0.10
+      "":                     0.10
+      "SONAR.Heur.RGC!g84":   0.08
+      "SONAR.SuspLaunch!gen4": 0.08
+      "Trojan.Gen.2":         0.07
+      "SONAR.Heur.RGC!g82":   0.05
+      "Bloodhound.SONAR.1":   0.05
+
+  - name: occurrences
+    type: weighted_choice
+    choices:
+      "1": 0.80
+      "2": 0.10
+      "9": 0.05
+      "3": 0.05
+
+  # Positional file-path slot (label-less, after Occurrences).
+  - name: file_path
+    type: weighted_choice
+    choices:
+      "Desktop\\socar.exe":                                          0.18
+      "c:\\users\\alice\\appdata\\local\\temp\\update.exe":          0.16
+      "f:\\user\\workspace\\baseline package creator\\release\\Host214": 0.12
+      "c:\\users\\public\\downloads\\invoice_2026.exe":              0.16
+      "c:\\windows\\temp\\7z_extract\\payload.dll":                  0.14
+      "c:\\users\\bob\\appdata\\roaming\\microsoft\\svchost.exe":    0.14
+      "c:\\windows\\system32\\drivers\\etc\\hosts":                  0.10  # System Change target
+
+  # Positional description slot — empty / literal '' / prose, all real.
+  - name: event_description
+    type: weighted_choice
+    choices:
+      "":                          0.50
+      "''":                        0.30
+      "Realtime deferred scanning": 0.20
+
+  # Action vocabulary from the SEPM console SONAR log filter (TechDocs).
+  # "Left alone" drives the 未處置 scenario axis.
+  - name: actual_action
+    type: weighted_choice
+    choices:
+      "Quarantined":                          0.30
+      "Left alone":                           0.30
+      "Process terminated":                   0.15
+      "Threat blocked":                       0.10
+      "Cleaned by deletion":                  0.05
+      "All actions failed":                   0.05
+      "Process termination pending restart":  0.05
+
+  - name: requested_action
+    type: weighted_choice
+    choices:
+      "Quarantined":         0.50
+      "Left alone":          0.30
+      "Process terminated":  0.20
+
+  - name: secondary_action
+    type: weighted_choice
+    choices:
+      "Left alone":  0.70
+      "Quarantined": 0.30
+
+  - name: user_name
+    type: choice
+    choices: ${params.user_pool}
+
+  - name: intensive_protection_level
+    type: weighted_choice
+    choices:
+      "0": 0.70
+      "1": 0.20
+      "2": 0.10
+
+  - name: cert_issuer
+    type: weighted_choice
+    choices:
+      "":                                          0.55
+      "Symantec":                                  0.10
+      "Microsoft Code Signing PCA 2011":           0.20
+      "DigiCert SHA2 Assured ID Code Signing CA":  0.15
+
+  - name: cert_signer
+    type: weighted_choice
+    choices:
+      "":                  0.55
+      "Unizeto":           0.10
+      "Microsoft Windows": 0.20
+      "DigiCert Trusted Root G4": 0.15
+
+  - name: cert_thumbprint
+    type: faker
+    method: sha1
+
+  # Signing timestamp — literal 0 in real samples for unsigned files;
+  # real epoch for signed ones.
+  - name: signing_timestamp
+    type: weighted_choice
+    choices:
+      "0":          0.60
+      "1650000000": 0.20
+      "1700000000": 0.20
+
+  - name: cert_serial
+    type: faker
+    method: hex_16
+
+# Template emits the real SEPM RFC3164 + comma-delimited SONAR body.
+# Field order per Elastic 14.x fixture (System Change sample — the one
+# with IP Address + cert block), which matches KB 155205 minus the
+# never-on-wire IP/MAC/Gateway tuples. Two positional slots after
+# Occurrences (file path + description) and the colon-less
+# `Detection Submissions <Yes|No>` token are intentional — real quirks.
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{syslog_host}} SymantecServer: {{event_marker}},Computer name: {{computer_name}},IP Address: {{ip_address}},Detection type: {{detection_type}},First Seen: {{first_seen}},Application name: {{application_name}},Application type: {{application_type}},Application version: {{application_version}},Hash type: {{hash_type}},Application hash: {{application_hash}},Company name: {{company_name}},File size (bytes): {{file_size_bytes}},Sensitivity: {{sensitivity}},Detection score: {{detection_score}},COH Engine Version: {{coh_engine_version}},Detection Submissions {{detection_submissions}},Permitted application reason: {{permitted_reason}},Disposition: {{disposition}},Download site: ,Web domain: ,Downloaded by: {{downloaded_by}},Prevalence: {{prevalence}},Confidence: {{confidence}},URL Tracking Status: {{url_tracking_status}},Risk Level: {{risk_level}},Risk type: {{risk_type}},Source: {{source_scan}},Risk name: {{risk_name}},Occurrences: {{occurrences}},{{file_path}},{{event_description}},Actual action: {{actual_action}},Requested action: {{requested_action}},Secondary action: {{secondary_action}},Event time: {{event_iso_ts}},Inserted: {{event_iso_ts}},End: {{event_iso_ts}},Domain: {{params.sepm_domain}},Group: {{sepm_group}},Server: {{params.sepm_server}},User: {{user_name}},Source computer: ,Source IP: ,Intensive Protection Level: {{intensive_protection_level}},Certificate issuer: {{cert_issuer}},Certificate signer: {{cert_signer}},Certificate thumbprint: {{cert_thumbprint}},Signing timestamp: {{signing_timestamp}},Certificate serial number: {{cert_serial}}
