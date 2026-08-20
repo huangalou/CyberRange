@@ -35,3 +35,7 @@ api/.venv/
 web/node_modules/
 web/.next/
 web/out/
+
+# Proprietary vendor reference bundles (e.g. ArcSight unobfuscated parsers) — never commit
+*.zip
+*.ZIP
