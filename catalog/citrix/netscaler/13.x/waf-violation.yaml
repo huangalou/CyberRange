@@ -487,4 +487,4 @@ fields:
 # samples emit. CEF extension order matches the verbatim samples
 # (src spt method request msg cn1 cn2 cs1 cs2 cs3 cs4 cs5 cs6 act).
 template: |-
-  <{{pri}}>{{rfc3164_ts}} {{device_name}} CEF:0|Citrix|NetScaler|{{ns_version}}|APPFW|{{appfw_event}}|{{cef_severity}}|src={{src_ip}} geolocation={{geolocation}} spt={{src_port}} method={{http_method}} request={{http_url}} msg={{msg_body}} cn1={{transaction_id}} cn2={{connection_ppe}} cs1={{profile_name}} cs2={{ppe_engine}} cs3={{session_id}} cs4={{severity_word}} cs5={{year}} cs6={{sig_category}} act={{action}}
+  <{{pri}}>{{rfc3164_ts}} {{device_name}} CEF:0|Citrix|NetScaler|{{ns_version}}|APPFW|{{appfw_event}}|{{cef_severity}}|src={{src_ip}} geolocation={{geolocation}} spt={{src_port}} method={{http_method}} request={{http_url | cef_escape}} msg={{msg_body}} cn1={{transaction_id}} cn2={{connection_ppe}} cs1={{profile_name}} cs2={{ppe_engine}} cs3={{session_id}} cs4={{severity_word}} cs5={{year}} cs6={{sig_category}} act={{action}}

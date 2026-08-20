@@ -258,7 +258,7 @@ params:
   dvchost_fqdn:
     default: "bigip-asm-lab-01.lab.local"
   device_id:
-    default: "f5-asm-lab-01.lab.local"
+    default: "0"   # numeric ASM device id (cn3 is Long-typed in ArcSight); FQDN lives in dvchost
   policy_name:
     default: "/Common/asm_blocking_policy_prod"
   web_application_name:
@@ -559,9 +559,9 @@ fields:
 #   cs6/cs6Label ← geo_location
 #   cn1/cn1Label ← response_code
 #   cn2/cn2Label ← violation_rating
-#   cn3/cn3Label ← device_id (string — ArcSight allows numeric-typed
-#                 cn slots to carry stringy ids; cef0.f5.asm parser
-#                 accepts this. Real F5 devices sometimes leave cn3
+#   cn3/cn3Label ← device_id (numeric — ArcSight types cn3 as Long, a
+#                 string here is dropped with a parser warning; audit
+#                 2026-08-21. Real F5 devices sometimes leave cn3
 #                 blank — we always emit to keep all 32 rules
 #                 covered.)
 #   deviceCustomDate1 ← policy_apply_date
@@ -574,4 +574,4 @@ fields:
 #   rt           ← event time (CEF-format date)
 #   deviceExternalId ← 0 (F5 default per certified guide)
 template: |-
-  <{{pri}}>{{rfc3164_ts}} {{unit_hostname}} ASM:CEF:0|F5|ASM|{{software_version}}|{{signature_id_header}}|{{name_header}}|{{cef_severity}}|dvchost={{dvchost_fqdn}} dvc={{management_ip_address}} cs1={{policy_name}} cs1Label=policy_name cs2={{web_application_name}} cs2Label=web_application_name deviceCustomDate1={{policy_apply_date_cef}} deviceCustomDate1Label=policy_apply_date externalId={{support_id}} act={{act_value}} cn1={{response_code}} cn1Label=response_code src={{client_ip}} spt={{src_port}} dst={{server_ip}} dpt={{dest_port}} requestMethod={{request_method}} app={{app_protocol}} request={{request_uri}} cs5={{x_forwarded_for_header_value}} cs5Label=x_forwarded_for_header_value rt={{cef_rt}} deviceExternalId=0 cs4={{attack_type}} cs4Label=attack_type cs6={{geo_location}} cs6Label=geo_location cn2={{violation_rating}} cn2Label=violation_rating cn3={{device_id}} cn3Label=device_id
+  <{{pri}}>{{rfc3164_ts}} {{unit_hostname}} ASM:CEF:0|F5|ASM|{{software_version}}|{{signature_id_header}}|{{name_header}}|{{cef_severity}}|dvchost={{dvchost_fqdn}} dvc={{management_ip_address}} cs1={{policy_name}} cs1Label=policy_name cs2={{web_application_name}} cs2Label=web_application_name deviceCustomDate1={{policy_apply_date_cef}} deviceCustomDate1Label=policy_apply_date externalId={{support_id}} act={{act_value}} cn1={{response_code}} cn1Label=response_code src={{client_ip}} spt={{src_port}} dst={{server_ip}} dpt={{dest_port}} requestMethod={{request_method}} app={{app_protocol}} request={{request_uri | cef_escape}} cs5={{x_forwarded_for_header_value}} cs5Label=x_forwarded_for_header_value rt={{cef_rt}} deviceExternalId=0 cs4={{attack_type}} cs4Label=attack_type cs6={{geo_location}} cs6Label=geo_location cn2={{violation_rating}} cn2Label=violation_rating cn3={{device_id}} cn3Label=device_id

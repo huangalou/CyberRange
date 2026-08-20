@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
-from jinja2 import Template
+from jinja2 import Environment
 
 from .schema import CatalogSpec, CefHeader, CefMappingEntry, FieldSpec
 
@@ -92,7 +92,7 @@ def _render_field(fs: FieldSpec, params: dict[str, Any], prior: dict[str, str]) 
 
     if t == "template":
         ctx = {**params, **prior, "params": params}
-        return Template(extras["template"]).render(**ctx)
+        return JINJA_ENV.from_string(extras["template"]).render(**ctx)
 
     if t == "faker":
         return _render_faker(extras["method"])
@@ -115,6 +115,13 @@ def _cef_escape(v: Any) -> str:
     s = s.replace("=", "\\=")
     s = s.replace("\n", "\\n")
     return s
+
+
+# Shared Jinja environment. `cef_escape` is exposed as a filter so hand-written
+# CEF templates (no `cef_mapping` block) can escape a single value in place,
+# e.g. `request={{http_url | cef_escape}}`.
+JINJA_ENV = Environment(autoescape=False, keep_trailing_newline=True)
+JINJA_ENV.filters["cef_escape"] = _cef_escape
 
 
 def _compose_cef_extensions(
@@ -216,7 +223,7 @@ def render_one(
             spec.cef_header, cef_header_overrides or {}
         )
 
-    return Template(spec.template).render(**ctx)
+    return JINJA_ENV.from_string(spec.template).render(**ctx)
 
 
 def render_many(
