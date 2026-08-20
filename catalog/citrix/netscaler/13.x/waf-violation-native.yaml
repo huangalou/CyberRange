@@ -20,8 +20,13 @@ description: |
     Support in the Application Firewall" — also documents the native
     pre-CEF wire shape this catalog models:
     https://support.citrix.com/article/CTX136146
-  - Microsoft Sentinel ASim parser (CitrixNetScaler) — native regex branch:
+  - Microsoft Sentinel ASim parser (CitrixNetScaler) — CEF branch only
+    (no native grammar; listed for the CEF sibling's field vocabulary):
     https://github.com/Azure/Azure-Sentinel/blob/master/Parsers/ASimWebSession/Parsers/ASimWebSessionCitrixNetScaler.yaml
+  - ArcSight SmartConnector native NetScaler parser
+    (`citrixnetscaler_syslog`, 8.5.2 bundle): per-event body grammar
+    cross-checked 2026-08-21 — message wording below follows the phrases
+    that parser (and the docs examples) expect.
   - Splunk Connect for Syslog NetScaler source — native pattern in
     `splunk-connect-for-syslog/.../citrix_netscaler` filter
   - LogPoint NetScaler ADC normalization package (native APPFW grammar)
@@ -38,8 +43,18 @@ description: |
       <RFC3164_TS> <local0.info> <vserver_ip>
         <NS_INTERNAL_TS> GMT <hostname>
         <PPE_ID> : default APPFW APPFW_<EVENT> <msgid> <severity> :
-        <TWO-SPACES><client_ip> <conn>-<PPE_short> <txid_or_dash>
-        <profile_name> <message_body> <<action>>
+        <TWO-SPACES><client_ip> <conn>-<PPE_short> <session_hash_or_dash>
+        <profile_name> [<request_url>] <message_body> <<action>>
+
+      Check-type violations (XSS / SQL / field / cookie / buffer-overflow /
+      signature / safe-commerce / safe-object) carry the offending request
+      URL as its own token right after the profile name — docs XSS sample:
+      `10.217.253.62 616-PPE1 y/3upt2K8ySWWId3Kavbxyni7Rw0000 pr_ffc
+      http://aaron.stratum8.net/FFC/login.php?... Cross-site script check
+      failed for field text_area="Bad tag: script" <blocked>`. StartURL /
+      DenyURL instead embed the URL inside the message and leave the
+      session slot as `-`; the buffer-overflow family puts the URL after
+      ` : ` inside the message instead of a leading token.
 
   Notable shape quirks (verified against verbatim sample, do NOT
   "regularize" away — SIEM regex parsers depend on them):
@@ -53,35 +68,47 @@ description: |
   - The connection slot is `<conn-id>-PPE<N>` (e.g. `1546-PPE0`) — the
     PPE-id form here is the short variant, distinct from the long form
     `0-PPE-0` that appears just after the hostname.
-  - `txid_or_dash`: present for some events (multi-digit decimal), `-`
-    when absent. The verbatim sample uses `-`.
+  - Third slot is the AppFW session hash (base64-ish, `0000` suffix in
+    docs samples) or `-` when the request had no session. The StartURL
+    verbatim sample uses `-`.
   - The action verb is the **last token**, wrapped in angle brackets:
     `<blocked>`, `<not blocked>`, `<transformed>`, `<alert>`. CEF strips
     the brackets and emits `act=blocked`; native keeps them.
 
-  ## Real APPFW_* event + msgid mapping (verbatim from 13.1 ref)
+  ## The two numbers after `APPFW_<EVENT>` are NOT a per-type msgid
 
-  | Event                          | msgid examples                    |
-  |--------------------------------|-----------------------------------|
-  | `APPFW_STARTURL`               | 1932, 5852 (StartURL violation)   |
-  | `APPFW_DENYURL`                | 1933                              |
-  | `APPFW_SIGNATURE_MATCH`        | 807, 953, 1248, 1657, 4012, 6711  |
-  | `APPFW_SQL`                    | 2008, 3215 (SQL keyword family)   |
-  | `APPFW_XSS`                    | 1234 (cross-site check)           |
-  | `APPFW_BUFFEROVERFLOW_URL`     | 224                               |
-  | `APPFW_BUFFEROVERFLOW_HDR`     | 225                               |
-  | `APPFW_BUFFEROVERFLOW_COOKIE`  | 226                               |
-  | `APPFW_FIELDFORMAT`            | 108                               |
-  | `APPFW_FIELDCONSISTENCY`       | 109                               |
-  | `APPFW_COOKIE`                 | 110                               |
-  | `APPFW_REFERER_HEADER`         | 116                               |
-  | `APPFW_MULTIPLE_HEADER`        | 117                               |
-  | `APPFW_SAFECOMMERCE`           | 140                               |
-  | `APPFW_XML_SQL`                | 318                               |
+  docs.netscaler.com examples show `APPFW_STARTURL 6 0`,
+  `APPFW_FIELDCONSISTENCY 6 0`, `APPFW_SAFECOMMERCE 6 0`,
+  `APPFW_SIGNATURE_MATCH 6 0`, `APPFW_cross-site scripting 60 0` and the
+  13.1 sample `APPFW_STARTURL 1932 0` — the same value across different
+  event types, different values for the same type. The first number is
+  the per-PPE running log counter, the second the severity flag. An
+  earlier revision of this catalog modelled the counter as a fixed
+  per-event id table (audit 2026-08-21); that table was wrong and is
+  gone. Event ↔ message wording is now bound in `msg_body`; the counter
+  is an opaque integer.
 
-  The full msgid catalog is not fully enumerated in public docs. This
-  catalog samples the documented cases verbatim and treats the rest
-  as opaque.
+  Event vocabulary (13.1 syslog reference, `APPFW_*` family) and the
+  message phrase each event carries (docs examples + ArcSight native
+  parser expectations):
+
+  | Event                          | Message phrase                                          |
+  |--------------------------------|---------------------------------------------------------|
+  | `APPFW_STARTURL`               | `Disallow Illegal URL: <url>`                           |
+  | `APPFW_DENYURL`                | `Disallow Deny URL: <url> for rule pattern=<re>`        |
+  | `APPFW_SIGNATURE_MATCH`        | `Signature violation rule ID <n>: <desc>`               |
+  | `APPFW_SQL`                    | `SQL Keyword check failed for field <f>="<v>"`          |
+  | `APPFW_XSS`                    | `Cross-site script check failed for field <f>="<v>"`    |
+  | `APPFW_BUFFEROVERFLOW_URL`     | `URL length(<n>) is greater than maximum allowed(<m>) : <url>` |
+  | `APPFW_BUFFEROVERFLOW_HDR`     | `Header(<h>) length(<n>) is greater than maximum allowed(<m>) : <url>` |
+  | `APPFW_BUFFEROVERFLOW_COOKIE`  | `Cookie header length(<n>) is greater than maximum allowed(<m>) : <url>` |
+  | `APPFW_FIELDFORMAT`            | `Field format check failed for field <f>="<v>"`         |
+  | `APPFW_FIELDCONSISTENCY`       | `Field consistency check failed for field <f>`          |
+  | `APPFW_COOKIE`                 | `Cookie validation failed for <cookie>`                 |
+  | `APPFW_REFERER_HEADER`         | `Referer header check failed: <url>`                    |
+  | `APPFW_SAFECOMMERCE`           | `Maximum number of potential credit card numbers seen`  |
+  | `APPFW_SAFEOBJECT`             | `Match found with Safe Object: <name>`                  |
+  | `APPFW_XML_SQL`                | `SQL Keyword check failed for field <f>` (XML payload)  |
 
   ## SIEM rule mapping (same 32 rule_ids as CEF sibling)
 
@@ -324,19 +351,18 @@ fields:
     min: 100
     max: 99999
 
-  # TransactionID slot — present as a number for some events, `-` when
-  # absent. Verbatim sample uses `-`; we keep mostly `-` but mix in real
-  # numeric forms for variety. NOT the same as CEF's cn1.
-  - name: txid
+  # Third slot after the client IP: the AppFW *session hash* (docs XSS
+  # sample: `y/3upt2K8ySWWId3Kavbxyni7Rw0000`), or `-` when the request
+  # carried no session cookie (docs STARTURL sample). NOT a numeric
+  # transaction id — an earlier revision put made-up integers here.
+  - name: session_hash
     type: weighted_choice
     choices:
-      "-":      0.50
-      "108":    0.10
-      "140":    0.10
-      "224":    0.10
-      "841":    0.10
-      "1636674": 0.10
-
+      "-":                                  0.40
+      "y/3upt2K8ySWWId3Kavbxyni7Rw0000":    0.15
+      "QJ2KXeN3AaP9v0zYf6Tk8mLw1bR0000":    0.15
+      "Hc7yB1nWq4dZr9uLpE5sXm2vKo30000":    0.15
+      "t8Rz3MkPq1Lv6cWn0aYb5GdJx7e0000":    0.15
   - name: profile_name
     type: param
     param: profile_name
@@ -371,36 +397,50 @@ fields:
       "APPFW_FIELDCONSISTENCY":      0.04
       "APPFW_COOKIE":                0.03
       "APPFW_REFERER_HEADER":        0.03
-      "APPFW_MULTIPLE_HEADER":       0.02
       "APPFW_SAFECOMMERCE":          0.02
+      "APPFW_SAFEOBJECT":            0.02
       "APPFW_XML_SQL":               0.01
-
-  # Numeric msgid associated with the event. Real-event mapping from the
-  # 13.1 syslog message reference + docs verbatim samples. Some events
-  # share a numeric prefix family (SIGNATURE_MATCH carries the original
-  # Snort rule id, hence the 807/953/1248/... spread).
-  - name: msg_id
+  # Per-PPE running log counter (see description) — opaque integer,
+  # deliberately NOT correlated with appfw_event.
+  - name: log_seq
+    type: int_range
+    min: 1
+    max: 99999
+  # Signature id + description pairs stay bound (docs verbatim 807 line;
+  # the rest use the real Snort/NetScaler category prefixes).
+  - name: sig_match
     type: weighted_choice
     choices:
-      "1932":  0.10   # STARTURL (verbatim docs sample)
-      "5852":  0.05   # STARTURL alt
-      "1933":  0.05   # DENYURL
-      "807":   0.10   # SIGNATURE_MATCH web-cgi
-      "953":   0.08   # SIGNATURE_MATCH
-      "1248":  0.08   # SIGNATURE_MATCH
-      "1657":  0.08   # SIGNATURE_MATCH
-      "2008":  0.08   # SQL
-      "3215":  0.08   # SQL alt
-      "224":   0.05   # BUFFEROVERFLOW_URL
-      "225":   0.03   # BUFFEROVERFLOW_HDR
-      "226":   0.02   # BUFFEROVERFLOW_COOKIE
-      "108":   0.05   # FIELDFORMAT
-      "109":   0.04   # FIELDCONSISTENCY
-      "110":   0.03   # COOKIE
-      "116":   0.03   # REFERER_HEADER
-      "117":   0.02   # MULTIPLE_HEADER
-      "140":   0.02   # SAFECOMMERCE
-      "318":   0.01   # XML_SQL
+      "807: web-cgi /wwwboard/passwd.txt access":          0.30
+      "953: web-misc access":                              0.20
+      "1248: web-frontpage rad fp30reg.dll access":        0.15
+      "1657: web-cgi campus access":                       0.10
+      "4012: web-iis ftpcmd attempt":                      0.10
+      "6711: web-php phpbb attempt":                       0.15
+  - name: form_field
+    type: weighted_choice
+    choices:
+      "text_area": 0.25
+      "passwd":    0.20
+      "username":  0.20
+      "q":         0.20
+      "comment":   0.15
+  - name: cookie_name
+    type: weighted_choice
+    choices:
+      "NSC_AAAC":    0.35
+      "JSESSIONID":  0.35
+      "PHPSESSID":   0.30
+  - name: hdr_name
+    type: weighted_choice
+    choices:
+      "User-Agent": 0.4
+      "Cookie":     0.3
+      "Referer":    0.3
+  - name: over_len
+    type: int_range
+    min: 1100
+    max: 9000
 
   # Severity flag — single decimal (0..7). Docs verbatim uses `0`.
   - name: severity_flag
@@ -428,11 +468,13 @@ fields:
   - name: http_path
     type: weighted_choice
     choices:
-      "/login.php?id=1' OR '1'='1":                     0.18
-      "/search.aspx?q=<script>alert(1)</script>":       0.15
+      # URL-encoded as seen on the wire — a raw space cannot survive an
+      # HTTP request line, and SIEM parsers tokenise the URL on \s.
+      "/login.php?id=1%27%20OR%20%271%27%3D%271":       0.18
+      "/search.aspx?q=%3Cscript%3Ealert(1)%3C/script%3E": 0.15
       "/exec?cmd=cat%20/etc/passwd":                    0.13
       "/admin/upload?file=../../etc/shadow":            0.10
-      "/checkout?coupon=' UNION SELECT NULL--":         0.12
+      "/checkout?coupon=%27%20UNION%20SELECT%20NULL--": 0.12
       "/api/v2/users?filter[id]=1%20AND%20SLEEP(5)":    0.10
       "/wwwboard/passwd.txt":                           0.10
       "/static/../../etc/hosts":                        0.07
@@ -444,13 +486,29 @@ fields:
 
   - name: msg_body
     type: template
-    template: "{% if appfw_event == 'APPFW_STARTURL' %}Disallow Illegal URL: {{http_url}}{% elif appfw_event == 'APPFW_DENYURL' %}URL Denied: {{http_url}}{% elif appfw_event == 'APPFW_SIGNATURE_MATCH' %}Signature violation rule ID {{msg_id}}: {{http_url}} access{% elif appfw_event == 'APPFW_SQL' %}SQL Keyword check failed for field at {{http_url}}{% elif appfw_event == 'APPFW_XSS' %}Cross-site script check failed for field at {{http_url}}{% elif appfw_event == 'APPFW_BUFFEROVERFLOW_URL' %}URL length check failed for {{http_url}}{% elif appfw_event == 'APPFW_BUFFEROVERFLOW_HDR' %}Header length check failed for request to {{http_url}}{% elif appfw_event == 'APPFW_BUFFEROVERFLOW_COOKIE' %}Cookie length check failed for request to {{http_url}}{% elif appfw_event == 'APPFW_FIELDFORMAT' %}Field format check failed for {{http_url}}{% elif appfw_event == 'APPFW_FIELDCONSISTENCY' %}Field consistency check failed for {{http_url}}{% elif appfw_event == 'APPFW_COOKIE' %}Cookie consistency check failed for {{http_url}}{% elif appfw_event == 'APPFW_REFERER_HEADER' %}Referer header check failed for {{http_url}}{% elif appfw_event == 'APPFW_MULTIPLE_HEADER' %}Multiple headers in request to {{http_url}}{% elif appfw_event == 'APPFW_SAFECOMMERCE' %}Safe object violation for {{http_url}}{% else %}XML SQL injection check failed for {{http_url}}{% endif %}"
+    template: >-
+      {%- if appfw_event == 'APPFW_STARTURL' -%}Disallow Illegal URL: {{http_url}}
+      {%- elif appfw_event == 'APPFW_DENYURL' -%}Disallow Deny URL: {{http_url}} for rule pattern=^[^?]*/(passwd|shadow|\.git)
+      {%- elif appfw_event == 'APPFW_SIGNATURE_MATCH' -%}Signature violation rule ID {{sig_match}}
+      {%- elif appfw_event == 'APPFW_SQL' -%}SQL Keyword check failed for field {{form_field}}="' OR 1=1 --"
+      {%- elif appfw_event == 'APPFW_XSS' -%}Cross-site script check failed for field {{form_field}}="Bad tag: script"
+      {%- elif appfw_event == 'APPFW_BUFFEROVERFLOW_URL' -%}URL length({{over_len}}) is greater than maximum allowed(1024) : {{http_url}}
+      {%- elif appfw_event == 'APPFW_BUFFEROVERFLOW_HDR' -%}Header({{hdr_name}}) length({{over_len}}) is greater than maximum allowed(4096) : {{http_url}}
+      {%- elif appfw_event == 'APPFW_BUFFEROVERFLOW_COOKIE' -%}Cookie header length({{over_len}}) is greater than maximum allowed(4096) : {{http_url}}
+      {%- elif appfw_event == 'APPFW_FIELDFORMAT' -%}Field format check failed for field {{form_field}}="../../etc/passwd"
+      {%- elif appfw_event == 'APPFW_FIELDCONSISTENCY' -%}Field consistency check failed for field {{form_field}}
+      {%- elif appfw_event == 'APPFW_COOKIE' -%}Cookie validation failed for {{cookie_name}}
+      {%- elif appfw_event == 'APPFW_REFERER_HEADER' -%}Referer header check failed: {{http_url}}
+      {%- elif appfw_event == 'APPFW_SAFECOMMERCE' -%}Maximum number of potential credit card numbers seen
+      {%- elif appfw_event == 'APPFW_SAFEOBJECT' -%}Match found with Safe Object: SSN_Pattern
+      {%- else -%}SQL Keyword check failed for field {{form_field}}
+      {%- endif -%}
 
 # Wire format: RFC3164 outer + literal `<local0.info>` text priority +
 # vserver IP + NS internal timestamp (with colon-between-date-time) +
 # GMT + hostname + long PPE id + ` : default APPFW APPFW_<EVENT> ` +
-# msgid + severity_flag + ` :  ` (two spaces) + client IP + conn-PPE +
-# txid + profile + message body + `<action>` (angle-bracket-wrapped).
+# log counter + severity_flag + ` :  ` (two spaces) + client IP + conn-PPE +
+# session hash + profile + [url] + message body + `<action>`.
 #
 # Reproduces the docs verbatim sample line shape:
 #   Feb 23 08:39:13 <local0.info> 192.168.229.10 02/23/2023:08:39:13
@@ -458,4 +516,4 @@ fields:
 #   192.168.229.1 1546-PPE0 - waf_prof_test Disallow Illegal URL:
 #   http://192.168.229.100/green.htm <blocked>
 template: |-
-  {{rfc3164_ts}} <local0.info> {{vserver_ip}} {{ns_internal_ts}} GMT {{ns_hostname}} {{ppe_long}} : default APPFW {{appfw_event}} {{msg_id}} {{severity_flag}} :  {{client_ip}} {{conn_id}}-{{ppe_short}} {{txid}} {{profile_name}} {{msg_body}} <{{action}}>
+  {{rfc3164_ts}} <local0.info> {{vserver_ip}} {{ns_internal_ts}} GMT {{ns_hostname}} {{ppe_long}} : default APPFW {{appfw_event}} {{log_seq}} {{severity_flag}} :  {{client_ip}} {{conn_id}}-{{ppe_short}} {{session_hash}} {{profile_name}} {% if not (appfw_event in ['APPFW_STARTURL', 'APPFW_DENYURL'] or appfw_event.startswith('APPFW_BUFFEROVERFLOW')) %}{{http_url}} {% endif %}{{msg_body}} <{{action}}>
