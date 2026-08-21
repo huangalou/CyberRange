@@ -42,28 +42,37 @@ description: |
         https://www.snort.org/rule_docs/1-59388   (Spring4Shell)
         https://www.snort.org/rule_docs/1-648     (INDICATOR-SHELLCODE x86 NOOP — canonical 430001 sample)
 
-  Wire format — top-level syslog wrap:
+  Wire format — THREE real variants (audit 2026-08-21; each anchored to
+  a verbatim public sample, weights in `wire_variant`):
 
-    <PRI>Mmm dd HH:MM:SS HOSTNAME SFIMS : %FTD-N-430001 : <body>
+  1. `ftd_device` (default, ~60%) — FTD appliance sending syslog itself.
+     No app-name slot, `%FTD-N-430001:` with no space before the colon,
+     Message UNQUOTED. Verbatim (Elastic cisco_ftd pipeline test data):
 
-  The two literal-spaces around the colon after `SFIMS` are real
-  (IBM/Juniper sample reproduces them verbatim). Older firmware (and
-  some FMC relay configs) emit `%FTD-N-430001:` with no spaces around
-  the colon — the IBM golden sample uses the spaced form, and that is
-  what we render here. `SFIMS` is the literal app-name slot Firepower
-  uses for security event syslog (stands for "Sourcefire Intrusion
-  Management System" — Cisco kept the Sourcefire-era tag after the
-  acquisition; do NOT rename it).
+       2019-08-16T09:54:00Z firepower  %FTD-0-430001: SrcIP: 10.0.1.20, DstIP: 10.0.100.30, SrcPort: 55644, DstPort: 80, Protocol: tcp, IngressInterface: inside, EgressInterface: outside, IngressZone: input-zone, EgressZone: output-zone, Priority: 1, GID: 1, SID: 17279, Revision: 12, Message: SERVER-WEBAPP Ipswitch WhatsUp Small Business directory traversal attempt, Classification: Attempted User Privilege Gain, User: No Authentication Required, Client: Firefox, ApplicationProtocol: HTTP, IntrusionPolicy: intrusion-policy, ACPolicy: default, NAPPolicy: Balanced Security and Connectivity
 
-  Body grammar (comma-separated `Key: Value` pairs, with one space
-  after the colon and `, ` between pairs — observed in every public
-  sample). Field order in real production logs is stable and the
-  catalog follows it verbatim.
+  2. `fmc_unified` (~25%) — FMC "send via syslog" unified format (6.3+),
+     same body prefixed with `EventPriority, DeviceUUID, InstanceID,
+     FirstPacketSecond, ConnectionID`. Verbatim prefix (Rapid7 InsightIDR
+     FTD docs, NGIPS variant) and the ArcSight SmartConnector 8.5.2
+     `430001` pattern (`InstanceID: … SrcIP … DstPort, Protocol …
+     Message … Classification`) both pin this shape.
 
-  Real vendor wire-format sample (verbatim, from IBM DSM golden
-  reference + Juniper JSA cross-check):
+  3. `sfims_legacy` (~15%) — FMC 6.x-era relay with the `SFIMS : `
+     app-name slot, spaces around the colon, `Protocol:` FIRST, Message
+     QUOTED. Verbatim (IBM QRadar DSM golden sample; Juniper JSA mirrors
+     it with an extra space before each comma):
 
-    Aug 14 08:59:30 192.168.0.7 SFIMS : %FTD-5-430001 : Protocol: tcp, SrcIP: 10.1.1.57, DstIP: 10.5.12.209, SrcPort: 2049, DstPort: 746, Priority: 1, GID: 1, SID: 648, Revision: 18, Message: "INDICATOR-SHELLCODE x86 NOOP", Classification: Executable Code was Detected, User: No Authentication Required, ACPolicy: test, NAPPolicy: Balanced Security and Connectivity, InlineResult: Blocked
+       Aug 14 08:59:30 192.168.0.7 SFIMS : %FTD-5-430001 : Protocol: tcp, SrcIP: 10.1.1.57, DstIP: 10.5.12.209, SrcPort: 2049, DstPort: 746, Priority: 1, GID: 1, SID: 648, Revision: 18, Message: "INDICATOR-SHELLCODE x86 NOOP", Classification: Executable Code was Detected, User: No Authentication Required, ACPolicy: test, NAPPolicy: Balanced Security and Connectivity, InlineResult: Blocked
+
+     `SFIMS` stands for "Sourcefire Intrusion Management System" — Cisco
+     kept the Sourcefire-era tag; do NOT rename it. An earlier revision
+     of this catalog rendered ONLY this variant and called its
+     `Protocol`-first order "stable" — it is the outlier, not the norm.
+
+  Body grammar is comma-separated `Key: Value` pairs (one space after
+  the colon, `, ` between pairs) in every variant; only the leading
+  prefix, the `Protocol` position and Message quoting differ.
 
   FTD 6.4+ extended body fields (added after the IBM golden sample's
   capture date, present in every modern deployment — verified against
@@ -309,6 +318,38 @@ fields:
   # mirror a realistic production-IPS distribution where recon and
   # web-app attacks dominate, exploit kits and lateral movement are
   # rarer but high-impact.
+  # Which of the three verbatim-anchored wire shapes to emit (description).
+  - name: wire_variant
+    type: weighted_choice
+    choices:
+      ftd_device:   0.60
+      fmc_unified:  0.25
+      sfims_legacy: 0.15
+  # fmc_unified prefix fields
+  - name: event_priority
+    type: weighted_choice
+    choices:
+      "High":   0.25
+      "Medium": 0.45
+      "Low":    0.30
+  - name: device_uuid
+    type: choice
+    choices:
+      - "e8566508-eaa9-11e5-860f-de3e305d8269"
+      - "3f2a9c10-7b4d-4e61-9a55-1c0d8e7f2b44"
+      - "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
+  - name: instance_id
+    type: int_range
+    min: 1
+    max: 8
+  - name: first_packet_ts
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%SZ"
+  - name: connection_id
+    type: int_range
+    min: 1000
+    max: 999999
+
   - name: scenario
     type: weighted_choice
     choices:
@@ -603,13 +644,17 @@ fields:
 #   * The right direction (inbound vs outbound src/dst swap)
 #   * Whether to include the HTTPHostname/HTTPURI tail (web scenarios only)
 #
-# Field order matches the IBM golden sample's stable order:
-#   Protocol → SrcIP → DstIP → SrcPort → DstPort → Priority → GID → SID
-#   → Revision → Message → Classification → User → ACPolicy → NAPPolicy
-#   → (FTD 6.4+) IntrusionPolicy → InlineResult → IngressInterface
-#   → EgressInterface → IngressZone → EgressZone → ApplicationProtocol
-#   → Client → WebApplication → ClientVersion → (HTTP only) HTTPHostname
-#   → HTTPURI → MitreAttack
+# Field order per wire_variant (see description):
+#   ftd_device / fmc_unified: [EventPriority → DeviceUUID → InstanceID →
+#   FirstPacketSecond → ConnectionID →] SrcIP → DstIP → SrcPort → DstPort
+#   → Protocol → IngressInterface → EgressInterface → IngressZone →
+#   EgressZone → Priority → GID → SID → Revision → Message (unquoted) →
+#   Classification → User → Client → ApplicationProtocol → WebApplication
+#   → ClientVersion → IntrusionPolicy → ACPolicy → NAPPolicy →
+#   InlineResult → (HTTP only) HTTPHostname → HTTPURI → MitreAttack
+#   sfims_legacy: Protocol → SrcIP → DstIP → SrcPort → DstPort → Priority
+#   → GID → SID → Revision → Message (quoted) → Classification → User →
+#   ACPolicy → NAPPolicy → InlineResult
 template: |-
   {%- if scenario == "eternalblue_smb" -%}
   {%- set sid = "41978" -%}
@@ -715,4 +760,16 @@ template: |-
   {%- set ingress_zone_render = ingress_zone_in -%}
   {%- set egress_zone_render = egress_zone_in -%}
   {%- endif -%}
-  <{{pri}}>{{rfc3164_ts}} {{hostname}} SFIMS : %FTD-{{severity_digit}}-430001 : Protocol: {{proto_render}}, SrcIP: {{src_ip_render}}, DstIP: {{dst_ip_render}}, SrcPort: {{src_port}}, DstPort: {{dst_port}}, Priority: {{priority}}, GID: {{gid}}, SID: {{sid}}, Revision: {{revision}}, Message: "{{sig_msg}}", Classification: {{classification}}, User: {{user}}, ACPolicy: {{ac_policy}}, NAPPolicy: {{nap_policy}}, IntrusionPolicy: {{intrusion_policy}}, InlineResult: {{inline_result}}, IngressInterface: {{ingress_iface_render}}, EgressInterface: {{egress_iface_render}}, IngressZone: {{ingress_zone_render}}, EgressZone: {{egress_zone_render}}, ApplicationProtocol: {{application_protocol}}, Client: {{client}}, WebApplication: {{web_application}}, ClientVersion: {{client_version}}{% if is_web %}, HTTPHostname: {{http_hostname}}, HTTPURI: {{http_uri}}{% endif %}, MitreAttack: {{mitre_attack}}
+  {%- set common_tail -%}
+  Classification: {{classification}}, User: {{user}}, Client: {{client}}, ApplicationProtocol: {{application_protocol}}, WebApplication: {{web_application}}, ClientVersion: {{client_version}}, IntrusionPolicy: {{intrusion_policy}}, ACPolicy: {{ac_policy}}, NAPPolicy: {{nap_policy}}, InlineResult: {{inline_result}}{% if is_web %}, HTTPHostname: {{http_hostname}}, HTTPURI: {{http_uri}}{% endif %}, MitreAttack: {{mitre_attack}}
+  {%- endset -%}
+  {%- set core -%}
+  SrcIP: {{src_ip_render}}, DstIP: {{dst_ip_render}}, SrcPort: {{src_port}}, DstPort: {{dst_port}}, Protocol: {{proto_render}}, IngressInterface: {{ingress_iface_render}}, EgressInterface: {{egress_iface_render}}, IngressZone: {{ingress_zone_render}}, EgressZone: {{egress_zone_render}}, Priority: {{priority}}, GID: {{gid}}, SID: {{sid}}, Revision: {{revision}}, Message: {{sig_msg}}, {{common_tail}}
+  {%- endset -%}
+  {%- if wire_variant == "sfims_legacy" -%}
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} SFIMS : %FTD-{{severity_digit}}-430001 : Protocol: {{proto_render}}, SrcIP: {{src_ip_render}}, DstIP: {{dst_ip_render}}, SrcPort: {{src_port}}, DstPort: {{dst_port}}, Priority: {{priority}}, GID: {{gid}}, SID: {{sid}}, Revision: {{revision}}, Message: "{{sig_msg}}", Classification: {{classification}}, User: {{user}}, ACPolicy: {{ac_policy}}, NAPPolicy: {{nap_policy}}, InlineResult: {{inline_result}}
+  {%- elif wire_variant == "fmc_unified" -%}
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} %FTD-{{severity_digit}}-430001: EventPriority: {{event_priority}}, DeviceUUID: {{device_uuid}}, InstanceID: {{instance_id}}, FirstPacketSecond: {{first_packet_ts}}, ConnectionID: {{connection_id}}, {{core}}
+  {%- else -%}
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} %FTD-{{severity_digit}}-430001: {{core}}
+  {%- endif -%}
