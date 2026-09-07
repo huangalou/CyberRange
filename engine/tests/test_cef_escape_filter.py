@@ -1,6 +1,6 @@
 """`cef_escape` Jinja filter + the catalogs that must use it.
 
-ArcSight parse-compat audit (2026-08-21) found three hand-written CEF
+ArcSight parse-compat audit (2026-08-21) found hand-written CEF
 templates emitting `request=` values with bare `=` inside (query strings),
 which a CEF key=value tokenizer splits into a bogus key. The filter lets a
 template escape any single value without going through `cef_mapping`.
@@ -19,6 +19,7 @@ REQUEST_CATALOGS = [
     ("f5", "asm", "16.x", "violation-cef"),
     ("citrix", "netscaler", "13.x", "waf-violation"),
     ("trendmicro", "apex-one", "14.x", "web-reputation"),
+    ("apache", "httpd", "2.4", "access-combined-cef"),  # missed in the first sweep; caught by the in-repo simulator
 ]
 
 CEF_KEY_RX = re.compile(r"(?:^|\s)([A-Za-z_][\w.]*)=((?:(?!\s[A-Za-z_][\w.]*=).)*)")

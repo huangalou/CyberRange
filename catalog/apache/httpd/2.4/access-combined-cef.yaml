@@ -273,6 +273,9 @@ fields:
   # HTTP variant; HTTPS variant prepends scheme/host). We render path+query
   # combined so SQLi / LFI / open-redirect rules pivoting on `request=` can
   # match the same shape as the native sibling.
+  # Because the query string carries `=`, the template passes this value
+  # through the `cef_escape` filter (`=` → `\=`), otherwise a CEF tokenizer
+  # (ArcSight, Wazuh cef decoder) splits `?id=1` into a bogus key.
   - name: request_path
     type: weighted_choice
     choices:
@@ -494,4 +497,4 @@ fields:
 # connector-derived lowercase form. Downstream CEF parsers are case-insensitive
 # on extension values.
 template: |-
-  <{{pri}}>{{rfc3164_ts}} {{syslog_host}} apache: CEF:0|{{params.device_vendor}}|{{params.device_product}}|{{params.device_version}}|{{status}}|{{name_summary}}|{{cef_severity}}|end={{cef_end}} app={{app_protocol}} cs2Label=Protocol cs2={{protocol_version}} suser={{source_user}} shost={{client_ip}} src={{client_ip}} dhost={{dhost_vhost}} dpt={{dst_port}} dproc=apache request={{request_path}} requestMethod={{method}} fname={{fname_local}} cs1Label=Virtual Host cs1={{cs1_vhost}} cn1Label=Response Time cn1={{cn1_response_time}} out={{out_bytes}} cs4Label=Referer cs4={{cs4_referer}} dvchost={{dhost_vhost}} dvc={{dvc_ip}} deviceProcessName={{params.device_process_name}} requestClientApplication={{request_client_application}} cs3Label=X-Forwarded-For cs3={{cs3_xff}}
+  <{{pri}}>{{rfc3164_ts}} {{syslog_host}} apache: CEF:0|{{params.device_vendor}}|{{params.device_product}}|{{params.device_version}}|{{status}}|{{name_summary}}|{{cef_severity}}|end={{cef_end}} app={{app_protocol}} cs2Label=Protocol cs2={{protocol_version}} suser={{source_user}} shost={{client_ip}} src={{client_ip}} dhost={{dhost_vhost}} dpt={{dst_port}} dproc=apache request={{request_path | cef_escape}} requestMethod={{method}} fname={{fname_local}} cs1Label=Virtual Host cs1={{cs1_vhost}} cn1Label=Response Time cn1={{cn1_response_time}} out={{out_bytes}} cs4Label=Referer cs4={{cs4_referer}} dvchost={{dhost_vhost}} dvc={{dvc_ip}} deviceProcessName={{params.device_process_name}} requestClientApplication={{request_client_application}} cs3Label=X-Forwarded-For cs3={{cs3_xff}}
