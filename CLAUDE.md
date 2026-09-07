@@ -71,6 +71,7 @@ CyberRange/
 │   │   ├── schema.py / loader.py / generator.py / sinks.py / cli.py / vulnops.py
 │   │   └── cti/             ← 情資子系統（feeds + ioc_extractor + catalog_writer + metrics）
 │   └── tests/                ← pytest
+│       └── arcsight/         ← ArcSight parse-compat 模擬器 + env-gated 回歸測試
 ├── api/                     ← FastAPI backend
 │   ├── pyproject.toml       ← cyberrange-api console script
 │   ├── src/cyberrange_api/
@@ -103,6 +104,9 @@ cd web && npm install && npm run dev   # http://localhost:3000
 
 ```bash
 cd engine && source .venv/bin/activate && python -m pytest tests/ -q   # engine
+# ArcSight parse-compat 軸(需本機解壓的 SmartConnector parser bundle,專有檔不進 repo;未設 env 整組 skip)
+ARCSIGHT_PARSERS=~/Projects/CyberRange-lab/vendor-refs/arcsight/arcsight python -m pytest tests/arcsight -q
+python tests/arcsight/arcsight_sim.py --trace   # 57 份逐一列 verdict(OK/WARN/PARTIAL/CATCH-ALL/FAIL/N-A)
 cd api && python -m pytest tests/ -q                                    # api（沿用同一個 venv）
 cd web && npm run build                                                 # web
 ```
