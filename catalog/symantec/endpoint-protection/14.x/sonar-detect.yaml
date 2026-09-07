@@ -50,15 +50,20 @@ description: |
       slot is often empty (`,,`) or literal `''`, sometimes prose like
       "Realtime deferred scanning".
     - `Detection Submissions No|Yes` has NO colon — verbatim flag token.
-    - Label drift across 14.x builds: older builds emit `Inserted:` /
-      `End:` / `Domain:` / `Group:` / `Server:` / `User:` / `Source
-      computer:` / `Source IP:`; 14.3 RU-era builds emit `Event Insert
-      Time:` / `End Time:` / `Domain Name:` / `Group Name:` / `Server
-      Name:` / `User Name:` / `Source Computer Name:` / `Source Computer
-      IP:` (+ trailing `Location:`). This catalog emits the older label
-      set for consistency with the Elastic 14.x fixture and the sibling
-      Risk Log catalog; the KB warns "Some fields may not be present in
-      earlier versions ... and vice-versa".
+    - Label drift across 14.x builds — TWO real label sets, emitted as
+      weighted siblings (`label_variant`, audit 2026-08-21 #6):
+        * `short` (~55%): `Inserted:` / `End:` / `Domain:` / `Group:` /
+          `Server:` / `User:` / `Source computer:` / `Source IP:` — the
+          Elastic 14.x fixture and the sibling Risk Log catalog shape.
+        * `long` (~45%): `Event Insert Time:` / `End Time:` / `Domain
+          Name:` / `Group Name:` / `Server Name:` / `User Name:` /
+          `Source Computer Name:` / `Source Computer IP:` + trailing
+          `Location:` — 14.3 RU-era builds (KB 155205 field names). The
+          ArcSight SmartConnector 8.5.2 SEP syslog parser
+          (`symantecendpointprotection_regex` pattern #66) recognises
+          ONLY this set; the short set falls through to its catch-all.
+      The KB warns "Some fields may not be present in earlier versions
+      ... and vice-versa" — both shapes are real, neither is a typo.
     - KB 155205 lists 4x IP/MAC/Gateway tuple fields that do NOT appear
       on the wire in any observed sample — omitted here (samples are
       ground truth).
@@ -144,6 +149,11 @@ params:
     default: "10.0.50.0/24"
   user_pool:
     default: ["alice", "bob", "svc_backup", "contractor_a", "admin_b"]
+  location_pool:
+    default:
+      - "HQ-OTS Managed Client - Online"
+      - "Branch-TPE Managed Client - Online"
+      - "Remote-VPN Managed Client - Online"
 
 fields:
   - name: pri
@@ -453,6 +463,19 @@ fields:
     type: choice
     choices: ${params.user_pool}
 
+  # Which of the two real SEPM label sets to emit for the trailing
+  # timestamp / domain / group / server / user block (see description).
+  - name: label_variant
+    type: weighted_choice
+    choices:
+      short: 0.55
+      long:  0.45
+
+  # `Location:` only exists on the long-label wire (KB 155205 / ArcSight #66).
+  - name: location
+    type: choice
+    choices: ${params.location_pool}
+
   - name: intensive_protection_level
     type: weighted_choice
     choices:
@@ -499,5 +522,8 @@ fields:
 # never-on-wire IP/MAC/Gateway tuples. Two positional slots after
 # Occurrences (file path + description) and the colon-less
 # `Detection Submissions <Yes|No>` token are intentional — real quirks.
+# The trailing timestamp/domain/group block switches between the short
+# (Elastic fixture) and long (14.3 RU / ArcSight #66) label sets via
+# `label_variant`; `Location:` is emitted only on the long set.
 template: |-
-  <{{pri}}>{{rfc3164_ts}} {{syslog_host}} SymantecServer: {{event_marker}},Computer name: {{computer_name}},IP Address: {{ip_address}},Detection type: {{detection_type}},First Seen: {{first_seen}},Application name: {{application_name}},Application type: {{application_type}},Application version: {{application_version}},Hash type: {{hash_type}},Application hash: {{application_hash}},Company name: {{company_name}},File size (bytes): {{file_size_bytes}},Sensitivity: {{sensitivity}},Detection score: {{detection_score}},COH Engine Version: {{coh_engine_version}},Detection Submissions {{detection_submissions}},Permitted application reason: {{permitted_reason}},Disposition: {{disposition}},Download site: ,Web domain: ,Downloaded by: {{downloaded_by}},Prevalence: {{prevalence}},Confidence: {{confidence}},URL Tracking Status: {{url_tracking_status}},Risk Level: {{risk_level}},Risk type: {{risk_type}},Source: {{source_scan}},Risk name: {{risk_name}},Occurrences: {{occurrences}},{{file_path}},{{event_description}},Actual action: {{actual_action}},Requested action: {{requested_action}},Secondary action: {{secondary_action}},Event time: {{event_iso_ts}},Inserted: {{event_iso_ts}},End: {{event_iso_ts}},Domain: {{params.sepm_domain}},Group: {{sepm_group}},Server: {{params.sepm_server}},User: {{user_name}},Source computer: ,Source IP: ,Intensive Protection Level: {{intensive_protection_level}},Certificate issuer: {{cert_issuer}},Certificate signer: {{cert_signer}},Certificate thumbprint: {{cert_thumbprint}},Signing timestamp: {{signing_timestamp}},Certificate serial number: {{cert_serial}}
+  <{{pri}}>{{rfc3164_ts}} {{syslog_host}} SymantecServer: {{event_marker}},Computer name: {{computer_name}},IP Address: {{ip_address}},Detection type: {{detection_type}},First Seen: {{first_seen}},Application name: {{application_name}},Application type: {{application_type}},Application version: {{application_version}},Hash type: {{hash_type}},Application hash: {{application_hash}},Company name: {{company_name}},File size (bytes): {{file_size_bytes}},Sensitivity: {{sensitivity}},Detection score: {{detection_score}},COH Engine Version: {{coh_engine_version}},Detection Submissions {{detection_submissions}},Permitted application reason: {{permitted_reason}},Disposition: {{disposition}},Download site: ,Web domain: ,Downloaded by: {{downloaded_by}},Prevalence: {{prevalence}},Confidence: {{confidence}},URL Tracking Status: {{url_tracking_status}},Risk Level: {{risk_level}},Risk type: {{risk_type}},Source: {{source_scan}},Risk name: {{risk_name}},Occurrences: {{occurrences}},{{file_path}},{{event_description}},Actual action: {{actual_action}},Requested action: {{requested_action}},Secondary action: {{secondary_action}},Event time: {{event_iso_ts}},{% if label_variant == 'long' %}Event Insert Time: {{event_iso_ts}},End Time: {{event_iso_ts}},Domain Name: {{params.sepm_domain}},Group Name: {{sepm_group}},Server Name: {{params.sepm_server}},User Name: {{user_name}},Source Computer Name: ,Source Computer IP: ,Location: {{location}},{% else %}Inserted: {{event_iso_ts}},End: {{event_iso_ts}},Domain: {{params.sepm_domain}},Group: {{sepm_group}},Server: {{params.sepm_server}},User: {{user_name}},Source computer: ,Source IP: ,{% endif %}Intensive Protection Level: {{intensive_protection_level}},Certificate issuer: {{cert_issuer}},Certificate signer: {{cert_signer}},Certificate thumbprint: {{cert_thumbprint}},Signing timestamp: {{signing_timestamp}},Certificate serial number: {{cert_serial}}
