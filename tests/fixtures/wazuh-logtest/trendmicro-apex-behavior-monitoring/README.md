@@ -41,3 +41,7 @@ ssh lab@192.0.2.10 'docker exec -i <wazuh-manager-container> /var/ossec/bin/wazu
 
 `phase2_observe` 是「decoder 抽到算 bonus」的觀察清單,**非 pass-fail**;Phase 3 rule fire 才是過關標準。
 2026-09-14 基準:6/6 PASS(wazuh-logtest v4.14.4)。
+2026-09-14 live-fire 基準:UDP 514 送 40 筆 → 40/40 落在本家族 rule(alerts.json 統計),無掉包、無被其他 rule 搶走。
+
+> Group 命名注意:Wazuh `<if_matched_group>` 是子字串比對。133311 的 group 用 `bm_persist_tamper`,
+> 因為 `persistence`(連 `bm_persistence`)都會被 SOC 端既有的 supply-chain persistence 關聯規則吃走。
