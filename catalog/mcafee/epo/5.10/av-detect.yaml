@@ -69,8 +69,8 @@ description: |
     <ThreatSeverity>2</ThreatSeverity><ThreatName>Artemis!12345ABCDEF0
     </ThreatName><ThreatType>trojan</ThreatType><DetectedUTC>
     2017-08-05T04:24:38</DetectedUTC><TargetHostName>DESKTOP-WIN10-A1
-    </TargetHostName><TargetUserName>DOMAIN\\alice</TargetUserName>
-    <TargetFileName>C:\\Users\\alice\\AppData\\Local\\Temp\\update.exe
+    </TargetHostName><TargetUserName>DOMAIN\alice</TargetUserName>
+    <TargetFileName>C:\Users\alice\AppData\Local\Temp\update.exe
     </TargetFileName><ThreatActionTaken>deleted</ThreatActionTaken>
     <ThreatHandled>True</ThreatHandled></Event></SoftwareInfo></EPOevent>
 
@@ -436,35 +436,39 @@ fields:
     type: choice
     choices: ${params.user_pool}
 
+  # Single backslash on the wire (audit 2026-09-14) — the byte-fetched
+  # Sekoia XML samples and the Wazuh PR #467 forwarder line carry
+  # unescaped single backslashes (XML has no backslash escaping); the
+  # CEF sibling re-escapes via `cef_escape`. Matches exploit-prevent.yaml.
   - name: domain_user
     type: template
-    template: "{{params.domain_name}}\\\\{{user_name}}"
+    template: "{{params.domain_name}}\\{{user_name}}"
 
   - name: target_file_name
     type: weighted_choice
     choices:
-      "C:\\\\Users\\\\Public\\\\Downloads\\\\invoice_2026.exe":              0.18
-      "C:\\\\Users\\\\alice\\\\AppData\\\\Local\\\\Temp\\\\update.exe":      0.15
-      "C:\\\\inetpub\\\\wwwroot\\\\uploads\\\\shell.aspx":                   0.13
-      "C:\\\\Program Files\\\\McAfee\\\\quarantine\\\\threat.bin":           0.10
-      "D:\\\\Share\\\\HR\\\\readme_decrypt.txt":                             0.12
-      "C:\\\\Windows\\\\Temp\\\\7z_extract\\\\payload.dll":                  0.12
-      "C:\\\\Windows\\\\System32\\\\drivers\\\\malicious.sys":               0.10
-      "C:\\\\Users\\\\bob\\\\Desktop\\\\fake_invoice.pdf.exe":               0.10
+      "C:\\Users\\Public\\Downloads\\invoice_2026.exe":              0.18
+      "C:\\Users\\alice\\AppData\\Local\\Temp\\update.exe":      0.15
+      "C:\\inetpub\\wwwroot\\uploads\\shell.aspx":                   0.13
+      "C:\\Program Files\\McAfee\\quarantine\\threat.bin":           0.10
+      "D:\\Share\\HR\\readme_decrypt.txt":                             0.12
+      "C:\\Windows\\Temp\\7z_extract\\payload.dll":                  0.12
+      "C:\\Windows\\System32\\drivers\\malicious.sys":               0.10
+      "C:\\Users\\bob\\Desktop\\fake_invoice.pdf.exe":               0.10
 
   # SourceProcessName — process that triggered the detection (parent of
   # the access). Real ePO XML carries this as <SourceProcessName>.
   - name: source_process_name
     type: weighted_choice
     choices:
-      "C:\\\\Windows\\\\explorer.exe":                                     0.30
-      "C:\\\\Program Files\\\\Microsoft Office\\\\WINWORD.EXE":            0.15
-      "C:\\\\Program Files\\\\Internet Explorer\\\\iexplore.exe":          0.10
-      "C:\\\\Program Files\\\\Mozilla Firefox\\\\firefox.exe":             0.10
-      "C:\\\\Program Files (x86)\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe": 0.15
-      "C:\\\\Windows\\\\System32\\\\powershell.exe":                       0.10
-      "C:\\\\Windows\\\\System32\\\\svchost.exe":                          0.05
-      "C:\\\\ProgramData\\\\dropper\\\\dropper.exe":                       0.05
+      "C:\\Windows\\explorer.exe":                                     0.30
+      "C:\\Program Files\\Microsoft Office\\WINWORD.EXE":            0.15
+      "C:\\Program Files\\Internet Explorer\\iexplore.exe":          0.10
+      "C:\\Program Files\\Mozilla Firefox\\firefox.exe":             0.10
+      "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe": 0.15
+      "C:\\Windows\\System32\\powershell.exe":                       0.10
+      "C:\\Windows\\System32\\svchost.exe":                          0.05
+      "C:\\ProgramData\\dropper\\dropper.exe":                       0.05
 
 template: |-
   <{{pri}}>1 {{rfc5424_ts}} {{epo_host}} EPOEvents - EventFwd [agentInfo@3401 tenantId="{{tenant_id}}"] <?xml version="1.0" encoding="UTF-8"?><EPOevent><MachineInfo><MachineName>{{machine_name}}</MachineName><AgentGUID>{{agent_guid}}</AgentGUID><IPAddress>{{ip_address}}</IPAddress><OSName>{{os_name}}</OSName><UserName>{{user_name}}</UserName><TimeZoneBias>{{tz_bias}}</TimeZoneBias><RawMACAddress>{{raw_mac_12}}</RawMACAddress></MachineInfo><SoftwareInfo ProductName="McAfee Endpoint Security" ProductVersion="{{ens_product_version}}" ProductFamily="{{product_family}}"><CommonFields><Analyzer>{{analyzer_code}}</Analyzer><AnalyzerName>{{analyzer_name}}</AnalyzerName><AnalyzerVersion>{{ens_product_version}}</AnalyzerVersion><AnalyzerHostName>{{machine_name}}</AnalyzerHostName><AnalyzerDATVersion>{{analyzer_dat_version}}</AnalyzerDATVersion><AnalyzerEngineVersion>{{analyzer_engine_version}}</AnalyzerEngineVersion><AnalyzerDetectionMethod>{{analyzer_detection_method}}</AnalyzerDetectionMethod></CommonFields><Event><EventID>{{threat_event_id}}</EventID><Severity>{{event_severity}}</Severity><GMTTime>{{gmt_ts}}</GMTTime><ThreatCategory>{{threat_category}}</ThreatCategory><ThreatEventID>{{threat_event_id}}</ThreatEventID><ThreatSeverity>{{threat_severity}}</ThreatSeverity><ThreatName>{{threat_name}}</ThreatName><ThreatType>{{threat_type}}</ThreatType><DetectedUTC>{{gmt_ts}}</DetectedUTC><TargetHostName>{{machine_name}}</TargetHostName><TargetUserName>{{domain_user}}</TargetUserName><TargetFileName>{{target_file_name}}</TargetFileName><SourceProcessName>{{source_process_name}}</SourceProcessName><ThreatActionTaken>{{threat_action_taken}}</ThreatActionTaken><ThreatHandled>{{threat_handled}}</ThreatHandled></Event></SoftwareInfo></EPOevent>

@@ -422,9 +422,12 @@ fields:
 
   # TargetUserName → CEF suser AND duser (SmartConnector emits both;
   # for endpoint-originated threat events the values match).
+  # Field values hold the raw single-backslash form (same pools as the
+  # XML sibling); the wire template applies `cef_escape` so every `\`
+  # goes out as `\\` per the CEF spec (audit 2026-09-14).
   - name: domain_user
     type: template
-    template: "{{params.domain_name}}\\\\{{user_name}}"
+    template: "{{params.domain_name}}\\{{user_name}}"
 
   # TargetFileName → CEF filePath; basename → CEF fname.
   - name: target_file_name
@@ -510,4 +513,4 @@ fields:
 #                                              originating ePO module family)
 
 template: |-
-  <{{pri}}>1 {{rfc5424_ts}} {{epo_host}} EPOEvents - EventFwd [agentInfo@3401 tenantId="{{tenant_id}}"] CEF:0|McAfee|ePolicy Orchestrator|5.10|{{threat_event_id}}|{{threat_name}}|{{cef_severity}}|act={{threat_action_taken}} cat={{threat_category}} dhost={{machine_name}} dst={{ip_address}} duser={{domain_user}} externalId={{agent_guid}} filePath={{target_file_name}} fname={{file_basename}} rt={{cef_rt}} shost={{machine_name}} src={{ip_address}} suser={{domain_user}} sproc={{source_process_name}} cs1={{analyzer_code}} cs1Label=Analyzer cs2={{analyzer_detection_method}} cs2Label=AnalyzerDetectionMethod cs3={{threat_type}} cs3Label=ThreatType cs4={{threat_category}} cs4Label=ThreatCategory cs5={{product_family}} cs5Label=ProductFamily cs6={{ens_product_version}} cs6Label=AnalyzerVersion cn1={{analyzer_dat_version}} cn1Label=AnalyzerDATVersion cn2={{analyzer_engine_version_num}} cn2Label=AnalyzerEngineVersion deviceFacility=ENS
+  <{{pri}}>1 {{rfc5424_ts}} {{epo_host}} EPOEvents - EventFwd [agentInfo@3401 tenantId="{{tenant_id}}"] CEF:0|McAfee|ePolicy Orchestrator|5.10|{{threat_event_id}}|{{threat_name}}|{{cef_severity}}|act={{threat_action_taken}} cat={{threat_category}} dhost={{machine_name}} dst={{ip_address}} duser={{domain_user | cef_escape}} externalId={{agent_guid}} filePath={{target_file_name | cef_escape}} fname={{file_basename}} rt={{cef_rt}} shost={{machine_name}} src={{ip_address}} suser={{domain_user | cef_escape}} sproc={{source_process_name | cef_escape}} cs1={{analyzer_code}} cs1Label=Analyzer cs2={{analyzer_detection_method}} cs2Label=AnalyzerDetectionMethod cs3={{threat_type}} cs3Label=ThreatType cs4={{threat_category}} cs4Label=ThreatCategory cs5={{product_family}} cs5Label=ProductFamily cs6={{ens_product_version}} cs6Label=AnalyzerVersion cn1={{analyzer_dat_version}} cn1Label=AnalyzerDATVersion cn2={{analyzer_engine_version_num}} cn2Label=AnalyzerEngineVersion deviceFacility=ENS
