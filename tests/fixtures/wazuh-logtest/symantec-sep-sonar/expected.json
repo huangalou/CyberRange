@@ -1,0 +1,64 @@
+{
+  "catalog_path": "catalog/symantec/endpoint-protection/14.x/sonar-detect.yaml",
+  "catalog_sha": "a09d7d55f1d7f0ca705255e3ab0a256d4f1262eb",
+  "decoder": "symantec-sep-sonar",
+  "fixtures": [
+    {
+      "name": "heuristic-quarantined",
+      "sample_file": "sample-heuristic-quarantined.log",
+      "phase2_observe": {
+        "_comment": "觀察用,非 pass-fail;phase3 rule fire 才是過關標準",
+        "sep.detection_type": "Heuristic",
+        "sep.actual_action": "Quarantined"
+      },
+      "phase3_must_fire": [
+        133210
+      ],
+      "phase3_min_level": 8
+    },
+    {
+      "name": "heuristic-terminated",
+      "sample_file": "sample-heuristic-terminated.log",
+      "phase2_observe": {
+        "sep.actual_action": "Process terminated"
+      },
+      "phase3_must_fire": [
+        133210
+      ],
+      "phase3_min_level": 8
+    },
+    {
+      "name": "heuristic-left-alone",
+      "sample_file": "sample-heuristic-left-alone.log",
+      "phase2_observe": {
+        "sep.actual_action": "Left alone"
+      },
+      "phase3_must_fire": [
+        133211
+      ],
+      "phase3_min_level": 10
+    },
+    {
+      "name": "heuristic-all-failed",
+      "sample_file": "sample-heuristic-all-failed.log",
+      "phase2_observe": {
+        "sep.actual_action": "All actions failed"
+      },
+      "phase3_must_fire": [
+        133211
+      ],
+      "phase3_min_level": 10
+    },
+    {
+      "name": "hostfile-change",
+      "sample_file": "sample-hostfile-change.log",
+      "phase2_observe": {
+        "sep.detection_type": "System Change HostFile"
+      },
+      "phase3_must_fire": [
+        133212
+      ],
+      "phase3_min_level": 9
+    }
+  ]
+}

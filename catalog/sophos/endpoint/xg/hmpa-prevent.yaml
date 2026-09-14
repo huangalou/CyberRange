@@ -79,13 +79,27 @@ ocsf:
 
 detections:
   wazuh:
-    # Wazuh built-in `cef` decoder parses header + extensions.
-    - decoder: cef
-    # TODO(hmpa-extension): backfill rule_ids when a behavioral rule
-    # family lands SOC-side. Candidate scenarios:
-    #   AV_Sophos_CryptoGuard勒索行為攔截_全區 (type=HmpaCryptoGuard*)
-    #   AV_Sophos_Exploit防護攔截_全區       (type=HmpaExploitPrevented)
-    #   AV_Sophos_憑證竊取防護_全區          (type=HmpaCredGuard)
+    # SOC-side custom decoder (Wazuh etc/decoders/
+    # sophos_central_endpoint_decoder.xml) — Wazuh has no generic `cef`
+    # decoder; the vendor-specific pcre2 decoder shared with av-detect.yaml
+    # extracts sophos.event_type / dhost / endpoint_type / group / severity.
+    - decoder: sophos-central-endpoint
+    # HMPA behavioral rule family (local_sophos_endpoint.xml, 2026-09-14).
+    # These are SOC-side Wazuh rule ids, not reference-SIEM (ArcSight
+    # 130xxx) ids — no reference ruleset covers the HMPA axis. Chain:
+    #   CryptoGuard* → group=RANSOMWARE → 131103 → 131120 / 131121
+    #   other Hmpa*  → 131100 → 131122..131124 (self-contained, lvl 11)
+    # Verified 8/8 via tests/fixtures/wazuh-logtest/sophos-hmpa-prevent.
+    - rule_id: 131120   # AV_Sophos_CryptoGuard勒索行為攔截 (HmpaCryptoGuard / HmpaCryptoGuardSMB)
+      level: 12
+    - rule_id: 131121   # AV_Sophos_CryptoGuard解除攔截 (HmpaCryptoGuardResolved, informational)
+      level: 5
+    - rule_id: 131122   # AV_Sophos_Exploit防護攔截 (HmpaExploitPrevented)
+      level: 11
+    - rule_id: 131123   # AV_Sophos_憑證竊取防護 (HmpaCredGuard)
+      level: 11
+    - rule_id: 131124   # AV_Sophos_行為攔截(提權/挾持/惡意行為) (HmpaPrivGuard / ApplicationHijacking / BehaviourPrevented)
+      level: 11
   sigma:
     - rule: sophos_central_hmpa_prevention
       ref: https://github.com/SigmaHQ/sigma  # community contrib pending

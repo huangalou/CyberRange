@@ -1,0 +1,79 @@
+{
+  "catalog_path": "catalog/trendmicro/apex-one/14.x/behavior-monitoring.yaml",
+  "catalog_sha": "17ef723098f65b9edd114081ed3c9193fb184bd5",
+  "decoder": "trend-apex-central-bm",
+  "fixtures": [
+    {
+      "name": "file-encrypt",
+      "sample_file": "sample-file-encrypt.log",
+      "phase2_observe": {
+        "_comment": "觀察用,非 pass-fail;phase3 rule fire 才是過關標準",
+        "trend.policy": "Unauthorized file encryption",
+        "trend.reason": "G",
+        "trend.risk_level": "1"
+      },
+      "phase3_must_fire": [
+        133310
+      ],
+      "phase3_min_level": 12
+    },
+    {
+      "name": "registry-persist",
+      "sample_file": "sample-registry-persist.log",
+      "phase2_observe": {
+        "trend.policy": "New startup program",
+        "trend.event_type": "Registry"
+      },
+      "phase3_must_fire": [
+        133311
+      ],
+      "phase3_min_level": 9
+    },
+    {
+      "name": "hostfile-mod",
+      "sample_file": "sample-hostfile-mod.log",
+      "phase2_observe": {
+        "trend.policy": "Host file modification"
+      },
+      "phase3_must_fire": [
+        133311
+      ],
+      "phase3_min_level": 9
+    },
+    {
+      "name": "new-program",
+      "sample_file": "sample-new-program.log",
+      "phase2_observe": {
+        "trend.policy": "Newly encountered programs",
+        "trend.operation": "Create Process"
+      },
+      "phase3_must_fire": [
+        133312
+      ],
+      "phase3_min_level": 6
+    },
+    {
+      "name": "dll-injection",
+      "sample_file": "sample-dll-injection.log",
+      "phase2_observe": {
+        "trend.policy": "Program library injection",
+        "trend.operation": "Invoke"
+      },
+      "phase3_must_fire": [
+        133313
+      ],
+      "phase3_min_level": 9
+    },
+    {
+      "name": "threat-behavior",
+      "sample_file": "sample-threat-behavior.log",
+      "phase2_observe": {
+        "trend.policy": "Threat Behavior Analysis"
+      },
+      "phase3_must_fire": [
+        133314
+      ],
+      "phase3_min_level": 8
+    }
+  ]
+}

@@ -86,15 +86,22 @@ ocsf:
 
 detections:
   wazuh:
-    # Same native SEPM comma-delimited stream as the sibling Risk Log —
-    # requires the `symantec-ep` decoder family. Wazuh built-in `cef`
-    # decoder will NOT parse this.
-    - decoder: symantec-ep
-    # TODO(sonar-extension): backfill rule_ids when a SONAR/behavioral
-    # rule family lands SOC-side. Candidate scenarios:
-    #   AV_Symantec_SONAR行為偵測(已處置)_全區
-    #   AV_Symantec_SONAR行為偵測(未處置)_全區
-    #   AV_Symantec_SONAR系統變更(HostFile)_全區
+    # SOC-side custom decoder (Wazuh etc/decoders/
+    # symantec_sep_sonar_decoder.xml, 2026-09-14). Wazuh's built-in
+    # `symantec-av` only knows the legacy 12-hex-prefix SAV export; the SEPM
+    # syslog stream (program_name SymantecServer) matched nothing before.
+    # Prematch is pinned to the SONAR field order (`…risk found,Computer
+    # name:`) so the Risk Log sibling (av-detect.yaml) is untouched.
+    - decoder: symantec-sep-sonar
+    # SONAR rule family (local_symantec_sep_sonar.xml). SOC-side Wazuh
+    # ids, not reference-SIEM ids. Verified 5/5 via
+    # tests/fixtures/wazuh-logtest/symantec-sep-sonar.
+    - rule_id: 133210   # AV_Symantec_SONAR行為偵測(已處置)  Heuristic + Quarantined/Process terminated/Threat blocked/Cleaned by deletion/…pending restart
+      level: 8
+    - rule_id: 133211   # AV_Symantec_SONAR行為偵測(未處置)  Heuristic + Left alone/All actions failed
+      level: 10
+    - rule_id: 133212   # AV_Symantec_SONAR系統變更(HostFile) Detection type: System Change HostFile
+      level: 9
   sigma:
     - rule: symantec_sep_sonar_detection
       ref: https://github.com/SigmaHQ/sigma  # community contrib pending

@@ -83,13 +83,25 @@ ocsf:
 
 detections:
   wazuh:
-    # Wazuh built-in `cef` decoder parses header + extensions.
-    - decoder: cef
-    # TODO(bm-extension): backfill rule_ids when a BM/behavioral rule
-    # family lands SOC-side. Candidate scenarios:
-    #   AV_TrendMicro_行為監控_勒索加密行為(reason=G / cs2=Unauthorized file encryption)
-    #   AV_TrendMicro_行為監控_持久化竄改(cs2=New startup program / Host file modification)
-    #   AV_TrendMicro_行為監控_未知程式攔截(cs2=Newly encountered programs)
+    # SOC-side custom decoder (Wazuh etc/decoders/
+    # trend_apex_central_bm_decoder.xml, 2026-09-14) — Wazuh has no generic
+    # `cef` decoder and the built-in `trend-osce` only knows the legacy
+    # `<;>` OfficeScan export. Prematch pinned to `|BM:` so the Apex AV /
+    # Web Reputation CEF siblings stay unmatched until they get their own.
+    - decoder: trend-apex-central-bm
+    # Behavior Monitoring rule family (local_trendmicro_apex_bm.xml), keyed
+    # on the `cs2=<Policy>` token. SOC-side Wazuh ids, not reference-SIEM
+    # ids. Verified 6/6 via tests/fixtures/wazuh-logtest/trendmicro-apex-behavior-monitoring.
+    - rule_id: 133310   # AV_TrendMicro_行為監控_勒索加密行為  cs2=Unauthorized file encryption (reason=G)
+      level: 12
+    - rule_id: 133311   # AV_TrendMicro_行為監控_持久化竄改    cs2=New startup program | Host file modification
+      level: 9
+    - rule_id: 133312   # AV_TrendMicro_行為監控_未知程式攔截  cs2=Newly encountered programs
+      level: 6
+    - rule_id: 133313   # AV_TrendMicro_行為監控_DLL注入       cs2=Program library injection
+      level: 9
+    - rule_id: 133314   # AV_TrendMicro_行為監控_威脅行為分析  cs2=Threat Behavior Analysis
+      level: 8
   sigma:
     - rule: trendmicro_apex_one_behavior_monitoring
       ref: https://github.com/SigmaHQ/sigma  # community contrib pending

@@ -1,0 +1,91 @@
+{
+  "catalog_path": "catalog/sophos/endpoint/xg/hmpa-prevent.yaml",
+  "catalog_sha": "7255cf7e999a80e0acdd94b9f62e31ef228daeaa",
+  "decoder": "sophos-central-endpoint",
+  "fixtures": [
+    {
+      "name": "cryptoguard",
+      "sample_file": "sample-cryptoguard.log",
+      "phase2_observe": {
+        "_comment": "觀察用,非 pass-fail;phase3 rule fire 才是過關標準",
+        "group": "RANSOMWARE",
+        "sophos.event_type": "Event::Endpoint::HmpaCryptoGuard"
+      },
+      "phase3_must_fire": [
+        131120
+      ],
+      "phase3_min_level": 12
+    },
+    {
+      "name": "cryptoguard-smb",
+      "sample_file": "sample-cryptoguard-smb.log",
+      "phase2_observe": {
+        "group": "RANSOMWARE"
+      },
+      "phase3_must_fire": [
+        131120
+      ],
+      "phase3_min_level": 12
+    },
+    {
+      "name": "cryptoguard-resolved",
+      "sample_file": "sample-cryptoguard-resolved.log",
+      "phase2_observe": {
+        "group": "RANSOMWARE"
+      },
+      "phase3_must_fire": [
+        131121
+      ],
+      "phase3_min_level": 5
+    },
+    {
+      "name": "exploit-prevented",
+      "sample_file": "sample-exploit-prevented.log",
+      "phase2_observe": {
+        "sophos.event_type": "Event::Endpoint::HmpaExploitPrevented"
+      },
+      "phase3_must_fire": [
+        131122
+      ],
+      "phase3_min_level": 11
+    },
+    {
+      "name": "credguard",
+      "sample_file": "sample-credguard.log",
+      "phase2_observe": {
+        "sophos.event_type": "Event::Endpoint::HmpaCredGuard"
+      },
+      "phase3_must_fire": [
+        131123
+      ],
+      "phase3_min_level": 11
+    },
+    {
+      "name": "privguard",
+      "sample_file": "sample-privguard.log",
+      "phase2_observe": {},
+      "phase3_must_fire": [
+        131124
+      ],
+      "phase3_min_level": 11
+    },
+    {
+      "name": "app-hijacking",
+      "sample_file": "sample-app-hijacking.log",
+      "phase2_observe": {},
+      "phase3_must_fire": [
+        131124
+      ],
+      "phase3_min_level": 11
+    },
+    {
+      "name": "behaviour-prevented",
+      "sample_file": "sample-behaviour-prevented.log",
+      "phase2_observe": {},
+      "phase3_must_fire": [
+        131124
+      ],
+      "phase3_min_level": 11
+    }
+  ]
+}
