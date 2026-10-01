@@ -5,8 +5,8 @@ import argparse
 import json
 import os
 import sys
-import time
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -30,9 +30,12 @@ from .vulnops import (
     summarize as vulnops_summarize,
     to_json as vulnops_to_json,
 )
-from .generator import render_many
+from .generator import render_one
 from .loader import CATALOG_ROOT, find_spec, list_specs, load_spec
 from .sinks import open_sink
+from .timing import Schedule, burst, emit, parse_burst, parse_duration, uniform
+
+DEFAULT_GEN_COUNT = 10
 
 # Default feed-state location: ~/.cyberrange/feed-state.json, overridable.
 _DEFAULT_FEED_STATE = Path(
@@ -108,13 +111,24 @@ def cmd_detection_list(args: argparse.Namespace) -> int:
     return 0
 
 
-def _parse_param(items: list[str]) -> dict[str, str]:
-    out: dict[str, str] = {}
+def _parse_param_value(raw: str) -> Any:
+    """JSON list/dict 才轉型,其餘一律保留字串(維持既有行為)。"""
+    if raw[:1] not in ("[", "{"):
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+    return parsed if isinstance(parsed, (list, dict)) else raw
+
+
+def _parse_param(items: list[str]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
     for item in items:
         if "=" not in item:
             raise SystemExit(f"--param expects key=value, got {item!r}")
         k, v = item.split("=", 1)
-        out[k] = v
+        out[k] = _parse_param_value(v)
     return out
 
 
@@ -368,7 +382,54 @@ def cmd_cti_feeds_fetch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _burst_arg(text: str) -> tuple[int, float]:
+    try:
+        return parse_burst(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _duration_arg(text: str) -> float:
+    try:
+        return parse_duration(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _repeat_arg(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid repeat {text!r}") from exc
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"repeat must be >= 1, got {value}")
+    return value
+
+
+def _gen_timing_conflict(args: argparse.Namespace) -> str | None:
+    if args.burst is None:
+        if args.repeat is not None or args.gap is not None:
+            return "--repeat/--gap require --burst"
+        return None
+    if args.rate > 0:
+        return "--burst and --rate are mutually exclusive"
+    if args.count is not None:
+        return "--burst and --count are mutually exclusive (total = SIZE x --repeat)"
+    return None
+
+
+def _build_schedule(args: argparse.Namespace) -> Schedule:
+    if args.burst is not None:
+        size, window = args.burst
+        return burst(size, window, repeat=args.repeat or 1, gap=args.gap or 0.0)
+    count = args.count if args.count is not None else DEFAULT_GEN_COUNT
+    return uniform(count, args.rate)
+
+
 def cmd_gen(args: argparse.Namespace) -> int:
+    conflict = _gen_timing_conflict(args)
+    if conflict:
+        args.gen_parser.error(conflict)
     spec_path = find_spec(
         args.vendor,
         args.product,
@@ -378,13 +439,10 @@ def cmd_gen(args: argparse.Namespace) -> int:
     )
     spec = load_spec(spec_path)
     params = _parse_param(args.param)
-    interval = (1.0 / args.rate) if args.rate > 0 else 0.0
+    schedule = _build_schedule(args)
 
     with open_sink(args.sink) as sink:
-        for line in render_many(spec, args.count, params):
-            sink.write(line)
-            if interval:
-                time.sleep(interval)
+        emit(schedule, lambda at: render_one(spec, params, at=at), sink)
     return 0
 
 
@@ -408,7 +466,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp_gen.add_argument("--product", required=True)
     sp_gen.add_argument("--version", required=True)
     sp_gen.add_argument("--log-type", required=True, dest="log_type")
-    sp_gen.add_argument("--count", type=int, default=10)
+    sp_gen.add_argument(
+        "--count",
+        type=int,
+        default=None,
+        help=f"number of events (default {DEFAULT_GEN_COUNT}); not with --burst",
+    )
     sp_gen.add_argument(
         "--rate",
         type=float,
@@ -416,17 +479,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="logs/sec, 0 = as fast as possible",
     )
     sp_gen.add_argument(
+        "--burst",
+        type=_burst_arg,
+        default=None,
+        metavar="SIZE/WINDOW",
+        help="send SIZE events spread over WINDOW (e.g. 8/120s, 3/2m)",
+    )
+    sp_gen.add_argument(
+        "--repeat",
+        type=_repeat_arg,
+        default=None,
+        help="number of bursts (default 1; requires --burst)",
+    )
+    sp_gen.add_argument(
+        "--gap",
+        type=_duration_arg,
+        default=None,
+        help="pause after each burst window (default 0s; requires --burst)",
+    )
+    sp_gen.add_argument(
         "--param",
         action="append",
         default=[],
-        help="key=value param override; repeatable",
+        help="key=value param override; JSON list/dict values are parsed; repeatable",
     )
     sp_gen.add_argument(
         "--sink",
         default="stdout://",
         help="stdout:// | file:///path | udp://host:port | tcp://host:port",
     )
-    sp_gen.set_defaults(func=cmd_gen)
+    sp_gen.set_defaults(func=cmd_gen, gen_parser=sp_gen)
 
     sp_det = sub.add_parser(
         "detection",
