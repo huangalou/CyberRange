@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class SpecID(BaseModel):
@@ -90,6 +90,19 @@ class PreviewResponse(BaseModel):
     samples: list[str]
 
 
+class BurstSpec(BaseModel):
+    """N 筆 / window_s 秒,共 repeat 組,組間隔 gap_s 秒。"""
+
+    size: int = Field(ge=1)
+    window_s: float = Field(gt=0)
+    repeat: int = Field(default=1, ge=1)
+    gap_s: float = Field(default=0.0, ge=0)
+
+    @property
+    def total(self) -> int:
+        return self.size * self.repeat
+
+
 class GenerateRequest(SpecID):
     count: int = 100
     rate: float = 0.0
@@ -100,6 +113,18 @@ class GenerateRequest(SpecID):
     cef_extension_overrides: dict[str, CefExtensionOverride] = Field(
         default_factory=dict
     )
+    # 時間模型軸第 1 期:設定時忽略 count,總數 = size * repeat
+    burst: Optional[BurstSpec] = None
+
+    @model_validator(mode="after")
+    def _burst_excludes_rate(self) -> "GenerateRequest":
+        if self.burst is not None and self.rate > 0:
+            raise ValueError("burst and rate are mutually exclusive")
+        return self
+
+    @property
+    def total_count(self) -> int:
+        return self.burst.total if self.burst is not None else self.count
 
 
 class JobStatus(BaseModel):
@@ -108,6 +133,7 @@ class JobStatus(BaseModel):
     count: int
     rate: float
     sink: str
+    burst: Optional[BurstSpec] = None
     status: str               # pending | running | completed | failed
     sent: int = 0
     started_at: Optional[str] = None

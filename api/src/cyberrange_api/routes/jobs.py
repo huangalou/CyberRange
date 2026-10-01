@@ -15,7 +15,7 @@ router = APIRouter(tags=["jobs"])
 
 @router.post("/generate", response_model=JobStatus, status_code=202)
 def create_job(req: GenerateRequest) -> JobStatus:
-    if req.count < 1:
+    if req.total_count < 1:
         raise HTTPException(status_code=400, detail="count must be >= 1")
 
     try:
@@ -32,9 +32,10 @@ def create_job(req: GenerateRequest) -> JobStatus:
             version=req.version,
             log_type=req.log_type,
         ),
-        count=req.count,
+        count=req.total_count,
         rate=req.rate,
         sink=req.sink,
+        burst=req.burst,
         status="pending",
     )
     store.add(job)
