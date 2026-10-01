@@ -1,7 +1,7 @@
 """render_one(at=...) 時鐘注入;choice 純字串 param 防護。"""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -51,3 +51,21 @@ def test_choice_param_plain_string_is_single_choice() -> None:
     )
     outs = {render_one(spec, {"pool": "203.0.113.5"}) for _ in range(20)}
     assert outs == {"203.0.113.5"}
+
+
+def test_render_one_normalizes_non_utc_at_to_utc() -> None:
+    taipei = AT.astimezone(timezone(timedelta(hours=8)))
+    spec = _spec("%Y-%m-%dT%H:%M:%S.%fZ")
+    assert render_one(spec, at=taipei) == "2026-10-01T08:05:03.123456Z"
+
+
+@pytest.mark.parametrize("bad", ["invalid_user", ["invalid_user"]])
+def test_weighted_choice_non_mapping_param_is_clear_error(bad: object) -> None:
+    spec = CatalogSpec(
+        vendor="t", product="t", version="1", log_type="t", format="raw",
+        params={"w": {"default": {"a": 1}}},
+        fields=[{"name": "k", "type": "weighted_choice", "choices": "${params.w}"}],
+        template="{{ k }}",
+    )
+    with pytest.raises(ValueError, match="must be a mapping"):
+        render_one(spec, {"w": bad})
