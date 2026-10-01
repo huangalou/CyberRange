@@ -2,27 +2,42 @@
 from __future__ import annotations
 
 import threading
-import time
 from datetime import datetime, timezone
 
-from cyberrange import find_spec, load_spec, render_many
+from cyberrange import find_spec, load_spec, render_one
 from cyberrange.sinks import open_sink
+from cyberrange.timing import Schedule, burst, emit, uniform
 
 from .models import GenerateRequest
 from .store import store
+
+PROGRESS_EVERY = 100
 
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _schedule(req: GenerateRequest) -> Schedule:
+    if req.burst is not None:
+        b = req.burst
+        return burst(b.size, b.window_s, repeat=b.repeat, gap=b.gap_s)
+    return uniform(req.count, req.rate)
+
+
 def _run(job_id: str, req: GenerateRequest) -> None:
+    sent = 0
+
+    def _progress(n: int) -> None:
+        nonlocal sent
+        sent = n
+        if n % PROGRESS_EVERY == 0:
+            store.update(job_id, sent=n)
+
     try:
         store.update(job_id, status="running", started_at=_utcnow_iso())
         spec_path = find_spec(req.vendor, req.product, req.version, req.log_type)
         spec = load_spec(spec_path)
-        interval = (1.0 / req.rate) if req.rate > 0 else 0.0
-        sent = 0
 
         # v4 — flatten override Pydantic models to engine kwargs.
         cef_header_kw = (
@@ -35,26 +50,24 @@ def _run(job_id: str, req: GenerateRequest) -> None:
             for pa_field, ov in req.cef_extension_overrides.items()
         }
 
-        with open_sink(req.sink) as sink:
-            for line in render_many(
+        def _render(at: datetime) -> str:
+            return render_one(
                 spec,
-                req.count,
                 req.params,
                 cef_header_overrides=cef_header_kw,
                 cef_extension_overrides=cef_ext_kw,
-            ):
-                sink.write(line)
-                sent += 1
-                if sent % 100 == 0:
-                    store.update(job_id, sent=sent)
-                if interval:
-                    time.sleep(interval)
+                at=at,
+            )
+
+        with open_sink(req.sink) as sink:
+            emit(_schedule(req), _render, sink, on_sent=_progress)
         store.update(
             job_id, sent=sent, status="completed", completed_at=_utcnow_iso()
         )
     except Exception as exc:  # noqa: BLE001
         store.update(
             job_id,
+            sent=sent,
             status="failed",
             completed_at=_utcnow_iso(),
             error=f"{type(exc).__name__}: {exc}",
