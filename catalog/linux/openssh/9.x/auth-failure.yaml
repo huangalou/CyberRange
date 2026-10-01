@@ -124,7 +124,10 @@ regression:
   #   ~150 preauth_close       → 5722 silent grouping (level 0)
   # Composite "alert-class" count (5712 + 5720) ≈ 105.
   baseline_alert_count: 105
-  baseline_ttd_ms: 3000
+  # baseline_ttd_ms:2026-10 live-fire 實測(burst 8/120s → 5712,
+  # 反例 7/120s 與 8/300s 皆 0 筆);量法:alert timestamp − 第 8 筆送出時間,
+  # 送出時間取 sink 寫出當下,並以 SOC-side manager 時鐘差校正(誤差約 ±2ms)。
+  baseline_ttd_ms: 2
 
 params:
   hostname: { default: "web-server-01" }
