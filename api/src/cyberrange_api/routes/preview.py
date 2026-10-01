@@ -39,13 +39,16 @@ def preview(req: PreviewRequest) -> PreviewResponse:
         for pa_field, ov in req.cef_extension_overrides.items()
     }
 
-    samples = list(
-        render_many(
-            spec,
-            req.count,
-            req.params,
-            cef_header_overrides=cef_header_kw,
-            cef_extension_overrides=cef_ext_kw,
+    try:
+        samples = list(
+            render_many(
+                spec,
+                req.count,
+                req.params,
+                cef_header_overrides=cef_header_kw,
+                cef_extension_overrides=cef_ext_kw,
+            )
         )
-    )
+    except ValueError as exc:  # params 型別錯(如 weighted_choice 給字串)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return PreviewResponse(samples=samples)
