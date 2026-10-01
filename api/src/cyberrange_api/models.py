@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class SpecID(BaseModel):
@@ -92,6 +92,9 @@ class PreviewResponse(BaseModel):
 
 class BurstSpec(BaseModel):
     """N 筆 / window_s 秒,共 repeat 組,組間隔 gap_s 秒。"""
+
+    # inf 會讓 emit() 的 sleep 拋 OverflowError;在邊界就回 422
+    model_config = ConfigDict(allow_inf_nan=False)
 
     size: int = Field(ge=1)
     window_s: float = Field(gt=0)

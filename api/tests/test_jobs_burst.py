@@ -66,3 +66,11 @@ def test_rate_job_unchanged(tmp_path: Path) -> None:
     assert final["status"] == "completed"
     assert final["sent"] == 3
     assert final["burst"] is None
+
+
+def test_burst_infinite_window_or_gap_rejected(tmp_path: Path) -> None:
+    sink = f"file://{tmp_path / 'x.log'}"
+    for burst in ({"size": 2, "window_s": "inf"},
+                  {"size": 2, "window_s": 1, "repeat": 2, "gap_s": "inf"}):
+        r = client.post("/generate", json={**SPEC, "burst": burst, "sink": sink})
+        assert r.status_code == 422, burst
