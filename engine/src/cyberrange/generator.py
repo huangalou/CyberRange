@@ -28,8 +28,8 @@ def _resolve_param_ref(value: Any, params: dict[str, Any]) -> Any:
     return value
 
 
-def _render_datetime(fmt: str) -> str:
-    now = datetime.now(timezone.utc)
+def _render_datetime(fmt: str, at: datetime | None = None) -> str:
+    now = at if at is not None else datetime.now(timezone.utc)
     if fmt == "epoch":
         return str(int(now.timestamp()))
     if fmt == "epoch_ns":
@@ -53,7 +53,12 @@ def _render_faker(method: str) -> str:
     raise ValueError(f"unknown faker method: {method!r}")
 
 
-def _render_field(fs: FieldSpec, params: dict[str, Any], prior: dict[str, str]) -> str:
+def _render_field(
+    fs: FieldSpec,
+    params: dict[str, Any],
+    prior: dict[str, str],
+    at: datetime | None = None,
+) -> str:
     extras = fs.model_dump(exclude={"name", "type"})
     t = fs.type
 
@@ -65,6 +70,8 @@ def _render_field(fs: FieldSpec, params: dict[str, Any], prior: dict[str, str]) 
 
     if t == "choice":
         choices = _resolve_param_ref(extras["choices"], params)
+        if isinstance(choices, str):  # --param pool=1.2.3.4 → 單一選項,不是逐字元
+            choices = [choices]
         return str(random.choice(list(choices)))
 
     if t == "weighted_choice":
@@ -88,7 +95,7 @@ def _render_field(fs: FieldSpec, params: dict[str, Any], prior: dict[str, str]) 
         return str(net.network_address + idx)
 
     if t == "datetime":
-        return _render_datetime(extras["format"])
+        return _render_datetime(extras["format"], at)
 
     if t == "template":
         ctx = {**params, **prior, "params": params}
@@ -204,11 +211,14 @@ def render_one(
     params: dict[str, Any] | None = None,
     cef_header_overrides: dict[str, Any] | None = None,
     cef_extension_overrides: dict[str, dict[str, Any]] | None = None,
+    at: datetime | None = None,
 ) -> str:
+    if at is not None and at.tzinfo is None:
+        raise ValueError("at must be timezone-aware")
     merged = {**spec.default_params(), **(params or {})}
     rendered: dict[str, str] = {}
     for fs in spec.fields:
-        rendered[fs.name] = _render_field(fs, merged, rendered)
+        rendered[fs.name] = _render_field(fs, merged, rendered, at)
 
     ctx: dict[str, Any] = {**rendered, "params": merged}
 
