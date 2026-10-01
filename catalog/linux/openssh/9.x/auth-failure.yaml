@@ -147,6 +147,14 @@ params:
       - "postgres"
       - "ftpuser"
       - "support"
+  # kind 權重;live-fire 可用 --param 'kind_weights={"invalid_user": 1}'
+  # 釘成單一樣態(Wazuh 5710 → 5712 frequency 驗證)。預設值即現行分布。
+  kind_weights:
+    default:
+      invalid_user:           0.45
+      failed_password:        0.30
+      preauth_close:          0.15
+      invalid_user_announce:  0.10
 
 fields:
   # PRI = facility * 8 + severity.
@@ -183,11 +191,7 @@ fields:
   # 5710 matches both forms (its regex is "illegal user|invalid user").
   - name: kind
     type: weighted_choice
-    choices:
-      invalid_user:           0.45
-      failed_password:        0.30
-      preauth_close:          0.15
-      invalid_user_announce:  0.10
+    choices: ${params.kind_weights}
 
   - name: user
     type: choice
