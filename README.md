@@ -53,8 +53,16 @@ cd web && npm install && npm run dev   # http://localhost:3000
 
 # Or straight from the CLI
 cyberrange gen \
-  --vendor fortinet --product fortios --version 7.4 --type traffic \
-  --count 1000 --rate 50/s --sink udp://192.0.2.10:514
+  --vendor fortinet --product fortios --version 7.4 --log-type traffic.forward \
+  --count 1000 --rate 50 --sink udp://192.0.2.10:514
+```
+
+```bash
+# Burst: 8 events / 120 s, to exercise frequency/timeframe rules (e.g. Wazuh 5712)
+cyberrange gen \
+  --vendor linux --product openssh --version 9.x --log-type auth.failure \
+  --burst 8/120s --param 'kind_weights={"invalid_user": 1}' --param src_pool=203.0.113.5 \
+  --sink udp://192.0.2.10:514
 ```
 
 > IPs in docs use RFC 5737 documentation addresses (`192.0.2.x`). Configure your own sinks via `.env` (`CYBERRANGE_ALLOWED_SINK_HOSTS`) — see `.env.example`.

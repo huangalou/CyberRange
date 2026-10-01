@@ -36,8 +36,14 @@ CyberRange 本身**不做偵測**，只負責產生「打進 SIEM 的東西」�
 
 ```bash
 cyberrange gen \
-  --vendor fortinet --product fortios --version 7.4 --type traffic \
-  --count 1000 --rate 50/s --start "2026-05-05T00:00:00" \
+  --vendor fortinet --product fortios --version 7.4 --log-type traffic.forward \
+  --count 1000 --rate 50 \
+  --sink udp://192.0.2.10:514
+
+# burst:8 筆 / 120 秒,驗證 frequency/timeframe 類規則(如 Wazuh 5712)
+cyberrange gen \
+  --vendor linux --product openssh --version 9.x --log-type auth.failure \
+  --burst 8/120s --param 'kind_weights={"invalid_user": 1}' --param src_pool=203.0.113.5 \
   --sink udp://192.0.2.10:514
 ```
 
