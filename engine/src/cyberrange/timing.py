@@ -6,7 +6,9 @@ monotonic deadline 再 sleep,render 耗時不會累積成漂移。
 from __future__ import annotations
 
 import re
-from typing import Iterator
+import time
+from datetime import datetime, timezone
+from typing import Callable, Iterator, Protocol
 
 Schedule = Iterator[float]
 
@@ -59,3 +61,39 @@ def burst(size: int, window: float, repeat: int = 1, gap: float = 0.0) -> Schedu
     period = window + gap
     step = window / size
     return (k * period + j * step for k in range(repeat) for j in range(size))
+
+
+class SinkLike(Protocol):
+    def write(self, line: str) -> None: ...
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def emit(
+    schedule: Schedule,
+    render: Callable[[datetime], str],
+    sink: SinkLike,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+    wall: Callable[[], datetime] = utcnow,
+    sleep: Callable[[float], None] = time.sleep,
+    on_sent: Callable[[int], None] | None = None,
+) -> int:
+    """依 schedule 節奏 render 並寫入 sink,回傳送出筆數。
+
+    時間戳取「實際送出當下」的 wall(),與 SIEM 到達時間一致。
+    render / sink 的例外不吞,直接往上拋。
+    """
+    anchor = clock()
+    sent = 0
+    for offset in schedule:
+        remaining = anchor + offset - clock()
+        if remaining > 0:
+            sleep(remaining)
+        sink.write(render(wall()))
+        sent += 1
+        if on_sent is not None:
+            on_sent(sent)
+    return sent
