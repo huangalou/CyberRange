@@ -29,7 +29,8 @@ def _resolve_param_ref(value: Any, params: dict[str, Any]) -> Any:
 
 
 def _render_datetime(fmt: str, at: datetime | None = None) -> str:
-    now = at if at is not None else datetime.now(timezone.utc)
+    # catalog 格式字串(如 ...Z)假設 UTC;非 UTC 的 aware at 先換算
+    now = at.astimezone(timezone.utc) if at is not None else datetime.now(timezone.utc)
     if fmt == "epoch":
         return str(int(now.timestamp()))
     if fmt == "epoch_ns":
@@ -76,6 +77,11 @@ def _render_field(
 
     if t == "weighted_choice":
         choices = _resolve_param_ref(extras["choices"], params)
+        if not isinstance(choices, dict):
+            raise ValueError(
+                f"weighted_choice field {fs.name!r} must be a mapping of "
+                f"choice -> weight, got {type(choices).__name__}"
+            )
         keys = list(choices.keys())
         weights = [float(v) for v in choices.values()]
         return str(random.choices(keys, weights=weights, k=1)[0])
