@@ -501,7 +501,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--param",
         action="append",
         default=[],
-        help="key=value param override; JSON list/dict values are parsed; repeatable",
+        help=(
+            "key=value param override; repeatable. A value starting with [ or { "
+            "is parsed as a JSON list/dict (kept as a plain string if it is not "
+            "valid JSON); every other value stays a string"
+        ),
     )
     sp_gen.add_argument(
         "--sink",

@@ -65,6 +65,8 @@ cyberrange gen \
   --sink udp://192.0.2.10:514
 ```
 
+> `--param` values are strings, with one exception: a value starting with `[` or `{` is parsed as a JSON list/dict (as in `kind_weights` above). If it is not valid JSON it is kept as a plain string, so quote the whole `key=value` to stop the shell from eating the JSON quotes.
+
 > IPs in docs use RFC 5737 documentation addresses (`192.0.2.x`). Configure your own sinks via `.env` (`CYBERRANGE_ALLOWED_SINK_HOSTS`) — see `.env.example`.
 
 ## Status
