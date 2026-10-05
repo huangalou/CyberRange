@@ -11,8 +11,6 @@ from cyberrange.timing import Schedule, burst, emit, uniform
 from .models import GenerateRequest
 from .store import store
 
-PROGRESS_EVERY = 100
-
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -26,13 +24,9 @@ def _schedule(req: GenerateRequest) -> Schedule:
 
 
 def _run(job_id: str, req: GenerateRequest) -> None:
-    sent = 0
-
     def _progress(n: int) -> None:
-        nonlocal sent
-        sent = n
-        if n % PROGRESS_EVERY == 0:
-            store.update(job_id, sent=n)
+        # 逐筆回報:burst 這類慢節奏 job 才看得到進度,失敗時 sent 也已是最新值
+        store.update(job_id, sent=n)
 
     try:
         store.update(job_id, status="running", started_at=_utcnow_iso())
@@ -61,13 +55,10 @@ def _run(job_id: str, req: GenerateRequest) -> None:
 
         with open_sink(req.sink) as sink:
             emit(_schedule(req), _render, sink, on_sent=_progress)
-        store.update(
-            job_id, sent=sent, status="completed", completed_at=_utcnow_iso()
-        )
+        store.update(job_id, status="completed", completed_at=_utcnow_iso())
     except Exception as exc:  # noqa: BLE001
         store.update(
             job_id,
-            sent=sent,
             status="failed",
             completed_at=_utcnow_iso(),
             error=f"{type(exc).__name__}: {exc}",
