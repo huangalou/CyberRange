@@ -35,6 +35,8 @@ cyberrange gen --vendor fortinet --product fortios --version 7.4 \
   --sink udp://192.0.2.10:514
 ```
 
+`--param` values are strings, with one exception: a value starting with `[` or `{` is parsed as a JSON list/dict, e.g. `--param 'kind_weights={"invalid_user": 1}'`. If it is not valid JSON it is kept as a plain string.
+
 ## Run tests
 
 ```bash
