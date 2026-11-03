@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cyberrange"
-version = "0.0.1"
+version = "0.3.0"
 description = "Catalog-driven log generator for SIEM detection rule validation"
 readme = "README.md"
 requires-python = ">=3.10"

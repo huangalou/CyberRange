@@ -1,6 +1,6 @@
 """CyberRange log catalog generator engine."""
 
-__version__ = "0.0.1"
+__version__ = "0.3.0"
 
 from .schema import (
     AffectsSpec,
