@@ -5,9 +5,10 @@ import hashlib
 import ipaddress
 import logging
 import random
+import re
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 
 from jinja2 import Environment
@@ -28,9 +29,28 @@ def _resolve_param_ref(value: Any, params: dict[str, Any]) -> Any:
     return value
 
 
-def _render_datetime(fmt: str, at: datetime | None = None) -> str:
-    # catalog 格式字串(如 ...Z)假設 UTC;非 UTC 的 aware at 先換算
-    now = at.astimezone(timezone.utc) if at is not None else datetime.now(timezone.utc)
+_UTC_OFFSET_RE = re.compile(r"([+-])([01]\d|2[0-3])([0-5]\d)")
+
+
+def _parse_utc_offset(offset: Any) -> timezone:
+    """`+0800` / `-0530` → tzinfo.
+
+    只收 ±HHMM:同一個值通常也原樣寫進紀錄的時差欄位,放寬成 `+08:00`、
+    空字串或時區名稱(Asia/Taipei)會讓牆上時間和紀錄裡標示的時差對不上。
+    """
+    m = _UTC_OFFSET_RE.fullmatch(str(offset))
+    if not m:
+        raise ValueError(f"utc_offset must be ±HHMM (e.g. +0800, -0530), got {offset!r}")
+    delta = timedelta(hours=int(m.group(2)), minutes=int(m.group(3)))
+    return timezone(delta if m.group(1) == "+" else -delta)
+
+
+def _render_datetime(fmt: str, at: datetime | None = None, utc_offset: Any = None) -> str:
+    # catalog 格式字串(如 ...Z)假設 UTC;非 UTC 的 aware at 先換算。
+    # 設備把本地時間與時差一起寫進紀錄時(如 FortiOS 的 date/time + tz),
+    # 欄位以 utc_offset 宣告時差,牆上時間才會和紀錄裡的 tz 對得上。
+    tz = _parse_utc_offset(utc_offset) if utc_offset is not None else timezone.utc
+    now = at.astimezone(tz) if at is not None else datetime.now(tz)
     if fmt == "epoch":
         return str(int(now.timestamp()))
     if fmt == "epoch_ns":
@@ -101,7 +121,9 @@ def _render_field(
         return str(net.network_address + idx)
 
     if t == "datetime":
-        return _render_datetime(extras["format"], at)
+        return _render_datetime(
+            extras["format"], at, _resolve_param_ref(extras.get("utc_offset"), params)
+        )
 
     if t == "template":
         ctx = {**params, **prior, "params": params}
@@ -212,6 +234,32 @@ def _resolve_cef_header(
     return resolved
 
 
+def validate_params(spec: CatalogSpec, params: dict[str, Any] | None) -> None:
+    """參數名必須是 catalog 宣告的 param,或某個欄位的名稱(把該欄位釘成固定值)。
+
+    打錯的名稱若被靜默忽略,產出的事件會和預期不同卻沒有任何提示,
+    拿來驗證偵測規則時等於測了別的東西。datetime 欄位引用的時差也在這裡先驗,
+    讓 CLI / API 在送出第一筆之前就能回報。
+
+    名稱同時是宣告 param 與欄位時,以 param 為準(值交給 catalog 自己的欄位定義
+    使用),不當成釘選。
+    """
+    field_names = [fs.name for fs in spec.fields]
+    unknown = sorted(set(params or {}) - set(spec.params) - set(field_names))
+    if unknown:
+        raise ValueError(
+            f"unknown param(s) {unknown} for {spec.vendor}/{spec.product}/"
+            f"{spec.version}/{spec.log_type}; declared params: {sorted(spec.params)}; "
+            f"pinnable fields: {field_names}"
+        )
+    merged = {**spec.default_params(), **(params or {})}
+    for fs in spec.fields:
+        if fs.type == "datetime" and fs.name not in (params or {}):
+            offset = _resolve_param_ref((fs.model_extra or {}).get("utc_offset"), merged)
+            if offset is not None:
+                _parse_utc_offset(offset)
+
+
 def render_one(
     spec: CatalogSpec,
     params: dict[str, Any] | None = None,
@@ -221,10 +269,16 @@ def render_one(
 ) -> str:
     if at is not None and at.tzinfo is None:
         raise ValueError("at must be timezone-aware")
+    validate_params(spec, params)
     merged = {**spec.default_params(), **(params or {})}
+    # 不是宣告 param 的鍵即為欄位釘選:該欄位跳過 generator,直接用給定的值
+    pins = {k: v for k, v in (params or {}).items() if k not in spec.params}
     rendered: dict[str, str] = {}
     for fs in spec.fields:
-        rendered[fs.name] = _render_field(fs, merged, rendered, at)
+        if fs.name in pins:
+            rendered[fs.name] = str(pins[fs.name])
+        else:
+            rendered[fs.name] = _render_field(fs, merged, rendered, at)
 
     ctx: dict[str, Any] = {**rendered, "params": merged}
 

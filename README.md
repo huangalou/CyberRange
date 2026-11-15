@@ -65,6 +65,18 @@ cyberrange gen \
   --sink udp://192.0.2.10:514
 ```
 
+```bash
+# Pin fields to hit one exact rule condition: a denied flow to a single
+# destination on a specific port, stamped in the device's local time
+cyberrange gen \
+  --vendor fortinet --product fortios --version 7.4 --log-type traffic.forward \
+  --count 1 --param src_cidr=198.51.100.7/32 --param 'dst_pool=["203.0.113.66"]' \
+  --param dstport=8443 --param action=deny --param tz=+0800 \
+  --sink udp://192.0.2.10:514
+```
+
+> A `--param` key is either a param the catalog declares (`src_cidr`, `dst_pool`, …) or the name of any field in the catalog (`dstport`, `action`, …), which pins that field to a fixed value instead of running its generator (when a name is both, the declared param wins). A pinned value is emitted verbatim, so keep it valid for the log format. A key that is neither is rejected, listing the valid names — a silently ignored typo would send events that do not match the condition you meant to test.
+
 > `--param` values are strings, with one exception: a value starting with `[` or `{` is parsed as a JSON list/dict (as in `kind_weights` above). If it is not valid JSON it is kept as a plain string, so quote the whole `key=value` to stop the shell from eating the JSON quotes.
 
 > IPs in docs use RFC 5737 documentation addresses (`192.0.2.x`). Configure your own sinks via `.env` (`CYBERRANGE_ALLOWED_SINK_HOSTS`) — see `.env.example`.
