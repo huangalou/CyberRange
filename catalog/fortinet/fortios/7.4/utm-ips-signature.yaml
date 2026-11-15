@@ -1,0 +1,222 @@
+vendor: fortinet
+product: fortios
+version: "7.4"
+log_type: utm.ips.signature
+description: |
+  FortiGate FortiOS 7.4 IPS signature log (logid="0419016384",
+  type="utm" subtype="ips" eventtype="signature"): the IPS engine matched
+  a TCP/UDP signature on a forwarded session and either dropped it or only
+  detected it.
+
+  Wire format is the same native space-separated key=value form as the
+  sibling traffic.yaml, wrapped in RFC3164 syslog (local7.alert).
+
+  What a detection usually keys on:
+    * `action`   — dropped / detected / reset (blocked vs. merely observed)
+    * `severity` — info / low / medium / high / critical
+    * `attack` + `attackid` — FortiGuard signature name and id
+    * `srcip` / `dstip` — who attacked whom
+  All of them can be pinned with --param to hit one exact rule condition.
+
+  `direction` is the direction of the offending packets inside the
+  session, not the network direction: "outgoing" means sent by the
+  session initiator (client to server), "incoming" means sent back by
+  the responder. It is independent of srcintf / dstintf, which always
+  describe the session (here: initiated from the WAN side towards an
+  internal server).
+
+  The default signature pool holds a few well-known FortiGuard signatures
+  as "<attackid>:<name>" pairs. Treat the ids as illustrative and override
+  `signature_pool` with the signatures your rules actually reference.
+  `attack`, `attackid`, `ref` and `msg` are all derived from the chosen
+  pair: to force a signature, pin `signature` (or give a one-entry
+  `signature_pool`); pinning `attack` or `attackid` alone breaks the
+  pairing. Likewise `crscore` / `crlevel` follow `severity`, and
+  `dstport` follows `service`.
+
+  Source of truth:
+    - FortiOS 7.4.4 Log Message Reference — 16384
+      LOGID_ATTCK_SIGNATURE_TCP_UDP (field set):
+        https://docs.fortinet.com/document/fortigate/7.4.4/fortios-log-message-reference/16384/16384-logid-signature
+    - FortiOS 7.4.0 Administration Guide — Sample logs by log type,
+      Security Logs > Intrusion Prevention (field order of the body):
+        https://docs.fortinet.com/document/fortigate/7.4.0/administration-guide/986892/sample-logs-by-log-type
+
+format: key_value
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+detections:
+  wazuh:
+    - decoder: fortigate
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  risk_refs: []
+  pa_refs: []
+
+params:
+  devname: { default: "FGT100E-LAB" }
+  devid:   { default: "FG100E1234567890" }
+  vd:      { default: "root" }
+  # Device clock offset; date/time/the syslog timestamp follow it.
+  tz:      { default: "+0000" }
+  src_pool: { default: ["198.51.100.23", "198.51.100.77", "203.0.113.9"] }
+  dst_pool: { default: ["192.0.2.10", "192.0.2.20", "192.0.2.80"] }
+  signature_pool:
+    default:
+      - "23305:Adobe.Flash.newfunction.Handling.Code.Execution"
+      - "39294:Bash.Function.Definitions.Remote.Code.Execution"
+      - "51006:Apache.Log4j.Error.Log.Remote.Code.Execution"
+
+fields:
+  - name: pri
+    type: fixed
+    value: 185                              # local7.alert (23*8 + 1)
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+    utc_offset: ${params.tz}
+
+  - name: date
+    type: datetime
+    format: "%Y-%m-%d"
+    utc_offset: ${params.tz}
+
+  - name: time
+    type: datetime
+    format: "%H:%M:%S"
+    utc_offset: ${params.tz}
+
+  - name: eventtime
+    type: datetime
+    format: epoch_ns
+
+  - name: tz
+    type: param
+    param: tz
+
+  - name: devname
+    type: param
+    param: devname
+
+  - name: devid
+    type: param
+    param: devid
+
+  - name: vd
+    type: param
+    param: vd
+
+  - name: logid
+    type: fixed
+    value: "0419016384"
+
+  - name: severity
+    type: weighted_choice
+    choices: { critical: 0.25, high: 0.35, medium: 0.25, low: 0.10, info: 0.05 }
+
+  - name: srcip
+    type: choice
+    choices: ${params.src_pool}
+
+  - name: srccountry
+    type: fixed
+    value: "Reserved"
+
+  - name: dstip
+    type: choice
+    choices: ${params.dst_pool}
+
+  - name: dstcountry
+    type: fixed
+    value: "Reserved"
+
+  - name: srcintf
+    type: fixed
+    value: "port1"
+
+  - name: srcintfrole
+    type: fixed
+    value: "wan"
+
+  - name: dstintf
+    type: fixed
+    value: "port2"
+
+  - name: dstintfrole
+    type: fixed
+    value: "lan"
+
+  - name: sessionid
+    type: int_range
+    min: 100000
+    max: 999999
+
+  - name: action
+    type: weighted_choice
+    choices: { dropped: 0.70, detected: 0.25, reset: 0.05 }
+
+  - name: proto
+    type: fixed
+    value: 6
+
+  - name: service
+    type: weighted_choice
+    choices: { HTTPS: 0.55, HTTP: 0.45 }
+
+  - name: policyid
+    type: int_range
+    min: 1
+    max: 50
+
+  - name: signature
+    type: choice
+    choices: ${params.signature_pool}
+
+  - name: attackid
+    type: template
+    template: "{{ signature.split(':', 1)[0] }}"
+
+  - name: attack
+    type: template
+    template: "{{ signature.split(':', 1)[1] }}"
+
+  - name: srcport
+    type: int_range
+    min: 1024
+    max: 65535
+
+  - name: dstport
+    type: template
+    template: "{{ {'HTTPS': 443, 'HTTP': 80}.get(service, 443) }}"
+
+  - name: direction
+    type: weighted_choice
+    choices: { outgoing: 0.8, incoming: 0.2 }
+
+  - name: profile
+    type: fixed
+    value: "default"
+
+  - name: incidentserialno
+    type: int_range
+    min: 100000000
+    max: 999999999
+
+  - name: crscore
+    type: template
+    template: "{{ {'critical': 50, 'high': 30, 'medium': 10, 'low': 5, 'info': 0}.get(severity, 10) }}"
+
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{devname}} date={{date}} time={{time}} devname="{{devname}}" devid="{{devid}}" eventtime={{eventtime}} tz="{{tz}}" logid="{{logid}}" type="utm" subtype="ips" eventtype="signature" level="alert" vd="{{vd}}" severity="{{severity}}" srcip={{srcip}} srccountry="{{srccountry}}" dstip={{dstip}} dstcountry="{{dstcountry}}" srcintf="{{srcintf}}" srcintfrole="{{srcintfrole}}" dstintf="{{dstintf}}" dstintfrole="{{dstintfrole}}" sessionid={{sessionid}} action="{{action}}" proto={{proto}} service="{{service}}" policyid={{policyid}} attack="{{attack}}" srcport={{srcport}} dstport={{dstport}} hostname="{{dstip}}" url="/" direction="{{direction}}" attackid={{attackid}} profile="{{profile}}" ref="http://www.fortinet.com/ids/VID{{attackid}}" incidentserialno={{incidentserialno}} msg="applications3: {{attack}}," crscore={{crscore}} craction=4096 crlevel="{{severity}}"
+
+regression:
+  baseline_alert_count: 0
+  baseline_ttd_ms: 5000

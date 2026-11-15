@@ -70,7 +70,8 @@ def test_baseline_totals_do_not_regress():
     results = sim.audit_all()
     counts = {v: sum(1 for r in results if r.verdict == v) for v in sim.VERDICT_RANK}
     # 2026-09-07 baseline: OK 30 / WARN 1 / PARTIAL 4 / CATCH-ALL 1 / FAIL 3 / N/A 18 (57 catalogs)
+    # 2026-11-15: OK 35 / WARN 1 / PARTIAL 4 / CATCH-ALL 1 / FAIL 3 / N/A 20 (64 catalogs)
     assert counts["FAIL"] <= 3, counts
     assert counts["CATCH-ALL"] <= 1, counts
-    assert counts["OK"] >= 30, counts
+    assert counts["OK"] >= 35, counts
     assert sum(counts.values()) == len(_catalogs()), counts

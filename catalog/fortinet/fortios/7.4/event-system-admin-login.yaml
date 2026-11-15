@@ -1,0 +1,177 @@
+vendor: fortinet
+product: fortios
+version: "7.4"
+log_type: event.system.admin_login
+description: |
+  FortiGate FortiOS 7.4 administrator login events (type="event"
+  subtype="system"):
+
+    * logid="0100032001" LOG_ID_ADMIN_LOGIN_SUCC — level="information",
+      logdesc="Admin login successful", status="success"
+    * logid="0100032002" LOG_ID_ADMIN_LOGIN_FAIL — level="alert",
+      logdesc="Admin login failed", status="failed", with a `reason`
+      (passwd_invalid / name_invalid)
+
+  One catalog covers both because rules about management-plane access
+  usually need the pair: brute force is a burst of failures, and the
+  interesting follow-up is a success from the same source. `outcome`
+  selects which message is emitted; logid, level, logdesc, status, reason
+  and msg all follow it. Pin it with `--param outcome=failed` (or
+  `success`) and use --burst to shape the rate.
+
+  Pin the driver, not what it drives: logid, level, logdesc, status,
+  reason and msg are derived from `outcome` (and `reason` from
+  `fail_reason`). Pinning one of them on its own leaves the rest
+  following a random outcome and yields a self-contradictory line.
+  `outcome` takes exactly `success` or `failed`.
+
+  `ui` carries the access method and the peer address, e.g.
+  "https(198.51.100.23)"; `method` repeats the access method.
+
+  Source of truth:
+    - FortiOS 7.4.4 Log Message Reference — 32001 LOG_ID_ADMIN_LOGIN_SUCC:
+        https://docs.fortinet.com/document/fortigate/7.4.4/fortios-log-message-reference/32001/32001-log-id-admin-login-succ
+    - FortiOS 7.4.4 Log Message Reference — 32002 LOG_ID_ADMIN_LOGIN_FAIL:
+        https://docs.fortinet.com/document/fortigate/7.4.4/fortios-log-message-reference/32002/32002-log-id-admin-login-fail
+    - FortiOS 7.4.0 Administration Guide — Sample logs by log type,
+      Event Logs > System Events (field order of the body):
+        https://docs.fortinet.com/document/fortigate/7.4.0/administration-guide/986892/sample-logs-by-log-type
+
+format: key_value
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: authentication
+  category_uid: 3
+  class_uid: 3002
+
+detections:
+  wazuh:
+    - decoder: fortigate
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  risk_refs: []
+  pa_refs: []
+
+params:
+  devname: { default: "FGT100E-LAB" }
+  devid:   { default: "FG100E1234567890" }
+  vd:      { default: "root" }
+  # Device clock offset; date/time/the syslog timestamp follow it.
+  tz:      { default: "+0000" }
+  # Management address of the FortiGate itself.
+  mgmt_ip: { default: "192.0.2.1" }
+  src_pool:  { default: ["198.51.100.23", "198.51.100.77", "203.0.113.9"] }
+  user_pool: { default: ["admin", "administrator", "root", "netops"] }
+  outcome_weights: { default: { failed: 0.7, success: 0.3 } }
+  method_weights:  { default: { https: 0.6, ssh: 0.35, http: 0.05 } }
+
+fields:
+  - name: outcome
+    type: weighted_choice
+    choices: ${params.outcome_weights}
+
+  - name: pri
+    type: template
+    template: "{{ 190 if outcome == 'success' else 185 }}"   # local7.info / local7.alert
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+    utc_offset: ${params.tz}
+
+  - name: date
+    type: datetime
+    format: "%Y-%m-%d"
+    utc_offset: ${params.tz}
+
+  - name: time
+    type: datetime
+    format: "%H:%M:%S"
+    utc_offset: ${params.tz}
+
+  - name: eventtime
+    type: datetime
+    format: epoch_ns
+
+  - name: sn
+    type: datetime
+    format: epoch
+
+  - name: tz
+    type: param
+    param: tz
+
+  - name: devname
+    type: param
+    param: devname
+
+  - name: devid
+    type: param
+    param: devid
+
+  - name: vd
+    type: param
+    param: vd
+
+  - name: logid
+    type: template
+    template: "{{ '0100032001' if outcome == 'success' else '0100032002' }}"
+
+  - name: level
+    type: template
+    template: "{{ 'information' if outcome == 'success' else 'alert' }}"
+
+  - name: logdesc
+    type: template
+    template: "{{ 'Admin login successful' if outcome == 'success' else 'Admin login failed' }}"
+
+  - name: user
+    type: choice
+    choices: ${params.user_pool}
+
+  - name: method
+    type: weighted_choice
+    choices: ${params.method_weights}
+
+  - name: srcip
+    type: choice
+    choices: ${params.src_pool}
+
+  - name: dstip
+    type: param
+    param: mgmt_ip
+
+  - name: status
+    type: template
+    template: "{{ 'success' if outcome == 'success' else 'failed' }}"
+
+  - name: fail_reason
+    type: weighted_choice
+    choices: { passwd_invalid: 0.8, name_invalid: 0.2 }
+
+  - name: reason
+    type: template
+    template: "{{ 'none' if outcome == 'success' else fail_reason }}"
+
+  - name: profile
+    type: fixed
+    value: "super_admin"
+
+  - name: msg
+    type: template
+    template: >-
+      {%- if outcome == 'success' -%}
+      Administrator {{ user }} logged in successfully from {{ method }}({{ srcip }})
+      {%- else -%}
+      Administrator {{ user }} login failed from {{ method }}({{ srcip }}) because of invalid {{ 'user name' if reason == 'name_invalid' else 'password' }}
+      {%- endif -%}
+
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{devname}} date={{date}} time={{time}} devname="{{devname}}" devid="{{devid}}" eventtime={{eventtime}} tz="{{tz}}" logid="{{logid}}" type="event" subtype="system" level="{{level}}" vd="{{vd}}" logdesc="{{logdesc}}" sn="{{ sn if outcome == 'success' else 0 }}" user="{{user}}" ui="{{method}}({{srcip}})" method="{{method}}" srcip={{srcip}} dstip={{dstip}} action="login" status="{{status}}" reason="{{reason}}"{% if outcome == 'success' %} profile="{{profile}}"{% endif %} msg="{{msg}}"
+
+regression:
+  baseline_alert_count: 0
+  baseline_ttd_ms: 5000

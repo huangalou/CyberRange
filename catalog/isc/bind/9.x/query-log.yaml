@@ -1,0 +1,122 @@
+vendor: isc
+product: bind
+version: "9.x"
+log_type: dns.query
+description: |
+  ISC BIND 9 query log — one line per query received by `named`, written
+  when the `queries` logging category is enabled (`rndc querylog on`),
+  here in the common "log to syslog" deployment (RFC3164, daemon.info,
+  program `named`).
+
+  Entry layout, per the BIND 9 Administrator Reference Manual
+  (`queries` category):
+
+    client @0x<object id> <client ip>#<port> (<query name>): query:
+      <query name> <class> <type> <flags> (<destination address>)
+
+    * flags start with "+" when Recursion Desired is set, "-" otherwise,
+      followed by any of: S signed, E(n) EDNS version n, T TCP, D DNSSEC
+      OK, C checking disabled, V valid server cookie, K cookie without a
+      valid server cookie.
+    * the address in parentheses is the address the query was sent to
+      (the server's listening address).
+
+  Example from the manual:
+    client @0x7f91b8005490 127.0.0.1#62536 (www.example.com): query: www.example.com IN AAAA +E(0)K (127.0.0.1)
+
+  What a detection usually keys on is the client address
+  (`client_pool`) and the query name (`qname_pool`) — both can be
+  pinned. Older BIND releases omit the "@0x…" object id; set
+  `--param client_object=` (empty) to emit that form.
+
+  Source of truth:
+    - BIND 9 Administrator Reference Manual — Configuration Reference,
+      logging `category` phrase, `queries`:
+        https://bind9.readthedocs.io/en/latest/reference.html#namedconf-statement-category
+
+format: text
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: dns_activity
+  category_uid: 4
+  class_uid: 4003
+
+detections:
+  wazuh: []
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  risk_refs: []
+  pa_refs: []
+
+regression:
+  baseline_alert_count: 0
+  baseline_ttd_ms: 5000
+
+params:
+  hostname: { default: "ns1" }
+  # Process id of named; constant for the life of the daemon.
+  pid: { default: "1234" }
+  # Address named listens on (the query's destination).
+  server_ip: { default: "192.0.2.53" }
+  client_pool: { default: ["198.51.100.23", "198.51.100.77", "203.0.113.9"] }
+  qname_pool:
+    default: ["www.example.com", "mail.example.org", "updates.example.net"]
+  qtype_weights: { default: { A: 0.70, AAAA: 0.20, TXT: 0.05, MX: 0.05 } }
+
+fields:
+  - name: pri
+    type: fixed
+    value: 30                               # daemon.info (3*8 + 6)
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+  - name: hostname
+    type: param
+    param: hostname
+
+  - name: pid
+    type: param
+    param: pid
+
+  - name: object_hex
+    type: faker
+    method: hex_8
+
+  # "@0x<id> " including the trailing space, so pinning it to an empty
+  # string yields the older layout cleanly.
+  - name: client_object
+    type: template
+    template: "@0x7f{{ object_hex | lower }}00 "
+
+  - name: client_ip
+    type: choice
+    choices: ${params.client_pool}
+
+  - name: client_port
+    type: int_range
+    min: 1024
+    max: 65535
+
+  - name: qname
+    type: choice
+    choices: ${params.qname_pool}
+
+  - name: qtype
+    type: weighted_choice
+    choices: ${params.qtype_weights}
+
+  - name: flags
+    type: weighted_choice
+    choices: { "+E(0)K": 0.60, "+E(0)": 0.20, "+": 0.10, "+E(0)DK": 0.05, "+E(0)TK": 0.05 }
+
+  - name: server_ip
+    type: param
+    param: server_ip
+
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} named[{{pid}}]: client {{client_object}}{{client_ip}}#{{client_port}} ({{qname}}): query: {{qname}} IN {{qtype}} {{flags}} ({{server_ip}})
