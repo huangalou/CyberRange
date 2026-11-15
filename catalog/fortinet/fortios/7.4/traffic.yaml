@@ -106,6 +106,13 @@ params:
   vd:      { default: "root" }
   src_cidr: { default: "10.0.0.0/24" }
   dst_pool: { default: ["8.8.8.8", "1.1.1.1", "151.101.1.140", "203.0.113.50"] }
+  # Device clock offset. date/time/the syslog timestamp are rendered in this
+  # offset and `tz` carries the same value, so the wall-clock time and the
+  # declared offset always agree (eventtime stays absolute).
+  tz: { default: "+0000" }
+  # Authenticated user for the session. Empty = field omitted, as on a
+  # policy without user identification.
+  user: { default: "" }
 
 # Field generators - referenced by {{field}} in template.
 fields:
@@ -116,22 +123,29 @@ fields:
   - name: rfc3164_ts
     type: datetime
     format: "%b %d %H:%M:%S"
+    utc_offset: ${params.tz}
 
   - name: date
     type: datetime
     format: "%Y-%m-%d"
+    utc_offset: ${params.tz}
 
   - name: time
     type: datetime
     format: "%H:%M:%S"
+    utc_offset: ${params.tz}
 
   - name: eventtime
     type: datetime
     format: epoch_ns
 
   - name: tz
-    type: fixed
-    value: "+0800"
+    type: param
+    param: tz
+
+  - name: user
+    type: param
+    param: user
 
   - name: devname
     type: param
@@ -347,4 +361,4 @@ fields:
 # → policy* → service → trandisp/transip/transport → app* block
 # → duration → byte/pkt counters → utmaction/countapp/utmref
 template: |-
-  <{{pri}}>{{rfc3164_ts}} {{devname}} date={{date}} time={{time}} devname="{{devname}}" devid="{{devid}}" eventtime={{eventtime}} tz="{{tz}}" logid="{{logid}}" type="traffic" subtype="forward" level="notice" vd="{{vd}}" srcip={{srcip}} srcport={{srcport}} srcintf="{{srcintf}}" srcintfrole="{{srcintfrole}}" dstip={{dstip}} dstport={{dstport}} dstintf="{{dstintf}}" dstintfrole="{{dstintfrole}}" srccountry="{{srccountry}}" dstcountry="{{dstcountry}}" sessionid={{sessionid}} proto={{proto}} action="{{action}}" policyid={{policyid}} policytype="{{policytype}}" policyname="{{policyname}}" poluuid="{{poluuid}}" service="{{service}}" trandisp="{{trandisp}}" transip={{transip}} transport={{transport_port}} appid={{appid}} app="{{app}}" appcat="{{appcat}}" apprisk="{{apprisk}}" applist="{{applist}}" duration={{duration}} sentbyte={{sentbyte}} rcvdbyte={{rcvdbyte}} sentpkt={{sentpkt}} rcvdpkt={{rcvdpkt}} utmaction="{{utmaction}}" countapp={{countapp}} utmref={{utmref_a}}-{{utmref_b}}
+  <{{pri}}>{{rfc3164_ts}} {{devname}} date={{date}} time={{time}} devname="{{devname}}" devid="{{devid}}" eventtime={{eventtime}} tz="{{tz}}" logid="{{logid}}" type="traffic" subtype="forward" level="notice" vd="{{vd}}" srcip={{srcip}} srcport={{srcport}} srcintf="{{srcintf}}" srcintfrole="{{srcintfrole}}" dstip={{dstip}} dstport={{dstport}} dstintf="{{dstintf}}" dstintfrole="{{dstintfrole}}" srccountry="{{srccountry}}" dstcountry="{{dstcountry}}" sessionid={{sessionid}} proto={{proto}} action="{{action}}" policyid={{policyid}} policytype="{{policytype}}" policyname="{{policyname}}" poluuid="{{poluuid}}"{% if user %} user="{{user}}"{% endif %} service="{{service}}" trandisp="{{trandisp}}" transip={{transip}} transport={{transport_port}} appid={{appid}} app="{{app}}" appcat="{{appcat}}" apprisk="{{apprisk}}" applist="{{applist}}" duration={{duration}} sentbyte={{sentbyte}} rcvdbyte={{rcvdbyte}} sentpkt={{sentpkt}} rcvdpkt={{rcvdpkt}} utmaction="{{utmaction}}" countapp={{countapp}} utmref={{utmref_a}}-{{utmref_b}}

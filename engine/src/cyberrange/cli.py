@@ -30,7 +30,7 @@ from .vulnops import (
     summarize as vulnops_summarize,
     to_json as vulnops_to_json,
 )
-from .generator import render_one
+from .generator import render_one, validate_params
 from .loader import CATALOG_ROOT, find_spec, list_specs, load_spec
 from .sinks import open_sink
 from .timing import Schedule, burst, emit, parse_burst, parse_duration, uniform
@@ -439,6 +439,10 @@ def cmd_gen(args: argparse.Namespace) -> int:
     )
     spec = load_spec(spec_path)
     params = _parse_param(args.param)
+    try:
+        validate_params(spec, params)
+    except ValueError as exc:
+        args.gen_parser.error(str(exc))
     schedule = _build_schedule(args)
 
     with open_sink(args.sink) as sink:
@@ -502,9 +506,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help=(
-            "key=value param override; repeatable. A value starting with [ or { "
-            "is parsed as a JSON list/dict (kept as a plain string if it is not "
-            "valid JSON); every other value stays a string"
+            "key=value; repeatable. The key is a param the catalog declares, or "
+            "the name of any field (pins that field to the value). An unknown "
+            "key is an error. A value starting with [ or { is parsed as a JSON "
+            "list/dict (kept as a plain string if it is not valid JSON); every "
+            "other value stays a string"
         ),
     )
     sp_gen.add_argument(

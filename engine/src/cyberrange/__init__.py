@@ -17,7 +17,7 @@ from .schema import (
     VulnOpsSpec,
 )
 from .loader import CATALOG_ROOT, find_spec, list_specs, load_spec
-from .generator import render_many, render_one
+from .generator import render_many, render_one, validate_params
 
 __all__ = [
     "__version__",
@@ -38,5 +38,6 @@ __all__ = [
     "list_specs",
     "load_spec",
     "render_one",
+    "validate_params",
     "render_many",
 ]
