@@ -1,0 +1,313 @@
+vendor: juniper
+product: junos
+version: "21.x"
+log_type: rt_flow.session
+description: |
+  Juniper SRX (Junos OS) security-policy traffic log — the three RT_FLOW
+  session messages, in the structured-data ("sd-syslog", RFC 5424) layout:
+
+    * RT_FLOW_SESSION_CREATE — a policy permitted the flow and a session
+      was installed (logged with `then log session-init`)
+    * RT_FLOW_SESSION_CLOSE  — that session ended; adds `reason`, the
+      packet / byte counters of both directions and `elapsed-time`
+      (`then log session-close`)
+    * RT_FLOW_SESSION_DENY   — a policy denied or rejected the flow; no
+      session exists, so there are no NAT fields and no counters
+
+  Wire layout (one line per event):
+
+    <14>1 <timestamp> <hostname> RT_FLOW - <TAG> [junos@2636.1.1.1.2.129 key="value" ...]
+
+  The record carries no action field: the message tag IS the action
+  (CREATE / CLOSE = permitted, DENY = denied). `event` selects which of
+  the three is emitted (`create`, `close` or `deny`); the tag, the field
+  set, `reason`, the policy name and the NAT fields all follow it.
+
+  Pin the driver, not what it drives:
+    * `event` drives `tag`, `reason` and `policy_name`. To get denies, use
+      `--param event=deny`; pinning `tag` on its own leaves the body of a
+      different message under it. `event` takes exactly `create`, `close`
+      or `deny`.
+    * `dst_port` drives `protocol_id`, and the pair drives `service_name`
+      (443 -> 6 -> junos-https, 53 -> 17 -> junos-dns-udp; a port with no
+      predefined Junos application gives service-name="None"). Pin
+      `dst_port` (or set `dst_port_pool`) and the other two follow; pin
+      `protocol_id` as well for e.g. DNS over TCP.
+    * `policy_name` is taken from `permit_policy_pool` or
+      `deny_policy_pool` depending on `event`; set the pool (or pin
+      `policy_name`).
+    * `reason` on a CLOSE follows the protocol (TCP FIN / TCP RST / idle
+      Timeout for TCP, idle Timeout / response received otherwise); pin
+      `reason` to force one.
+
+  Source NAT: with `nat_src_ip` empty (default) the nat-* fields repeat
+  the original tuple and the rule type / name are "N/A", as in the
+  vendor sample. Set `--param nat_src_ip=203.0.113.10` to emit a
+  source-NAT'd session (nat-source-address, a translated port,
+  src-nat-rule-type="source rule", src-nat-rule-name from `nat_rule`).
+
+  Every line is generated independently: a CREATE and a CLOSE do not
+  share a session-id, so this catalog exercises per-event conditions,
+  not create/close correlation.
+
+  What is and is not backed by vendor documentation:
+    * The header (`<14>1 <ts> <host> RT_FLOW - <TAG> [junos@2636.1.1.1.2.129`)
+      and the key names and key order of CREATE and CLOSE follow the
+      stream-mode sample in Juniper's "System Logging for a Security
+      Device" topic (first URL below). That topic is the current one and
+      its sample is dated 2023; it is not specific to Junos 21.x. The
+      set of trailing keys has grown from release to release (older
+      samples, e.g. the second URL, stop at packet-incoming-interface
+      and use `session-id-32` where the current sample has
+      `session-id`), so compare the tail with your own device.
+    * Close reasons "TCP FIN" and "response received" appear in those
+      samples. "TCP RST" and "idle Timeout" are written from product
+      knowledge, not from a page read for this catalog.
+    * RT_FLOW_SESSION_DENY: no vendor sample of this message was found.
+      Its key list (icmp-type, the position of `reason`, the value
+      "Denied by policy", ending at dst-vrf-grp) is written from product
+      knowledge. Treat it as the least certain part and check it against
+      a real deny line before relying on it.
+    * src-nat-rule-type="source rule", application="UNKNOWN",
+      application-risk="-1" and the predefined application names
+      (junos-https, junos-dns-udp, ...) are likewise from product
+      knowledge.
+    * The trailing digits of the `junos@2636.1.1.1.2.<n>` enterprise id
+      identify the platform; `sd_id` holds the whole id.
+    * The timestamp is local time without an offset, as in the sample
+      (`tz` moves it). Other Juniper samples show milliseconds and a
+      "+08:00" style offset; that depends on the device's time-format
+      settings and is not reproduced here.
+
+  Not covered: the plain-text layout
+  (`RT_FLOW: RT_FLOW_SESSION_CREATE: session created a.b.c.d/port->...`)
+  sent with `set security log format syslog`. No vendor page showing
+  that layout in full was read, so it was left out rather than guessed.
+
+  Source of truth:
+    - Junos OS — System Logging for a Security Device (security log
+      modes and formats; stream-mode sd-syslog samples of
+      RT_FLOW_SESSION_CREATE and RT_FLOW_SESSION_CLOSE):
+        https://www.juniper.net/documentation/us/en/software/junos/network-mgmt/topics/topic-map/system-logging-for-a-security-device.html
+    - Junos OS — Flow-Based Sessions (older sd-syslog samples of
+      RT_FLOW_SESSION_CREATE / RT_FLOW_SESSION_CLOSE, reason="response
+      received"):
+        https://www.juniper.net/documentation/us/en/software/junos/flow-packet-processing/topics/topic-map/security-flow-session-and-error-handling.html
+    (Both URLs now redirect to the same path under
+    networkingdocs.hpe.com, which is where the content was read.)
+
+format: syslog_rfc5424
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: network_activity
+  category_uid: 4
+  class_uid: 4001
+
+detections:
+  wazuh: []
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  risk_refs: []
+  pa_refs: []
+
+regression:
+  baseline_alert_count: 0
+  baseline_ttd_ms: 5000
+
+params:
+  hostname: { default: "srx-edge-01" }
+  # Structured-data id; the last number identifies the platform.
+  sd_id: { default: "junos@2636.1.1.1.2.129" }
+  # Device clock offset; the header timestamp is local time.
+  tz: { default: "+0000" }
+  event_weights: { default: { create: 0.4, close: 0.4, deny: 0.2 } }
+  src_pool: { default: ["198.51.100.23", "198.51.100.77", "198.51.100.140"] }
+  dst_pool: { default: ["203.0.113.9", "203.0.113.50", "192.0.2.80"] }
+  dst_port_pool: { default: [443, 80, 53, 22, 25, 3389] }
+  src_zone: { default: "trust" }
+  dst_zone: { default: "untrust" }
+  in_interface: { default: "ge-0/0/0.0" }
+  # Policy names are drawn independently of the service, so keep them
+  # service-neutral unless you also pin dst_port.
+  permit_policy_pool: { default: ["allow-outbound"] }
+  deny_policy_pool: { default: ["default-deny"] }
+  # Translated source address; empty = no source NAT.
+  nat_src_ip: { default: "" }
+  nat_rule: { default: "src-nat-rule1" }
+  # Authenticated user (user firewall); "N/A" when none.
+  user: { default: "N/A" }
+  # AppID result; "UNKNOWN" when application identification is off.
+  application: { default: "UNKNOWN" }
+
+fields:
+  - name: event
+    type: weighted_choice
+    choices: ${params.event_weights}
+
+  - name: tag
+    type: template
+    template: "RT_FLOW_SESSION_{{ {'create': 'CREATE', 'close': 'CLOSE', 'deny': 'DENY'}[event] }}"
+
+  - name: pri
+    type: fixed
+    value: 14                               # user.info (1*8 + 6)
+
+  - name: timestamp
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S"
+    utc_offset: ${params.tz}
+
+  - name: hostname
+    type: param
+    param: hostname
+
+  - name: sd_id
+    type: param
+    param: sd_id
+
+  - name: src_ip
+    type: choice
+    choices: ${params.src_pool}
+
+  - name: src_port
+    type: int_range
+    min: 1024
+    max: 65535
+
+  - name: dst_ip
+    type: choice
+    choices: ${params.dst_pool}
+
+  - name: dst_port
+    type: choice
+    choices: ${params.dst_port_pool}
+
+  - name: protocol_id
+    type: template
+    template: "{{ 17 if dst_port in ('53', '123') else 6 }}"
+
+  - name: service_name
+    type: template
+    template: >-
+      {{ {'6/443': 'junos-https', '6/80': 'junos-http', '6/22': 'junos-ssh',
+          '6/25': 'junos-smtp', '6/21': 'junos-ftp', '6/23': 'junos-telnet',
+          '6/3389': 'junos-ms-rdp', '6/53': 'junos-dns-tcp',
+          '17/53': 'junos-dns-udp', '17/123': 'junos-ntp'
+         }.get(protocol_id ~ '/' ~ dst_port, 'None') }}
+
+  - name: nat_src_ip
+    type: template
+    template: "{{ params.nat_src_ip if params.nat_src_ip else src_ip }}"
+
+  - name: nat_port_seed
+    type: int_range
+    min: 1024
+    max: 63487
+
+  - name: nat_src_port
+    type: template
+    template: "{{ nat_port_seed if params.nat_src_ip else src_port }}"
+
+  - name: src_nat_rule_type
+    type: template
+    template: "{{ 'source rule' if params.nat_src_ip else 'N/A' }}"
+
+  - name: src_nat_rule_name
+    type: template
+    template: "{{ params.nat_rule if params.nat_src_ip else 'N/A' }}"
+
+  - name: permit_policy
+    type: choice
+    choices: ${params.permit_policy_pool}
+
+  - name: deny_policy
+    type: choice
+    choices: ${params.deny_policy_pool}
+
+  - name: policy_name
+    type: template
+    template: "{{ deny_policy if event == 'deny' else permit_policy }}"
+
+  - name: src_zone
+    type: param
+    param: src_zone
+
+  - name: dst_zone
+    type: param
+    param: dst_zone
+
+  - name: session_id
+    type: int_range
+    min: 1
+    max: 999999
+
+  - name: tcp_close_reason
+    type: weighted_choice
+    choices: { "TCP FIN": 0.7, "TCP RST": 0.15, "idle Timeout": 0.15 }
+
+  - name: other_close_reason
+    type: weighted_choice
+    choices: { "idle Timeout": 0.7, "response received": 0.3 }
+
+  - name: reason
+    type: template
+    template: >-
+      {%- if event == 'deny' -%}Denied by policy
+      {%- elif protocol_id == '6' -%}{{ tcp_close_reason }}
+      {%- else -%}{{ other_close_reason }}{%- endif -%}
+
+  - name: packets_from_client
+    type: int_range
+    min: 1
+    max: 400
+
+  - name: packets_from_server
+    type: int_range
+    min: 1
+    max: 800
+
+  - name: client_packet_size
+    type: int_range
+    min: 60
+    max: 600
+
+  - name: server_packet_size
+    type: int_range
+    min: 60
+    max: 1400
+
+  - name: bytes_from_client
+    type: template
+    template: "{{ packets_from_client | int * client_packet_size | int }}"
+
+  - name: bytes_from_server
+    type: template
+    template: "{{ packets_from_server | int * server_packet_size | int }}"
+
+  - name: elapsed_time
+    type: int_range
+    min: 1
+    max: 1800
+
+  - name: username
+    type: param
+    param: user
+
+  - name: in_interface
+    type: param
+    param: in_interface
+
+  - name: application
+    type: param
+    param: application
+
+template: |-
+  <{{pri}}>1 {{timestamp}} {{hostname}} RT_FLOW - {{tag}} [{{sd_id}}
+  {%- if event == 'deny' %} source-address="{{src_ip}}" source-port="{{src_port}}" destination-address="{{dst_ip}}" destination-port="{{dst_port}}" connection-tag="0" service-name="{{service_name}}" protocol-id="{{protocol_id}}" icmp-type="0" policy-name="{{policy_name}}" source-zone-name="{{src_zone}}" destination-zone-name="{{dst_zone}}" application="{{application}}" nested-application="UNKNOWN" username="{{username}}" roles="N/A" packet-incoming-interface="{{in_interface}}" encrypted="No" reason="{{reason}}" session-id="{{session_id}}" application-category="N/A" application-sub-category="N/A" application-risk="-1" application-characteristics="N/A" src-vrf-grp="N/A" dst-vrf-grp="N/A"]
+  {%- else %}{% if event == 'close' %} reason="{{reason}}"{% endif %} source-address="{{src_ip}}" source-port="{{src_port}}" destination-address="{{dst_ip}}" destination-port="{{dst_port}}" connection-tag="0" service-name="{{service_name}}" nat-source-address="{{nat_src_ip}}" nat-source-port="{{nat_src_port}}" nat-destination-address="{{dst_ip}}" nat-destination-port="{{dst_port}}" nat-connection-tag="0" src-nat-rule-type="{{src_nat_rule_type}}" src-nat-rule-name="{{src_nat_rule_name}}" dst-nat-rule-type="N/A" dst-nat-rule-name="N/A" protocol-id="{{protocol_id}}" policy-name="{{policy_name}}" source-zone-name="{{src_zone}}" destination-zone-name="{{dst_zone}}" session-id="{{session_id}}"
+  {%- if event == 'close' %} packets-from-client="{{packets_from_client}}" bytes-from-client="{{bytes_from_client}}" packets-from-server="{{packets_from_server}}" bytes-from-server="{{bytes_from_server}}" elapsed-time="{{elapsed_time}}" application="{{application}}" nested-application="UNKNOWN" username="{{username}}" roles="N/A" packet-incoming-interface="{{in_interface}}" encrypted="No" application-category="N/A" application-sub-category="N/A" application-risk="-1" application-characteristics="N/A" secure-web-proxy-session-type="NA" peer-session-id="0" peer-source-address="0.0.0.0" peer-source-port="0" peer-destination-address="0.0.0.0" peer-destination-port="0" hostname="NA NA" src-vrf-grp="N/A" dst-vrf-grp="N/A" tunnel-inspection="Off" tunnel-inspection-policy-set="root" session-flag="0" source-tenant="N/A" destination-service="N/A" user-type="N/A"]
+  {%- else %} username="{{username}}" roles="N/A" packet-incoming-interface="{{in_interface}}" application="{{application}}" nested-application="UNKNOWN" encrypted="No" application-category="N/A" application-sub-category="N/A" application-risk="-1" application-characteristics="N/A" src-vrf-grp="N/A" dst-vrf-grp="N/A" tunnel-inspection="Off" tunnel-inspection-policy-set="root" source-tenant="N/A" destination-service="N/A"]
+  {%- endif %}{% endif %}

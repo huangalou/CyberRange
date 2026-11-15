@@ -1,0 +1,204 @@
+vendor: f5
+product: apm
+version: "16.x"
+log_type: apm.access_policy
+description: |
+  F5 BIG-IP Access Policy Manager (APM) access-policy log (/var/log/apm)
+  as forwarded over syslog. APM writes several lines per logon, all
+  carrying the same partition/profile prefix and session id:
+
+    <time> <host> <level> <process>[<pid>]: <log id>:<level number>: /<partition>/<access profile>:<partition>:<session id>: <message>
+
+  A catalog record is ONE line, so `message` selects which line of the
+  logon sequence is emitted and `outcome` (success / failed) selects how
+  the logon went:
+
+    message         process  log id      text
+    auth_result     apmd     01490017:6  AD agent: Auth (logon attempt:0): authenticate with '<user>' successful|failed
+    policy_result   apmd     01490102:5  Access policy result: Network_Access | Logon_Deny
+    new_session     tmm      01490500:5  New session from client IP <ip> (ST=/CC=/C=) at VIP <vip> Listener /Common/<virtual server> (Reputation=Unknown)
+    username        apmd     01490010:5  Username '<user>'
+
+  The default is `auth_result` only: it is the line a logon-failure or
+  password-guessing rule keys on, and it names the user and the outcome.
+  It does NOT carry the client address — on a real system that is only in
+  the `new_session` line. To get address and user for the same logon,
+  generate the lines separately with the same pinned `session_id`, e.g.
+  `--param message=new_session --param session_id=8a1b2c3d --param
+  src_pool=198.51.100.23`, then `--param message=auth_result --param
+  session_id=8a1b2c3d --param user_pool=alice --param outcome=failed`.
+  `message_weights` can also mix the four lines in one run (each record
+  then gets its own random session id).
+
+  Pin the drivers, not what they drive: process, level, PRI, log id and
+  message text are derived from `message` and `outcome`. Pinning `log_id`
+  or `text` on its own yields a line whose parts disagree. `new_session`
+  and `username` read the same for either outcome. `message` takes
+  exactly `auth_result`, `policy_result`, `new_session` or `username`,
+  and `outcome` exactly `success` or `failed`; any other value leaves
+  derived parts empty or inconsistent.
+
+  What this is based on — please compare with your own BIG-IP:
+    * The line layout and the 01490500 "New session" message come from
+      F5's manual (APM log example) and an F5 bug-tracker entry that
+      shows the prefix written without a space between the partition
+      and the session id ("/<partition>/<profile>:<partition>:<session
+      id>: ..."; the manual's example prints a space there).
+    * 01490010 "Username" and 01490017 "AD agent: Auth (logon attempt:0):
+      authenticate with '...' successful" were seen only in a user-posted
+      log excerpt on the F5 community forum (an older release where the
+      process is `apd` and the prefix has no profile path), not in F5
+      documentation.
+    * The `failed` wording of 01490017, the 01490102 "Access policy
+      result" id and its values, `apmd` as the 16.x process name, the
+      remote-syslog framing (level word after the host, as in
+      /var/log/apm) and the PRI (facility local1) are the author's
+      understanding of the product; no F5 document was read for them.
+    * Other lines of the sequence (session variables, "Following rule",
+      "AD module: authentication with ... failed" error detail, session
+      deletion) are not modelled.
+
+  Source of truth:
+    - BIG-IP APM Secure Web Gateway Implementations 12.1 — Logging and
+      Reporting, "APM log example" (layout, 01490500):
+        https://techdocs.f5.com/kb/en-us/products/big-ip_apm/manuals/product/apm-secure-web-gateway-implementations-12-1-0/12.html
+    - F5 Bug Tracker ID 619636 (prefix form, tmm as the session process):
+        https://cdn.f5.com/product/bugtracker/ID619636.html
+    - F5 community forum thread (user-posted excerpt, 01490010/01490017):
+        https://community.f5.com/discussions/technicalforum/f5-apm-ad-query-is-failing-for-users-having-long-username/49727
+
+format: text
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: authentication
+  category_uid: 3
+  class_uid: 3002
+
+detections:
+  wazuh: []
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  risk_refs: []
+  pa_refs: []
+
+regression:
+  baseline_alert_count: 0
+  baseline_ttd_ms: 5000
+
+params:
+  hostname: { default: "bigip1" }
+  # Device clock offset; the syslog timestamp follows it.
+  tz: { default: "+0000" }
+  partition: { default: "Common" }
+  # Access profile name (the second path element of the prefix).
+  access_profile: { default: "vpn_access" }
+  # Virtual server the session arrived on, and its address.
+  virtual_server: { default: "vs_vpn_https" }
+  vip: { default: "192.0.2.10" }
+  src_pool: { default: ["198.51.100.23", "198.51.100.77", "203.0.113.9"] }
+  user_pool: { default: ["alice", "bob", "carol"] }
+  # Authentication agent named in the auth_result line (AD, LDAP, RADIUS).
+  auth_agent: { default: "AD" }
+  # "Access policy result" value on a successful logon.
+  allow_result: { default: "Network_Access" }
+  outcome_weights: { default: { failed: 0.6, success: 0.4 } }
+  message_weights:
+    default: { auth_result: 1.0, policy_result: 0.0, new_session: 0.0, username: 0.0 }
+  apmd_pid: { default: "5444" }
+  tmm_pid: { default: "20316" }
+
+fields:
+  # Drivers.
+  - name: outcome
+    type: weighted_choice
+    choices: ${params.outcome_weights}
+
+  - name: message
+    type: weighted_choice
+    choices: ${params.message_weights}
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+    utc_offset: ${params.tz}
+
+  - name: hostname
+    type: param
+    param: hostname
+
+  - name: process
+    type: template
+    template: "{{ 'tmm' if message == 'new_session' else 'apmd' }}"
+
+  - name: pid
+    type: template
+    template: "{{ params.tmm_pid if message == 'new_session' else params.apmd_pid }}"
+
+  - name: level
+    type: template
+    template: "{{ 'info' if message == 'auth_result' else 'notice' }}"
+
+  - name: level_num
+    type: template
+    template: "{{ '6' if message == 'auth_result' else '5' }}"
+
+  - name: pri
+    type: template
+    template: "{{ 136 + (level_num | int) }}"          # local1 (17*8) + severity
+
+  - name: log_id
+    type: template
+    template: >-
+      {{ {'auth_result': '01490017', 'policy_result': '01490102',
+          'new_session': '01490500', 'username': '01490010'}[message] }}
+
+  - name: access_profile
+    type: param
+    param: access_profile
+
+  - name: session_hex
+    type: faker
+    method: hex_8
+
+  - name: session_id
+    type: template
+    template: "{{ session_hex | lower }}"
+
+  - name: user
+    type: choice
+    choices: ${params.user_pool}
+
+  - name: src_ip
+    type: choice
+    choices: ${params.src_pool}
+
+  - name: logon_attempt
+    type: fixed
+    value: "0"
+
+  - name: auth_status
+    type: template
+    template: "{{ 'successful' if outcome == 'success' else 'failed' }}"
+
+  - name: policy_result
+    type: template
+    template: "{{ params.allow_result if outcome == 'success' else 'Logon_Deny' }}"
+
+  - name: text
+    type: template
+    template: >-
+      {%- if message == 'auth_result' -%}
+      {{ params.auth_agent }} agent: Auth (logon attempt:{{ logon_attempt }}): authenticate with '{{ user }}' {{ auth_status }}
+      {%- elif message == 'policy_result' -%}
+      Access policy result: {{ policy_result }}
+      {%- elif message == 'new_session' -%}
+      New session from client IP {{ src_ip }} (ST=/CC=/C=) at VIP {{ params.vip }} Listener /{{ params.partition }}/{{ params.virtual_server }} (Reputation=Unknown)
+      {%- else -%}
+      Username '{{ user }}'
+      {%- endif -%}
+
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} {{level}} {{process}}[{{pid}}]: {{log_id}}:{{level_num}}: /{{params.partition}}/{{access_profile}}:{{params.partition}}:{{session_id}}: {{text}}

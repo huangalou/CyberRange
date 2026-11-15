@@ -1,0 +1,263 @@
+vendor: sonicwall
+product: sonicos
+version: "7.x"
+log_type: firewall.syslog
+description: |
+  SonicWall (SonicOS) firewall syslog in the Default syslog format —
+  space-separated tag=value pairs starting with `id=firewall sn=...`.
+  Three kinds of event that connection / drop rules are written against:
+
+    * opened  — m=98  "Connection Opened"   pri=6 c=262144 fw_action="NA"
+    * closed  — m=537 "Connection Closed"   pri=6 c=1024   fw_action="NA",
+                 with sent / rcvd / spkt / rpkt / dpi / cdur
+    * dropped — m=36  "TCP connection dropped" pri=5 c=64   fw_action="drop"
+                 m=37  "UDP packet dropped"     pri=5 c=128  fw_action="drop"
+
+  Layout:
+
+    <PRI>id=firewall sn=<serial> time="YYYY-MM-DD HH:MM:SS" fw=<WAN IP>
+      pri=<0-7> c=<legacy category> m=<event id> msg="<text>" n=<count>
+      src=<ip>:<port>:<iface> dst=<ip>:<port>:<iface> srcMac=.. dstMac=..
+      proto=<protocol>/<service> [counters] rule="<rule>" fw_action="<action>"
+
+  Pin the driver, not what it drives:
+    * `event` (`opened`, `closed` or `dropped`) drives `m`, `msg`, `pri`,
+      `c`, the syslog PRI, `fw_action` and whether the counters are
+      present. Use `--param event=dropped`; pinning `m` or `fw_action`
+      alone leaves the rest describing another event. `event` takes
+      exactly one of those three values — any other value (a typo such
+      as `drop`) yields a line whose parts disagree.
+    * `dst_port` drives `protocol` (53 / 123 -> udp, otherwise tcp) and
+      the service part of `proto` (443 -> tcp/https, 53 -> udp/dns; a
+      port without a name is written as the number, e.g. tcp/3389). On a
+      drop the protocol also picks the message: tcp -> m=36, udp -> m=37.
+      Pin `dst_port` (or set `dst_port_pool`), and `protocol` as well if
+      you need e.g. a UDP drop on an arbitrary port.
+    * Addresses, ports and interfaces are separate fields (`src_ip`,
+      `src_port`, `src_iface`, `dst_ip`, `dst_port`, `dst_iface`); the
+      `src=` / `dst=` triplets are assembled from them.
+
+  The device writes local time into `time=` with no offset; `tz` moves
+  it. (SonicOS can be set to display the syslog timestamp in UTC, which
+  corresponds to the default `+0000`.)
+
+  What is and is not backed by vendor documentation:
+    * Everything documentary here comes from the SonicOS 6.5.4 Log
+      Events Reference Guide (URL below). The SonicOS 7 edition of that
+      guide could not be retrieved, so nothing in this catalog has been
+      compared with a 7.x document. Compare the output with a line from
+      your own 7.x appliance before relying on it.
+    * From that guide: the tag meanings; the event ids, priorities and
+      message texts (36 "TCP connection dropped", 37 "UDP packet
+      dropped", 98 "Connection Opened", 537 "Connection Closed"); the
+      legacy category numbers (64 Dropped TCP, 128 Dropped UDP, 1024 and
+      262144 for traffic reporting); the fw_action values (forward /
+      drop / NA); and the tag order of the "Connection Closed" example
+      in the Default syslog format.
+    * The guide shows a Default-format example only for Connection
+      Closed. The opened and dropped lines are assembled from the event
+      index and the tag table using the same tag order — not copied from
+      a sample. In particular, whether a drop carries `rule=` and
+      whether an open carries `sent=` is an assumption.
+    * `fw_action="NA"` on opened / closed follows the guide's examples.
+      If your appliance reports "forward" there, pin `fw_action`.
+    * Framing: the guide says each message begins with `<ddd>`
+      (facility and priority). The value used here (local0 = 16, so
+      <134> info and <133> notice) and the absence of an RFC 3164
+      timestamp / hostname between `<ddd>` and `id=` are from product
+      knowledge. The guide's examples show a "Mmm dd HH:MM:SS <ip>"
+      prefix as seen on a syslog server.
+    * Service names other than http / https (dns, ssh, smtp, ftp, ntp)
+      are from product knowledge.
+    * Left out: the numeric `app=` tag that the guide's Connection
+      Closed example carries (its values could not be tied to anything
+      documented), and the zone / NAT tags (srcZone, dstZone, natSrc,
+      natDst) that the tag table lists but no Default-format example
+      shows.
+
+  Source of truth:
+    - SonicOS 6.5.4 Log Events Reference Guide — Log Event Message
+      Index, Index of Syslog Tag Field Descriptions, Examples of
+      Standard Syslog Messages, Legacy Categories, Priority Levels
+      (PDF, read as extracted text):
+        https://assets-cms.sonicwall.com/technical-documentation/pdf/sonicos-6-5-4-log-events-reference-guide/sonicos-6-5-4-log-events-reference-guide.pdf
+    - SonicOS 7.0 Device Log — Syslog Settings (syslog format choices,
+      Syslog ID "firewall", "Display Syslog Timestamp in UTC"):
+        https://www.sonicwall.com/support/technical-documentation/docs/sonicos-7.0.1-device_log/Content/Logs_Syslog/logs-syslog-settings.htm
+
+format: key_value
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: network_activity
+  category_uid: 4
+  class_uid: 4001
+
+detections:
+  wazuh: []
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  risk_refs: []
+  pa_refs: []
+
+regression:
+  baseline_alert_count: 0
+  baseline_ttd_ms: 5000
+
+params:
+  # Appliance serial number (12 hex digits).
+  sn: { default: "C0EAE4000001" }
+  # WAN address of the appliance.
+  fw_ip: { default: "203.0.113.1" }
+  # Device clock offset; time= is local time.
+  tz: { default: "+0000" }
+  event_weights: { default: { opened: 0.4, closed: 0.4, dropped: 0.2 } }
+  src_pool: { default: ["198.51.100.23", "198.51.100.77", "198.51.100.140"] }
+  dst_pool: { default: ["203.0.113.9", "203.0.113.50", "192.0.2.80"] }
+  dst_port_pool: { default: [443, 80, 53, 22, 25, 3389] }
+  src_iface: { default: "X0" }
+  dst_iface: { default: "X1" }
+  src_mac: { default: "00:00:5e:00:53:10" }
+  dst_mac: { default: "00:00:5e:00:53:01" }
+  rule: { default: "9 (LAN->WAN)" }
+
+fields:
+  - name: event
+    type: weighted_choice
+    choices: ${params.event_weights}
+
+  - name: time
+    type: datetime
+    format: "%Y-%m-%d %H:%M:%S"
+    utc_offset: ${params.tz}
+
+  - name: sn
+    type: param
+    param: sn
+
+  - name: fw
+    type: param
+    param: fw_ip
+
+  - name: src_ip
+    type: choice
+    choices: ${params.src_pool}
+
+  - name: src_port
+    type: int_range
+    min: 1024
+    max: 65535
+
+  - name: src_iface
+    type: param
+    param: src_iface
+
+  - name: dst_ip
+    type: choice
+    choices: ${params.dst_pool}
+
+  - name: dst_port
+    type: choice
+    choices: ${params.dst_port_pool}
+
+  - name: dst_iface
+    type: param
+    param: dst_iface
+
+  - name: protocol
+    type: template
+    template: "{{ 'udp' if dst_port in ('53', '123') else 'tcp' }}"
+
+  - name: service
+    type: template
+    template: >-
+      {{ {'80': 'http', '443': 'https', '53': 'dns', '22': 'ssh',
+          '25': 'smtp', '21': 'ftp', '123': 'ntp'}.get(dst_port, dst_port) }}
+
+  - name: m
+    type: template
+    template: >-
+      {%- if event == 'opened' -%}98
+      {%- elif event == 'closed' -%}537
+      {%- elif protocol == 'udp' -%}37
+      {%- else -%}36{%- endif -%}
+
+  - name: msg
+    type: template
+    template: >-
+      {{ {'98': 'Connection Opened', '537': 'Connection Closed',
+          '36': 'TCP connection dropped', '37': 'UDP packet dropped'}[m] }}
+
+  - name: pri
+    type: template
+    template: "{{ 5 if event == 'dropped' else 6 }}"
+
+  - name: c
+    type: template
+    template: "{{ {'98': 262144, '537': 1024, '36': 64, '37': 128}[m] }}"
+
+  - name: syslog_pri
+    type: template
+    template: "{{ 128 + pri | int }}"         # local0 (16*8) + severity
+
+  - name: fw_action
+    type: template
+    template: "{{ 'drop' if event == 'dropped' else 'NA' }}"
+
+  - name: n
+    type: int_range
+    min: 1
+    max: 99999
+
+  - name: src_mac
+    type: param
+    param: src_mac
+
+  - name: dst_mac
+    type: param
+    param: dst_mac
+
+  - name: spkt
+    type: int_range
+    min: 1
+    max: 400
+
+  - name: rpkt
+    type: int_range
+    min: 1
+    max: 800
+
+  - name: sent_packet_size
+    type: int_range
+    min: 60
+    max: 600
+
+  - name: rcvd_packet_size
+    type: int_range
+    min: 60
+    max: 1400
+
+  - name: sent
+    type: template
+    template: "{{ 52 if event == 'opened' else spkt | int * sent_packet_size | int }}"
+
+  - name: rcvd
+    type: template
+    template: "{{ rpkt | int * rcvd_packet_size | int }}"
+
+  - name: cdur
+    type: int_range
+    min: 100
+    max: 600000
+
+  - name: rule
+    type: param
+    param: rule
+
+template: |-
+  <{{syslog_pri}}>id=firewall sn={{sn}} time="{{time}}" fw={{fw}} pri={{pri}} c={{c}} m={{m}} msg="{{msg}}" n={{n}} src={{src_ip}}:{{src_port}}:{{src_iface}} dst={{dst_ip}}:{{dst_port}}:{{dst_iface}} srcMac={{src_mac}} dstMac={{dst_mac}} proto={{protocol}}/{{service}}
+  {%- if event == 'closed' %} sent={{sent}} rcvd={{rcvd}} spkt={{spkt}} rpkt={{rpkt}} dpi=0 cdur={{cdur}}
+  {%- elif event == 'opened' %} sent={{sent}}
+  {%- endif %} rule="{{rule}}" fw_action="{{fw_action}}"

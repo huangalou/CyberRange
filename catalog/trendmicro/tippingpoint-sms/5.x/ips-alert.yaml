@@ -1,0 +1,241 @@
+vendor: trendmicro
+product: tippingpoint-sms
+version: "5.x"
+log_type: ips.alert
+description: |
+  TippingPoint Security Management System (SMS) remote syslog for IPS
+  inspection events, in the built-in "SMS 2.5 Syslog Format": one line
+  per event, a fixed list of delimiter-separated columns (TAB by
+  default) with no key names.
+
+  Columns after the syslog header, as the SMS User Guide numbers them:
+     1 action type (number)        12 hit count
+     2 severity (number)           13 source zone name
+     3 policy UUID                 14 destination zone name
+     4 signature UUID              15 incoming physical port
+     5 signature name              16 VLAN ID
+     6 signature number            17 device name
+     7 signature protocol          18 taxonomy ID
+     8 source address              19 event timestamp (milliseconds)
+     9 source port                 20 additional comments
+    10 destination address         21 sequence number
+    11 destination port
+
+  The SMS also offers "SMS 2.0/2.1 Syslog Format" (device slot and
+  segment instead of zones, port and VLAN) and several ArcSight CEF
+  formats (CEF:0|TippingPoint|UnityOne|...). They are different wire
+  formats and are not produced by this catalog.
+
+  Pin the driver, not what it drives:
+    * `action` (Permit / Block / P2P / Quarantine) drives column 1
+      (7 / 8 / 9 / 12). Pin `action`, not `action_type`.
+    * `severity` (Critical / Major / Minor / Low / Normal) drives
+      column 2 (4 / 3 / 2 / 1 / 0). Pin `severity`, not
+      `severity_code`.
+    * `signature` drives columns 3 to 7. Each `signature_pool` entry is
+      "<filter number>:<protocol>:<filter name>", for example
+      "2557:http:HTTP: HTTP CONNECT TCP Tunnel to Interactive ports".
+      To force a filter, pin `signature` or give a one-entry
+      `signature_pool`; pinning signature_number or signature_name
+      alone breaks the pairing. The name column is emitted as the
+      four-digit filter number, a colon and the name ("2557: HTTP:
+      ..."), and both UUIDs end in the zero-padded filter number, as in
+      the guide's samples. The protocol belongs to the filter, which is
+      why it lives in the pool entry; it can still be pinned with
+      `protocol`.
+  Any other value of `action` or `severity` leaves the numeric column
+  empty, which is not a line the SMS would send.
+
+  What a detection usually keys on, all settable with --param:
+  action, severity, signature / signature_pool, src_pool / dst_pool
+  (src_ip, dst_ip), src_port, dst_port, protocol, vlan_id, device_name.
+
+  Time: column 19 is epoch milliseconds and does not depend on a time
+  zone. The header timestamp is the SMS's local wall time and follows
+  `tz` (±HHMM).
+
+  Documented but limited:
+    * The guide's column table for this format lists action types 7
+      (Permit), 8 (Block) and 9 (P2P). 12 (Quarantine) comes from the
+      same guide's actionType field table for custom formats. There is
+      no documented code for a Trust action set, so none is offered.
+    * The taxonomy ID is really a property of the filter. Here it is
+      one value for all events (`taxonomy_id`, the number from the
+      guide's sample); set it to match the filter you pin if your rule
+      or parser reads it.
+
+  Not taken from documentation, check against your own SMS:
+    * Syslog header. The guide documents the options (Timestamp in
+      Header: None / SMS current timestamp / Event timestamp, and
+      Include SMS Hostname in Header) and says column 0 is the syslog
+      category "<32>", but shows no sample line with the timestamp and
+      hostname present. With `header` = `timestamp_host` (default) the
+      line is "<PRI>Mmm dd HH:MM:SS <sms_host> " followed by the
+      columns, a conventional RFC 3164 shape assumed by the author.
+      With `header` = `none` it is "<PRI>", a delimiter, then the
+      columns, which is how the guide prints its SMS 2.0/2.1 sample.
+    * Zone names ("1A" / "1B", segment-port style as in the guide's
+      sample), physical port, device name, SMS host name and the
+      default address pools are illustrative.
+    * Filter numbers and names in the default pool are the ones that
+      appear in the guide's own samples. Replace them with the filters
+      your rules reference; Digital Vaccine content changes over time.
+
+  ArcSight: the SmartConnector "TippingPoint SMS 2.5 Syslog" parser
+  reads this format with the default TAB delimiter. It reports
+  deviceVendor "TippingPoint" and deviceProduct "SMS".
+
+  Source of truth:
+    - TippingPoint Security Management System User Guide 5.1.1 —
+      "Configure a remote syslog server" (protocol, facility, delimiter,
+      header options), "Create or edit a syslog format" (field table,
+      actionType and severity values) and "Syslog format types" (the
+      SMS 2.5 Syslog Format column table and sample line):
+        https://docs.trendmicro.com/all/tip/sms/v5.1.1/en-us/sms_5.1.1_ug.pdf
+    - Security Management System 6.5.1 online help — Syslog log types
+      (the same column table, read to confirm it is unchanged in a
+      later release):
+        https://docs.trendmicro.com/en-us/documentation/article/security-management-system-6-5-1-syslog-log-types
+
+format: syslog
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+detections:
+  wazuh: []
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  risk_refs: []
+  pa_refs: []
+
+params:
+  # Security/Authorization facility (4*8), the documented "<32>".
+  pri:       { default: 32 }
+  # timestamp_host | none — see "Syslog header" in the description.
+  header:    { default: "timestamp_host" }
+  sms_host:  { default: "sms01" }
+  # SMS clock offset; only the header timestamp follows it.
+  tz:        { default: "+0000" }
+  # Column separator. The SMS offers TAB (default), comma, semicolon, pipe.
+  delimiter: { default: "\t" }
+  # IPS / TPS device that saw the traffic (no spaces).
+  device_name: { default: "ips01" }
+  src_pool: { default: ["198.51.100.23", "198.51.100.77", "203.0.113.9"] }
+  dst_pool: { default: ["192.0.2.10", "192.0.2.20", "192.0.2.80"] }
+  src_zone: { default: "1A" }
+  dst_zone: { default: "1B" }
+  taxonomy_id: { default: 100807421 }
+  # Free text of column 20; empty leaves two delimiters in a row.
+  comment:  { default: "" }
+  signature_pool:
+    default:
+      - "53:ip:IP: Source IP Address Spoofed (IANA Reserved)"
+      - "1766:http:HTTP: IIS Index Server File Disclosure"
+      - "2557:http:HTTP: HTTP CONNECT TCP Tunnel to Interactive ports"
+  action_weights:   { default: { Block: 0.7, Permit: 0.3 } }
+  severity_weights: { default: { Critical: 0.25, Major: 0.35, Minor: 0.25, Low: 0.15 } }
+
+fields:
+  - name: header_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+    utc_offset: ${params.tz}
+
+  - name: action
+    type: weighted_choice
+    choices: ${params.action_weights}
+
+  - name: action_type
+    type: template
+    template: "{{ {'Permit': 7, 'Block': 8, 'P2P': 9, 'Quarantine': 12}.get(action, '') }}"
+
+  - name: severity
+    type: weighted_choice
+    choices: ${params.severity_weights}
+
+  - name: severity_code
+    type: template
+    template: "{{ {'Normal': 0, 'Low': 1, 'Minor': 2, 'Major': 3, 'Critical': 4}.get(severity, '') }}"
+
+  - name: signature
+    type: choice
+    choices: ${params.signature_pool}
+
+  - name: signature_number
+    type: template
+    template: "{{ signature.split(':', 2)[0] }}"
+
+  - name: protocol
+    type: template
+    template: "{{ signature.split(':', 2)[1] }}"
+
+  - name: signature_name
+    type: template
+    template: "{{ '%04d' % (signature_number | int) }}: {{ signature.split(':', 2)[2] }}"
+
+  - name: policy_uuid
+    type: template
+    template: "00000002-0002-0002-0002-{{ '%012d' % (signature_number | int) }}"
+
+  - name: signature_uuid
+    type: template
+    template: "00000001-0001-0001-0001-{{ '%012d' % (signature_number | int) }}"
+
+  - name: src_ip
+    type: choice
+    choices: ${params.src_pool}
+
+  - name: src_port
+    type: int_range
+    min: 1024
+    max: 65535
+
+  - name: dst_ip
+    type: choice
+    choices: ${params.dst_pool}
+
+  - name: dst_port
+    type: weighted_choice
+    choices: { "80": 0.6, "443": 0.3, "8080": 0.1 }
+
+  - name: hit_count
+    type: fixed
+    value: 1
+
+  - name: phys_port
+    type: fixed
+    value: 1
+
+  - name: vlan_id
+    type: fixed
+    value: 0
+
+  - name: device_name
+    type: param
+    param: device_name
+
+  - name: event_ns
+    type: datetime
+    format: epoch_ns
+
+  - name: event_ms
+    type: template
+    template: "{{ (event_ns | int) // 1000000 }}"
+
+  - name: sequence
+    type: int_range
+    min: 1
+    max: 9999999
+
+template: |-
+  <{{params.pri}}>{% if params.header == 'none' %}{{params.delimiter}}{% else %}{{header_ts}} {{params.sms_host}} {% endif %}{{ [action_type, severity_code, policy_uuid, signature_uuid, signature_name, signature_number, protocol, src_ip, src_port, dst_ip, dst_port, hit_count, params.src_zone, params.dst_zone, phys_port, vlan_id, device_name, params.taxonomy_id, event_ms, params.comment, sequence] | join(params.delimiter) }}
+
+regression:
+  baseline_alert_count: 0
+  baseline_ttd_ms: 5000

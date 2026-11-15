@@ -1,0 +1,273 @@
+vendor: sophos
+product: firewall
+version: "19.x"
+log_type: firewall.traffic
+description: |
+  Sophos Firewall (SFOS, formerly XG Firewall) firewall-rule traffic log
+  in the "Device standard format": log_type="Firewall"
+  log_component="Firewall Rule", one line of space-separated key=value
+  pairs starting with device="SFW".
+
+    * log_id=010101600001 — log_subtype="Allowed" status="Allow"
+    * log_id=010102600002 — log_subtype="Denied"  status="Deny"
+
+  This is the network firewall. The sibling catalog/sophos/endpoint is
+  the endpoint anti-virus product and shares nothing with it.
+
+  One catalog covers both verdicts because firewall rules usually need
+  the pair (a scan is a run of denies, the interesting follow-up is an
+  allow from the same source). `action` selects which one is emitted.
+
+  Pin the driver, not what it drives: log_id, log_subtype, status,
+  nat_rule_id, the tran_src_* fields, connevent, connid, duration and
+  the packet/byte counters all follow `action`. Pinning log_subtype or
+  status on its own leaves the rest following a random action and yields
+  a self-contradictory line. `action` takes exactly `Allowed` or
+  `Denied`; change the mix with `action_weights`.
+
+  Other things that move together:
+    * `protocol` decides the port fields. TCP and UDP carry
+      src_port / dst_port; ICMP carries icmp_type / icmp_code in the
+      same position instead, as in the vendor samples.
+    * user_gp is empty when user_name is empty (traffic that matched a
+      rule without user identity) and `user_group` otherwise. The
+      default user_pool contains an empty entry for that reason; give a
+      one-entry pool to force a user.
+    * `tz` and `tz_name` describe the same clock. date / time are the
+      firewall's local wall time and follow `tz` (±HHMM); the
+      timezone="..." label is `tz_name`. The guide's samples show
+      abbreviations ("IST", "GMT", "CET") and a bare "-03". Set both
+      when you change either.
+
+  What a detection usually keys on, all settable with --param:
+  action, src_pool / dst_pool (src_ip, dst_ip), src_port, dst_port,
+  protocol, fw_rule_id, user_pool (user_name), in_interface /
+  out_interface, src_zone / dst_zone.
+
+  log_id is built as the guide describes: log type (01 Firewall), log
+  component (01 Firewall Rule), log subtype (01 Allowed / 02 Denied),
+  severity (6 Information) and a five-digit message ID (00001 / 00002).
+
+  Layout: the field order follows the SFOS 19.0 guide's "Allowed"
+  sample (message ID 1), including the SD-WAN, gateway and bridge
+  fields and the unquoted values it shows (priority=Information,
+  ether_type=Unknown (0x0000), gw_name_request=gw0). That sample is
+  ICMP; the TCP / UDP port pair is placed where the guide's other
+  Firewall samples put it (right after protocol).
+
+  Not taken from documentation, check against your own firewall:
+    * Syslog framing. The guide documents the message body only. The
+      line here is "<PRI>" followed directly by device="SFW" with no
+      RFC 3164 timestamp or hostname, PRI 30 (daemon.info), which is
+      how the author understands SFOS to send it. Facility and severity
+      are configurable per syslog server on the appliance; set `pri`.
+    * The Denied line. The guide's only Denied sample for this
+      component comes from an older release with fewer fields. Here
+      Denied uses the same 19.0 field set as Allowed, with no NAT, zero
+      counters, an empty connid and no connevent (as in that older
+      sample). A 19.x appliance may differ in those details.
+    * Country codes are the fixed placeholder "R1" seen in the guide's
+      samples for non-routable addresses; device name, serial, rule
+      ids, MAC addresses and interface names are illustrative.
+    * Central Reporting Format (a different key set) is not covered.
+
+  ArcSight: the SmartConnector parser bundle has no parser for this
+  key=value syslog (its only Sophos content is a database connector for
+  the anti-virus product), so the parse-compat check reports N/A.
+
+  Source of truth:
+    - Sophos Firewall — Syslog guide for SFOS 19.0 ("Common fields'
+      values and format" for the log_id structure and status values;
+      "Firewall" section, format name firewall_log_fmt, for the field
+      list and the sample logs):
+        https://docs.sophos.com/nsg/sophos-firewall/19.0/syslog/index.html
+
+format: key_value
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: network_activity
+  category_uid: 4
+  class_uid: 4001
+
+detections:
+  wazuh: []
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  risk_refs: []
+  pa_refs: []
+
+params:
+  pri:         { default: 30 }              # daemon.info (3*8 + 6)
+  # Appliance model and serial number.
+  device_name: { default: "XGS2100" }
+  device_id:   { default: "X2100EXAMPLE001" }
+  # Device clock offset (±HHMM) and the label the firewall prints for it.
+  tz:          { default: "+0000" }
+  tz_name:     { default: "GMT" }
+  src_pool: { default: ["192.0.2.23", "192.0.2.77", "192.0.2.140"] }
+  dst_pool: { default: ["198.51.100.10", "198.51.100.25", "203.0.113.80"] }
+  # Source address after NAT on allowed sessions.
+  nat_ip:   { default: "203.0.113.1" }
+  # "" = traffic without user identity.
+  user_pool:  { default: ["", "jsmith", "akhan"] }
+  user_group: { default: "Open Group" }
+  in_interface:  { default: "Port1" }
+  out_interface: { default: "Port2" }
+  src_zone: { default: "LAN" }
+  dst_zone: { default: "WAN" }
+  action_weights:   { default: { Allowed: 0.7, Denied: 0.3 } }
+  protocol_weights: { default: { TCP: 0.80, UDP: 0.15, ICMP: 0.05 } }
+  # Destination port follows the protocol: dst_port_weights for TCP,
+  # udp_dst_port_weights for UDP.
+  dst_port_weights: { default: { "443": 0.55, "80": 0.25, "22": 0.1, "3389": 0.1 } }
+  udp_dst_port_weights: { default: { "53": 0.8, "123": 0.2 } }
+
+fields:
+  - name: action
+    type: weighted_choice
+    choices: ${params.action_weights}
+
+  - name: date
+    type: datetime
+    format: "%Y-%m-%d"
+    utc_offset: ${params.tz}
+
+  - name: time
+    type: datetime
+    format: "%H:%M:%S"
+    utc_offset: ${params.tz}
+
+  - name: log_id
+    type: template
+    template: "{{ '010101600001' if action == 'Allowed' else '010102600002' }}"
+
+  - name: log_subtype
+    type: template
+    template: "{{ 'Allowed' if action == 'Allowed' else 'Denied' }}"
+
+  - name: status
+    type: template
+    template: "{{ 'Allow' if action == 'Allowed' else 'Deny' }}"
+
+  - name: connevent
+    type: weighted_choice
+    choices: { Stop: 0.7, Start: 0.3 }
+
+  - name: duration_seed
+    type: int_range
+    min: 1
+    max: 600
+
+  - name: duration
+    type: template
+    template: "{{ duration_seed if action == 'Allowed' and connevent == 'Stop' else 0 }}"
+
+  - name: fw_rule_id
+    type: int_range
+    min: 1
+    max: 20
+
+  - name: nat_rule_id
+    type: template
+    template: "{{ 2 if action == 'Allowed' else 0 }}"
+
+  - name: user_name
+    type: choice
+    choices: ${params.user_pool}
+
+  - name: user_gp
+    type: template
+    template: "{{ user_group if user_name else '' }}"
+
+  - name: src_mac
+    type: fixed
+    value: "00:00:5E:00:53:2C"
+
+  - name: dst_mac
+    type: fixed
+    value: "00:00:5E:00:53:3D"
+
+  - name: src_ip
+    type: choice
+    choices: ${params.src_pool}
+
+  - name: src_country_code
+    type: fixed
+    value: "R1"
+
+  - name: dst_ip
+    type: choice
+    choices: ${params.dst_pool}
+
+  - name: dst_country_code
+    type: fixed
+    value: "R1"
+
+  - name: protocol
+    type: weighted_choice
+    choices: ${params.protocol_weights}
+
+  - name: src_port
+    type: int_range
+    min: 1024
+    max: 65535
+
+  - name: tcp_dst_port
+    type: weighted_choice
+    choices: ${params.dst_port_weights}
+
+  - name: udp_dst_port
+    type: weighted_choice
+    choices: ${params.udp_dst_port_weights}
+
+  - name: dst_port
+    type: template
+    template: "{{ udp_dst_port if protocol == 'UDP' else tcp_dst_port }}"
+
+  - name: pkts_seed
+    type: int_range
+    min: 4
+    max: 400
+
+  - name: sent_pkts
+    type: template
+    template: "{{ pkts_seed if action == 'Allowed' and connevent == 'Stop' else 0 }}"
+
+  - name: recv_pkts
+    type: template
+    template: "{{ (pkts_seed | int) * 2 if action == 'Allowed' and connevent == 'Stop' else 0 }}"
+
+  - name: sent_bytes
+    type: template
+    template: "{{ (sent_pkts | int) * 120 }}"
+
+  - name: recv_bytes
+    type: template
+    template: "{{ (recv_pkts | int) * 640 }}"
+
+  - name: tran_src_ip
+    type: template
+    template: "{{ nat_ip if action == 'Allowed' else '' }}"
+
+  - name: tran_src_port
+    type: template
+    template: "{{ src_port if action == 'Allowed' and protocol != 'ICMP' else 0 }}"
+
+  - name: connid_seed
+    type: int_range
+    min: 100000000
+    max: 2000000000
+
+  - name: connid
+    type: template
+    template: "{{ connid_seed if action == 'Allowed' else '' }}"
+
+template: |-
+  <{{params.pri}}>device="SFW" date={{date}} time={{time}} timezone="{{params.tz_name}}" device_name="{{params.device_name}}" device_id={{params.device_id}} log_id={{log_id}} log_type="Firewall" log_component="Firewall Rule" log_subtype="{{log_subtype}}" status="{{status}}" priority=Information duration={{duration}} fw_rule_id={{fw_rule_id}} nat_rule_id={{nat_rule_id}} policy_type=1 sdwan_profile_id_request=0 sdwan_profile_name_request= sdwan_profile_id_reply=0 sdwan_profile_name_reply= gw_id_request={{ 1 if action == 'Allowed' else 0 }} gw_name_request={{ 'gw0' if action == 'Allowed' else '' }} gw_id_reply=0 gw_name_reply= sdwan_route_id_request=0 sdwan_route_name_request= sdwan_route_id_reply=0 sdwan_route_name_reply= user_name="{{user_name}}" user_gp="{{user_gp}}" iap=0 ips_policy_id=0 appfilter_policy_id=0 application="" application_risk=0 application_technology="" application_category="" vlan_id="" ether_type=Unknown (0x0000) bridge_name="" bridge_display_name="" in_interface="{{params.in_interface}}" in_display_interface="{{params.in_interface}}" out_interface="{{params.out_interface}}" out_display_interface="{{params.out_interface}}" src_mac={{src_mac}} dst_mac={{dst_mac}} src_ip={{src_ip}} src_country_code={{src_country_code}} dst_ip={{dst_ip}} dst_country_code={{dst_country_code}} protocol="{{protocol}}" {% if protocol == 'ICMP' %}icmp_type=8 icmp_code=0{% else %}src_port={{src_port}} dst_port={{dst_port}}{% endif %} sent_pkts={{sent_pkts}} recv_pkts={{recv_pkts}} sent_bytes={{sent_bytes}} recv_bytes={{recv_bytes}} tran_src_ip={{tran_src_ip}} tran_src_port={{tran_src_port}} tran_dst_ip= tran_dst_port=0 srczonetype="{{params.src_zone}}" srczone="{{params.src_zone}}" dstzonetype="{{params.dst_zone}}" dstzone="{{params.dst_zone}}" dir_disp=""{% if action == 'Allowed' %} connevent="{{connevent}}"{% endif %} connid="{{connid}}" vconnid="" hb_health="No Heartbeat" message="" appresolvedby="Signature" app_is_cloud=0 log_occurrence=1
+
+regression:
+  baseline_alert_count: 0
+  baseline_ttd_ms: 5000

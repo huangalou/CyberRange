@@ -1,0 +1,287 @@
+vendor: broadcom
+product: proxysg
+version: "7.x"
+log_type: proxy.access_log.main
+description: |
+  Blue Coat / Symantec / Broadcom ProxySG (Edge SWG) access log in the
+  default "main" ELFF format — one space-delimited line per proxied
+  transaction. Per the ProxySG 7.3 "Default Access Log Formats" page,
+  `main` is an ELFF format with these 24 fields, in this order:
+
+    date time time-taken c-ip sc-status s-action sc-bytes cs-bytes
+    cs-method cs-uri-scheme cs-host cs-uri-port cs-uri-path cs-uri-query
+    cs-username cs-auth-group s-supplier-name rs(Content-Type)
+    cs(Referer) cs(User-Agent) sc-filter-result cs-categories x-virus-id
+    s-ip
+
+  Older SGOS releases are commonly described as also carrying
+  `s-hierarchy` between cs-auth-group and s-supplier-name. The 7.3 page
+  does not list it, so it is not emitted here; check the `#Fields:`
+  line of your own appliance's log before relying on field positions.
+
+  What a detection usually keys on: c-ip (`client_pool`), cs-username
+  (`user_pool`), cs-host / cs-uri-path / cs-uri-query, cs-categories,
+  sc-filter-result, s-action, sc-status, cs-method and cs(User-Agent).
+  All of them can be pinned with --param.
+
+  `verdict` selects an allowed or a blocked transaction and the fields
+  that describe the outcome follow it:
+
+    verdict   sc-filter-result  sc-status         s-action         s-supplier-name  rs(Content-Type)  cs-categories
+    allowed   OBSERVED          `allowed_status`  `allowed_action` = cs-host        `content_type`    `allowed_category`
+    denied    DENIED            403               TCP_DENIED       -                -                 `denied_category`
+
+  Pin the driver, not what it drives: sc_filter_result, sc_status,
+  s_action, s_supplier_name, rs_content_type and cs_categories are
+  derived from `verdict`. Pinning one of them on its own leaves the rest
+  following a random verdict and yields a self-contradictory line (for
+  example DENIED with 200 TCP_NC_MISS). `verdict` takes exactly
+  `allowed` or `denied`. To choose the category of a blocked request,
+  pin `denied_category` (or `cs_categories` together with `verdict`).
+  cs-uri-port likewise follows `cs_uri_scheme` (443 for https, 80
+  otherwise).
+
+  Time: `date` and `time` are GMT (the access log field reference
+  describes them as "GMT date in YYYY-MM-DD format" / "GMT time in
+  HH:MM:SS format"), so there is no `tz` parameter.
+
+  Framing: the line is emitted bare, with no syslog PRI / timestamp /
+  host prefix — an access log is uploaded as a file or streamed by the
+  appliance's upload client as-is. A file written by the appliance also
+  starts with ELFF directives (#Software, #Version, #Date, #Fields);
+  readers that take the column names from the file need at least
+
+    #Fields: date time time-taken c-ip sc-status s-action sc-bytes cs-bytes cs-method cs-uri-scheme cs-host cs-uri-port cs-uri-path cs-uri-query cs-username cs-auth-group s-supplier-name rs(Content-Type) cs(Referer) cs(User-Agent) sc-filter-result cs-categories x-virus-id s-ip
+
+  as the first line of the replayed file; this catalog emits event lines
+  only. The appliance's syslog *event* log ("ProxySG: <id> <message>")
+  is a different log and is not what this catalog produces.
+
+  Not taken from the pages listed below, written from general knowledge
+  of the product — compare with your own appliance:
+    * cs(User-Agent) and cs-categories are written in double quotes and
+      an empty field is written as "-" (this matches the sample event
+      on the Elastic integration page; the Broadcom pages read do not
+      state it);
+    * the status / s-action pairing (403 with TCP_DENIED, the
+      TCP_NC_MISS / TCP_HIT / TCP_MISS mix for allowed requests) and
+      the category names;
+    * s-supplier-name and rs(Content-Type) being "-" on a denied
+      request (the field reference only says s-supplier-name is empty
+      when no upstream connection was made);
+    * content types are kept free of spaces; an appliance may log
+      parameters such as a charset as well;
+    * a cache hit (TCP_HIT) has no upstream connection, so
+      s-supplier-name is "-"; a POST is never served from cache; 302 /
+      304 responses and the 403 block page carry small sc-bytes and a
+      304 has no rs(Content-Type). These couplings are this catalog's
+      reading of how a proxy behaves, not taken from the field reference.
+
+  Only cs(User-Agent) and cs-categories are quoted. Every other field is
+  written bare, so a value containing a space (for example an
+  authentication group such as "Domain Users") adds a column and breaks
+  the 24-field layout — keep pinned values and pool entries free of
+  spaces and double quotes.
+  Authentication challenges (407 with TCP_DENIED), CONNECT tunnels and
+  virus detections (x-virus-id) are not modelled; x-virus-id is "-"
+  unless pinned.
+
+  Source of truth:
+    - ProxySG 7.3 — Default Access Log Formats (`main` field list):
+        https://techdocs.broadcom.com/us/en/symantec-security-software/web-and-network-security/edge-swg/7-3/getting-started/page-help-administration/page-help-logging/log-formats/default-formats.html
+    - Broadcom KB 240610 — Edge SWG (ProxySG) access log fields (field
+      meanings; date / time are GMT; sc-filter-result is "Denied,
+      Proxied or Observed"):
+        https://knowledge.broadcom.com/external/article/240610/edge-swg-proxysg-access-log-fields.html
+    - Elastic — Broadcom ProxySG integration (third party; sample event
+      showing quoted fields and "-" placeholders; upload-client setup):
+        https://www.elastic.co/docs/reference/integrations/proxysg
+
+format: elff
+transport: [file, tcp_syslog]
+
+ocsf:
+  class: http_activity
+  category_uid: 4
+  class_uid: 4002
+
+detections:
+  wazuh: []
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  risk_refs: []
+  pa_refs: []
+
+regression:
+  baseline_alert_count: 0
+  baseline_ttd_ms: 5000
+
+params:
+  # Address of the appliance the client connected to (s-ip).
+  proxy_ip: { default: "192.0.2.10" }
+  client_pool: { default: ["198.51.100.23", "198.51.100.77", "203.0.113.9"] }
+  user_pool: { default: ["alice", "bob", "carol", "svc_backup"] }
+  # One group of the authenticated user; "-" when none is logged.
+  auth_group: { default: "staff" }
+  host_pool:
+    default: ["www.example.com", "downloads.example.org", "api.example.net"]
+  path_pool:
+    default: ["/", "/index.html", "/api/v1/status", "/files/setup.exe", "/login"]
+  query_pool:
+    default: ["-", "-", "?id=42", "?q=report&lang=en"]
+  user_agent_pool:
+    default:
+      - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+      - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15"
+      - "curl/8.4.0"
+  referer_pool:
+    default: ["-", "-", "https://www.example.com/start.html"]
+  allowed_category_pool:
+    default: ["Technology/Internet", "Business/Economy", "Search Engines/Portals"]
+  denied_category_pool:
+    default: ["Malicious Sources/Malnets", "Phishing", "Proxy Avoidance", "Gambling"]
+  verdict_weights:        { default: { allowed: 0.8, denied: 0.2 } }
+  scheme_weights:         { default: { https: 0.8, http: 0.2 } }
+  method_weights:         { default: { GET: 0.8, POST: 0.2 } }
+  allowed_status_weights: { default: { "200": 0.85, "304": 0.10, "302": 0.05 } }
+  allowed_action_weights:
+    default: { TCP_NC_MISS: 0.6, TCP_HIT: 0.2, TCP_MISS: 0.2 }
+  content_type_weights:
+    default: { "text/html": 0.5, "application/json": 0.2, "image/png": 0.2, "application/octet-stream": 0.1 }
+
+fields:
+  - name: verdict
+    type: weighted_choice
+    choices: ${params.verdict_weights}
+
+  # GMT, per the field reference.
+  - name: date
+    type: datetime
+    format: "%Y-%m-%d"
+
+  - name: time
+    type: datetime
+    format: "%H:%M:%S"
+
+  - name: time_taken
+    type: int_range
+    min: 3
+    max: 900
+
+  - name: c_ip
+    type: choice
+    choices: ${params.client_pool}
+
+  - name: allowed_status
+    type: weighted_choice
+    choices: ${params.allowed_status_weights}
+
+  - name: sc_status
+    type: template
+    template: "{{ allowed_status if verdict == 'allowed' else '403' }}"
+
+  - name: allowed_action
+    type: weighted_choice
+    choices: ${params.allowed_action_weights}
+
+  - name: sc_bytes_seed
+    type: int_range
+    min: 300
+    max: 60000
+
+  # Redirects and not-modified responses carry no body, and the block page
+  # is small; only a served object has a size worth randomising.
+  - name: sc_bytes
+    type: template
+    template: "{{ (sc_bytes_seed | int) % 300 + 200 if sc_status in ('302', '304') else ((sc_bytes_seed | int) % 1500 + 900 if sc_status == '403' else sc_bytes_seed) }}"
+
+  - name: cs_bytes
+    type: int_range
+    min: 200
+    max: 2500
+
+  - name: cs_method
+    type: weighted_choice
+    choices: ${params.method_weights}
+
+  # A POST is never answered from cache, so a drawn TCP_HIT becomes a miss.
+  - name: s_action
+    type: template
+    template: "{{ ('TCP_NC_MISS' if (allowed_action == 'TCP_HIT' and cs_method == 'POST') else allowed_action) if verdict == 'allowed' else 'TCP_DENIED' }}"
+
+  - name: cs_uri_scheme
+    type: weighted_choice
+    choices: ${params.scheme_weights}
+
+  - name: cs_host
+    type: choice
+    choices: ${params.host_pool}
+
+  - name: cs_uri_port
+    type: template
+    template: "{{ '443' if cs_uri_scheme == 'https' else '80' }}"
+
+  - name: cs_uri_path
+    type: choice
+    choices: ${params.path_pool}
+
+  - name: cs_uri_query
+    type: choice
+    choices: ${params.query_pool}
+
+  - name: cs_username
+    type: choice
+    choices: ${params.user_pool}
+
+  - name: cs_auth_group
+    type: param
+    param: auth_group
+
+  - name: s_supplier_name
+    type: template
+    template: "{{ cs_host if (verdict == 'allowed' and s_action != 'TCP_HIT') else '-' }}"
+
+  - name: content_type
+    type: weighted_choice
+    choices: ${params.content_type_weights}
+
+  - name: rs_content_type
+    type: template
+    template: "{{ content_type if (verdict == 'allowed' and sc_status != '304') else '-' }}"
+
+  - name: cs_referer
+    type: choice
+    choices: ${params.referer_pool}
+
+  - name: cs_user_agent
+    type: choice
+    choices: ${params.user_agent_pool}
+
+  - name: sc_filter_result
+    type: template
+    template: "{{ 'OBSERVED' if verdict == 'allowed' else 'DENIED' }}"
+
+  - name: allowed_category
+    type: choice
+    choices: ${params.allowed_category_pool}
+
+  - name: denied_category
+    type: choice
+    choices: ${params.denied_category_pool}
+
+  - name: cs_categories
+    type: template
+    template: "{{ allowed_category if verdict == 'allowed' else denied_category }}"
+
+  - name: x_virus_id
+    type: fixed
+    value: "-"
+
+  - name: s_ip
+    type: param
+    param: proxy_ip
+
+template: |-
+  {{date}} {{time}} {{time_taken}} {{c_ip}} {{sc_status}} {{s_action}} {{sc_bytes}} {{cs_bytes}} {{cs_method}} {{cs_uri_scheme}} {{cs_host}} {{cs_uri_port}} {{cs_uri_path}} {{cs_uri_query}} {{cs_username}} {{cs_auth_group}} {{s_supplier_name}} {{rs_content_type}} {{cs_referer}} "{{cs_user_agent}}" {{sc_filter_result}} "{{cs_categories}}" {{x_virus_id}} {{s_ip}}

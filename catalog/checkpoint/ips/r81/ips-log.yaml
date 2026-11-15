@@ -1,0 +1,250 @@
+vendor: checkpoint
+product: ips
+version: "r81"
+log_type: ips.protection_log
+description: |
+  Check Point IPS blade protection log (a protection matched and the
+  connection was prevented, or only detected), as exported from a
+  Management Server or Log Server by Log Exporter (`cp_log_export`) in
+  its default `syslog` format.
+
+  Wire layout is the same as the sibling firewall/r81/security-log.yaml:
+  an RFC 5424-style header with APP-NAME `CheckPoint`, then one bracketed
+  list of `key:"value"` pairs separated by `; `:
+
+    <134>1 2024-05-01T08:15:30Z cp-mgmt CheckPoint 18160 - [action:"Prevent"; flags:"313600"; ifdir:"inbound"; ... src:"198.51.100.23"]
+
+  The header timestamp is UTC (`Z`) and `time` is epoch seconds, so
+  there is no device-timezone parameter.
+
+  What a detection usually keys on (all can be pinned with --param):
+    * `action`           - Prevent / Detect
+    * `attack`           - attack category name
+    * `protection_name`  - the specific protection (signature) name
+    * `protection_id`, `industry_reference` (CVE)
+    * `severity`         - 0 Informational, 1 Low, 2 Medium, 3 High,
+                           4 Critical (numeric on the wire)
+    * `confidence_level` - 0 N/A, 1 Low, 2 Medium-Low, 3 Medium,
+                           4 Medium-High, 5 High
+    * `performance_impact`
+    * `src` / `dst` (pools `src_pool` / `dst_pool`), `s_port`,
+      `service` (destination port), `proto`
+
+  Pin the driver, not what it drives:
+    * `protection` is one entry of `protection_pool`, written as
+      `<protection_id>|<protection_name>|<attack>|<industry_reference>|<severity>|<confidence_level>|<performance_impact>`.
+      protection_id, protection_name, attack, attack_info,
+      industry_reference, severity, confidence_level and
+      performance_impact are all split out of it, so one protection
+      always carries the same name, CVE and ratings. To force a
+      protection, pin `protection` or give a one-entry
+      `protection_pool`; pinning `protection_name` alone leaves the id,
+      CVE and ratings of a randomly chosen other protection.
+    * `severity`, `confidence_level` and `performance_impact` drive
+      nothing, so a rule threshold can be hit by pinning them directly
+      (for example `--param severity=4`) at the cost of rating a
+      protection differently from its pool entry.
+    * `action` drives only `flags`. Prevent / Detect is decided by the
+      Threat Prevention profile in a real deployment, not by the
+      protection, so it is independent of `protection` here.
+    * `svc` is one `<ip-proto>/<dst-port>` entry of `service_pool`;
+      `proto` and `service` are split out of it.
+
+  product value. The IPS blade's `product` field is "SmartDefense" (the
+  blade's former name, still on the wire; SmartConsole shows "IPS").
+  That string was seen in public sample logs (below), not in a Check
+  Point reference table: sk144192 documents `product` only as "Product
+  name" without listing values. `protection_type` is "IPS" for
+  signature protections.
+
+  One line per event. A real export often spreads an IPS event over
+  several log updates that share one `loguid` (the R81 guide describes
+  how Log Exporter's semi-unified mode merges them so that the latest
+  log holds the complete data). This catalog emits the single complete
+  record.
+
+  Representative, not taken from a reference table - check against your
+  own export before relying on them:
+    * The field set and order follow public sample logs of this format,
+      not a Check Point specification, and real lines vary by version
+      and by protection (HTTP protections add resource / method /
+      http_host, and so on - not emitted here).
+    * The default `protection_pool`. The first entry (ZMap Security
+      Scanner) reuses the names and ratings of a public sample line;
+      the other two entries are written from general knowledge of how
+      Check Point names protections, and their ids and ratings are
+      invented. Replace the pool with the protections your rules
+      reference, copied from your own IPS logs.
+    * `attack_info` is set to the protection name, as in the sample.
+    * `flags`, `version`, `log_id`, `__policy_id_tag`, the UUIDs, the
+      Threat Prevention rule name and profile name are placeholders.
+
+  Source of truth:
+    - sk122323 Log Exporter (availability, transports, list of output
+      formats; no layout or sample lines on the page):
+        https://support.checkpoint.com/results/sk/sk122323
+    - R81 Logging and Monitoring Administration Guide - Log Exporter
+      and its Appendix (loguid / log unification):
+        https://sc1.checkpoint.com/documents/R81/WebAdminGuides/EN/CP_R81_LoggingAndMonitoring_AdminGuide/Topics-LMG/Log-Exporter.htm
+        https://sc1.checkpoint.com/documents/R81/WebAdminGuides/EN/CP_R81_LoggingAndMonitoring_AdminGuide/Topics-LMG/Log-Exporter-Appendix.htm
+    - sk144192 Check Point log fields (Common Fields: severity and
+      confidence_level value tables, protection_name, protection_id,
+      protection_type, malware_rule_name, session_id; IPS Fields:
+      performance_impact, industry_reference; `attack`, `attack_info`
+      and `smartdefense_profile` were not found in the parts of this
+      very long page that were read):
+        https://support.checkpoint.com/results/sk/sk144192
+    - Wire layout and sample lines (third-party, not Check Point):
+      AxoSyslog "Check Point Log Exporter parser" and the test corpus of
+      the Elastic Check Point integration:
+        https://axoflow.com/docs/axosyslog-core/chapter-parsers/parser-checkpoint/
+        https://github.com/elastic/integrations/blob/main/packages/checkpoint/data_stream/firewall/_dev/test/pipeline/test-checkpoint.log
+
+format: key_value          # RFC 5424-style header + [key:"value"; key:"value"; ...]
+transport: [udp_syslog, tcp_syslog]
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+detections:
+  wazuh: []
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  risk_refs: []
+  pa_refs: []
+
+params:
+  # Management / Log Server that runs Log Exporter (syslog header host).
+  log_server: { default: "cp-mgmt" }
+  # Security Gateway that enforced the protection.
+  origin:     { default: "192.0.2.1" }
+  gateway_name: { default: "gw-01" }
+  policy_name:  { default: "Standard" }
+  profile:      { default: "Optimized" }
+  src_pool: { default: ["198.51.100.23", "198.51.100.77", "203.0.113.9"] }
+  dst_pool: { default: ["192.0.2.10", "192.0.2.20", "192.0.2.80"] }
+  # <ip-proto>/<dst-port>
+  service_pool: { default: ["6/80", "6/443", "6/8080"] }
+  # <protection_id>|<protection_name>|<attack>|<industry_reference>|<severity>|<confidence_level>|<performance_impact>
+  protection_pool:
+    default:
+      - "asm_dynamic_prop_SC_ZGRAB|ZMap Security Scanner|Scanner Enforcement Violation||3|5|3"
+      - "asm_dynamic_prop_CVE_2021_44228|Apache Log4j Remote Code Execution (CVE-2021-44228)|Web Server Enforcement Violation|CVE-2021-44228|4|4|2"
+      - "asm_dynamic_prop_CVE_2017_5638|Apache Struts2 Content-Type Remote Code Execution (CVE-2017-5638)|Web Server Enforcement Violation|CVE-2017-5638|4|5|2"
+  action_weights: { default: { Prevent: 0.7, Detect: 0.3 } }
+
+fields:
+  - name: action
+    type: weighted_choice
+    choices: ${params.action_weights}
+
+  - { name: pri, type: fixed, value: 134 }               # local0.info
+  - { name: header_ts, type: datetime, format: "%Y-%m-%dT%H:%M:%SZ" }
+  - { name: log_server, type: param, param: log_server }
+  - { name: pid, type: int_range, min: 2000, max: 32000 }
+
+  - name: flags
+    type: template
+    template: "{{ 313600 if action == 'Prevent' else 44676 }}"
+
+  - { name: ifdir, type: fixed, value: "inbound" }
+  - { name: ifname, type: fixed, value: "eth0" }
+
+  - { name: time, type: datetime, format: epoch }
+  - { name: loguid_b, type: int_range, min: 1, max: 4294967295 }
+  - { name: loguid_c, type: int_range, min: 1, max: 4294967295 }
+  - name: loguid
+    type: template
+    template: "{{ '{0x%x,0x0,0x%x,0x%x}' | format(time | int, loguid_b | int, loguid_c | int) }}"
+
+  - { name: origin, type: param, param: origin }
+  - name: originsicname
+    type: template
+    template: "CN={{ params.gateway_name }},O={{ params.log_server }}.example.com.x7k2pq"
+  - { name: sequencenum, type: int_range, min: 1, max: 999 }
+  - { name: version, type: fixed, value: 5 }
+
+  - name: policy_id_tag
+    type: template
+    template: "product=VPN-1 & FireWall-1[db_tag={7D2F4C1A-0B3E-4E5F-9A6B-1C2D3E4F5A6B};mgmt={{ params.log_server }};date=1714500000;policy_name={{ params.policy_name }}\\]"
+
+  - name: protection
+    type: choice
+    choices: ${params.protection_pool}
+
+  - name: protection_id
+    type: template
+    template: "{{ protection.split('|')[0] }}"
+
+  - name: protection_name
+    type: template
+    template: "{{ protection.split('|')[1] }}"
+
+  - name: attack
+    type: template
+    template: "{{ protection.split('|')[2] }}"
+
+  - name: attack_info
+    type: template
+    template: "{{ protection.split('|')[1] }}"
+
+  - name: industry_reference
+    type: template
+    template: "{{ protection.split('|')[3] }}"
+
+  - name: severity
+    type: template
+    template: "{{ protection.split('|')[4] }}"
+
+  - name: confidence_level
+    type: template
+    template: "{{ protection.split('|')[5] }}"
+
+  - name: performance_impact
+    type: template
+    template: "{{ protection.split('|')[6] }}"
+
+  - name: dst
+    type: choice
+    choices: ${params.dst_pool}
+
+  - { name: log_id, type: fixed, value: 2 }
+  - { name: malware_rule_name, type: fixed, value: "Default Threat Prevention Rule" }
+  - { name: policy, type: param, param: policy_name }
+  - { name: product, type: fixed, value: "SmartDefense" }
+  - { name: protection_type, type: fixed, value: "IPS" }
+
+  - name: svc
+    type: choice
+    choices: ${params.service_pool}
+
+  - name: proto
+    type: template
+    template: "{{ svc.split('/')[0] }}"
+
+  - name: service
+    type: template
+    template: "{{ svc.split('/')[1] }}"
+
+  - { name: s_port, type: int_range, min: 1024, max: 65535 }
+
+  - name: session_id
+    type: template
+    template: "{{ '{0x%x,0x1,0x%x,0x%x}' | format(time | int, loguid_c | int, loguid_b | int) }}"
+
+  - { name: smartdefense_profile, type: param, param: profile }
+
+  - name: src
+    type: choice
+    choices: ${params.src_pool}
+
+template: |-
+  <{{pri}}>1 {{header_ts}} {{log_server}} CheckPoint {{pid}} - [action:"{{action}}"; flags:"{{flags}}"; ifdir:"{{ifdir}}"; ifname:"{{ifname}}"; loguid:"{{loguid}}"; origin:"{{origin}}"; originsicname:"{{originsicname}}"; sequencenum:"{{sequencenum}}"; time:"{{time}}"; version:"{{version}}"; __policy_id_tag:"{{policy_id_tag}}"; attack:"{{attack}}"; attack_info:"{{attack_info}}"; confidence_level:"{{confidence_level}}"; dst:"{{dst}}"{% if industry_reference %}; industry_reference:"{{industry_reference}}"{% endif %}; log_id:"{{log_id}}"; malware_rule_name:"{{malware_rule_name}}"; performance_impact:"{{performance_impact}}"; policy:"{{policy}}"; product:"{{product}}"; protection_id:"{{protection_id}}"; protection_name:"{{protection_name}}"; protection_type:"{{protection_type}}"; proto:"{{proto}}"; s_port:"{{s_port}}"; service:"{{service}}"; session_id:"{{session_id}}"; severity:"{{severity}}"; smartdefense_profile:"{{smartdefense_profile}}"; src:"{{src}}"]
+
+regression:
+  baseline_alert_count: 0
+  baseline_ttd_ms: 5000
