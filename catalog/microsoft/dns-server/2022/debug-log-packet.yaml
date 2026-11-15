@@ -1,0 +1,145 @@
+vendor: microsoft
+product: dns-server
+version: "2022"
+log_type: dns.debug_log.packet
+description: |
+  Windows Server DNS Server debug log (dns.log) packet lines — the
+  one-line-per-packet summary written when debug logging is enabled with
+  "Details" turned off. This is a FILE format: the DNS service writes it
+  to a local file, and collectors read it with a file reader, not over
+  syslog. Use the file:// sink (or forward the file with your own
+  shipper).
+
+  Line layout, as described by the "Message logging key" header the DNS
+  service writes at the top of the file:
+
+    <date> <time> <thread id> PACKET  <packet id> <UDP|TCP> <Snd|Rcv>
+    <remote ip> <xid> <R| > <opcode> [<flags hex> <flag chars> <rcode>]
+    <question type> <question name>
+
+    * R marks a response; blank marks a query. Opcode Q = standard query.
+    * Flag chars: A authoritative, T truncated, D recursion desired,
+      R recursion available.
+    * The question name is length-prefixed per label:
+      www.example.com → (3)www(7)example(3)com(0)
+
+  `direction` selects query (Rcv, flags 0001) or response (Snd, flags
+  8081, or 8381 for NXDOMAIN — a recursive, non-authoritative answer).
+  What a detection usually keys on is the client address
+  (`client_pool`), the name (`qname_pool`), the question type, and — for
+  responses — the response code.
+
+  To force a response code, pin `direction=response` together with
+  `response_rcode`. Do not pin `rcode` itself: it is derived (a query
+  line is always NOERROR), and the flags follow it.
+
+  The date is written in the server's local time and regional format;
+  this catalog uses the en-US form (M/D/YYYY h:mm:ss AM/PM). `tz` sets
+  the local clock offset.
+
+  Source of truth: the format is the one the DNS Server service itself
+  documents in the header of every debug log file ("Message logging key
+  (for packets - other items use a different format)"). No vendor web
+  page describing the line layout was available to cite; compare with a
+  log from your own server before relying on exact spacing.
+
+format: text
+transport: [file]
+
+ocsf:
+  class: dns_activity
+  category_uid: 4
+  class_uid: 4003
+
+detections:
+  wazuh: []
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  risk_refs: []
+  pa_refs: []
+
+regression:
+  baseline_alert_count: 0
+  baseline_ttd_ms: 5000
+
+params:
+  # Local clock offset of the DNS server.
+  tz: { default: "+0000" }
+  client_pool: { default: ["198.51.100.23", "198.51.100.77", "203.0.113.9"] }
+  qname_pool:
+    default: ["www.example.com", "mail.example.org", "updates.example.net"]
+  qtype_weights: { default: { A: 0.70, AAAA: 0.20, TXT: 0.05, MX: 0.05 } }
+  direction_weights: { default: { query: 0.5, response: 0.5 } }
+  rcode_weights: { default: { NOERROR: 0.9, NXDOMAIN: 0.1 } }
+
+fields:
+  # en-US short date with no zero padding. Built from padded parts because
+  # the unpadded strftime codes are not portable across platforms.
+  - { name: ts_month,  type: datetime, format: "%m", utc_offset: "${params.tz}" }
+  - { name: ts_day,    type: datetime, format: "%d", utc_offset: "${params.tz}" }
+  - { name: ts_year,   type: datetime, format: "%Y", utc_offset: "${params.tz}" }
+  - { name: ts_hour12, type: datetime, format: "%I", utc_offset: "${params.tz}" }
+  - { name: ts_rest,   type: datetime, format: "%M:%S %p", utc_offset: "${params.tz}" }
+
+  - name: ts
+    type: template
+    template: "{{ ts_month | int }}/{{ ts_day | int }}/{{ ts_year }} {{ ts_hour12 | int }}:{{ ts_rest }}"
+
+  - name: thread_id
+    type: faker
+    method: hex_8
+
+  - name: packet_id
+    type: faker
+    method: hex_16
+
+  - name: proto
+    type: weighted_choice
+    choices: { UDP: 0.97, TCP: 0.03 }
+
+  - name: direction
+    type: weighted_choice
+    choices: ${params.direction_weights}
+
+  - name: client_ip
+    type: choice
+    choices: ${params.client_pool}
+
+  - name: xid
+    type: faker
+    method: hex_8
+
+  - name: response_rcode
+    type: weighted_choice
+    choices: ${params.rcode_weights}
+
+  # A query carries no result yet, so it is always logged as NOERROR.
+  - name: rcode
+    type: template
+    template: "{{ response_rcode if direction == 'response' else 'NOERROR' }}"
+
+  - name: flags_hex
+    type: template
+    template: "{{ '0001' if direction == 'query' else ('8381' if rcode == 'NXDOMAIN' else '8081') }}"
+
+  # four flag columns: A T D R
+  - name: flags_chars
+    type: template
+    template: "{{ '  D ' if direction == 'query' else '  DR' }}"
+
+  - name: qtype
+    type: weighted_choice
+    choices: ${params.qtype_weights}
+
+  - name: qname
+    type: choice
+    choices: ${params.qname_pool}
+
+  - name: qname_wire
+    type: template
+    template: "{% for label in qname.split('.') %}({{ label | length }}){{ label }}{% endfor %}(0)"
+
+template: |-
+  {{ts}} {{ thread_id[:4] }} PACKET  {{packet_id}} {{proto}} {{ 'Rcv' if direction == 'query' else 'Snd' }} {{ '%-15s' | format(client_ip) }} {{ xid[:4] | lower }} {{ 'R' if direction == 'response' else ' ' }} Q [{{flags_hex}} {{flags_chars}}  {{rcode}}] {{ '%-6s' | format(qtype) }} {{qname_wire}}

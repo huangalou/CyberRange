@@ -1,0 +1,149 @@
+vendor: microsoft
+product: windows
+version: "2022"
+log_type: security.event_id_4625
+description: |
+  Windows Security Event ID 4625 (An account failed to log on), in the
+  same Winlogbeat-style single-line JSON envelope as the sibling
+  security-4624-logon.yaml, so success and failure can be replayed
+  through one pipeline.
+
+  What a detection usually keys on:
+    * TargetUserName + IpAddress / WorkstationName — who was tried, from where
+    * LogonType — 3 (network), 10 (RDP), 2 (console) …
+    * Status / SubStatus — why it failed
+  `failure` selects a consistent Status / SubStatus / FailureReason
+  triple:
+
+    failure        Status      SubStatus   FailureReason
+    bad_password   0xc000006d  0xc000006a  %%2313
+    unknown_user   0xc000006d  0xc0000064  %%2313
+    locked_out     0xc0000234  0x0         %%2307
+
+  The Status / SubStatus meanings and the locked_out triple are as given
+  on the reference page. The page does not list the %% message ids;
+  %%2313 ("Unknown user name or bad password") is the id Windows writes
+  for the first two cases.
+
+  Pin `failure`, not Status / SubStatus / FailureReason individually —
+  those three are derived from it. LogonProcessName and
+  AuthenticationPackageName likewise follow `logon_type` (network logons
+  arrive over NTLM, interactive and RDP logons through User32).
+
+  Password spraying is one source against many `target_user_pool`
+  entries; brute force is one account with --burst. Both are reachable
+  by pinning `ip_address` / `target_user` with --param.
+
+  Source of truth:
+    - Microsoft Learn — 4625(F) An account failed to log on (EventData
+      fields, Status / SubStatus codes, failure reasons):
+        https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4625
+
+format: json
+transport: [tcp_syslog, beats, file]
+
+ocsf:
+  class: authentication
+  category_uid: 3
+  class_uid: 3002
+
+detections:
+  wazuh:
+    - decoder: windows_eventchannel
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  risk_refs: []
+  pa_refs: []
+
+regression:
+  baseline_alert_count: 0
+  baseline_ttd_ms: 3000
+
+params:
+  hostname: { default: "WIN-DC01" }
+  domain:   { default: "LAB" }
+  fqdn_suffix: { default: "lab.local" }
+  target_user_pool: { default: ["alice", "bob", "admin", "svc_backup", "guest"] }
+  src_pool: { default: ["198.51.100.23", "198.51.100.77", "203.0.113.9"] }
+  failure_weights:
+    default: { bad_password: 0.70, unknown_user: 0.22, locked_out: 0.08 }
+
+fields:
+  - name: ts_iso
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S.%fZ"
+
+  - name: hostname
+    type: param
+    param: hostname
+
+  - name: fqdn
+    type: template
+    template: "{{hostname}}.{{params.fqdn_suffix}}"
+
+  - name: target_user
+    type: choice
+    choices: ${params.target_user_pool}
+
+  - name: target_domain
+    type: param
+    param: domain
+
+  - name: failure
+    type: weighted_choice
+    choices: ${params.failure_weights}
+
+  - name: status
+    type: template
+    template: "{{ {'bad_password': '0xc000006d', 'unknown_user': '0xc000006d', 'locked_out': '0xc0000234'}[failure] }}"
+
+  - name: sub_status
+    type: template
+    template: "{{ {'bad_password': '0xc000006a', 'unknown_user': '0xc0000064', 'locked_out': '0x0'}[failure] }}"
+
+  - name: failure_reason
+    type: template
+    template: "{{ {'bad_password': '%%2313', 'unknown_user': '%%2313', 'locked_out': '%%2307'}[failure] }}"
+
+  - name: logon_type
+    type: weighted_choice
+    choices:
+      "3":  0.60   # Network
+      "10": 0.25   # RemoteInteractive (RDP)
+      "2":  0.10   # Interactive
+      "8":  0.05   # NetworkCleartext
+
+  # trailing spaces are the wire form
+  - name: logon_process
+    type: template
+    template: "{{ {'3': 'NtLmSsp ', '8': 'Advapi  '}.get(logon_type, 'User32 ') }}"
+
+  - name: auth_package
+    type: template
+    template: "{{ {'3': 'NTLM', '8': 'Negotiate'}.get(logon_type, 'Negotiate') }}"
+
+  - name: workstation
+    type: weighted_choice
+    choices: { "-": 0.50, "WS-FINANCE-01": 0.20, "WS-DEV-07": 0.20, "RDP-JUMP-01": 0.10 }
+
+  - name: ip_address
+    type: choice
+    choices: ${params.src_pool}
+
+  - name: ip_port
+    type: int_range
+    min: 49152
+    max: 65535
+
+  - name: pri
+    type: fixed
+    value: 134                              # local0.info
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} {"@timestamp":"{{ts_iso}}","event":{"code":4625,"provider":"Microsoft-Windows-Security-Auditing","action":"An account failed to log on","category":["authentication"],"type":["start"],"outcome":"failure"},"host":{"name":"{{hostname}}","hostname":"{{hostname}}"},"winlog":{"channel":"Security","event_id":4625,"provider_name":"Microsoft-Windows-Security-Auditing","provider_guid":"{54849625-5478-4994-A5BA-3E3B0328C30D}","computer_name":"{{fqdn}}","task":"Logon","keywords":["Audit Failure"],"event_data":{"SubjectUserSid":"S-1-0-0","SubjectUserName":"-","SubjectDomainName":"-","SubjectLogonId":"0x0","TargetUserSid":"S-1-0-0","TargetUserName":"{{target_user}}","TargetDomainName":"{{target_domain}}","Status":"{{status}}","FailureReason":"{{failure_reason}}","SubStatus":"{{sub_status}}","LogonType":"{{logon_type}}","LogonProcessName":"{{logon_process}}","AuthenticationPackageName":"{{auth_package}}","WorkstationName":"{{workstation}}","TransmittedServices":"-","LmPackageName":"-","KeyLength":"0","ProcessId":"0x0","ProcessName":"-","IpAddress":"{{ip_address}}","IpPort":"{{ip_port}}"}}}

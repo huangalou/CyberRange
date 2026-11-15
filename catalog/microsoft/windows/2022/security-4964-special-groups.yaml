@@ -1,0 +1,117 @@
+vendor: microsoft
+product: windows
+version: "2022"
+log_type: security.event_id_4964
+description: |
+  Windows Security Event ID 4964 (Special groups have been assigned to a
+  new logon), in the same Winlogbeat-style single-line JSON envelope as
+  the sibling security-4624-logon.yaml.
+
+  The event is written when an account that is a member of a group on
+  the "Special Groups" list logs on. That list is opt-in: it is
+  configured in the registry (HKLM\SYSTEM\CurrentControlSet\Control\Lsa\
+  Audit\SpecialGroups) and the "Audit Special Logon" subcategory must be
+  enabled, so a host with no list configured never emits 4964.
+
+  What a detection usually keys on:
+    * TargetUserName / TargetUserSid — the account that logged on
+    * SidList — which special group(s) matched, as "%{<SID>}" entries
+  The default `special_group_rid` is 512 (Domain Admins); pin `sid_list`
+  for a different or multi-group list.
+
+  Source of truth:
+    - Microsoft Learn — 4964(S) Special groups have been assigned to a
+      new logon (EventData fields, SidList format, prerequisites):
+        https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4964
+
+format: json
+transport: [tcp_syslog, beats, file]
+
+ocsf:
+  class: authentication
+  category_uid: 3
+  class_uid: 3002
+
+detections:
+  wazuh:
+    - decoder: windows_eventchannel
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  risk_refs: []
+  pa_refs: []
+
+regression:
+  baseline_alert_count: 0
+  baseline_ttd_ms: 3000
+
+params:
+  hostname: { default: "WIN-DC01" }
+  domain:   { default: "LAB" }
+  fqdn_suffix: { default: "lab.local" }
+  domain_sid:
+    default: "S-1-5-21-1111111111-2222222222-3333333333"
+  target_user_pool: { default: ["DA_alice", "Administrator", "svc_dc"] }
+  # RID of the special group that matched; 512 = Domain Admins.
+  special_group_rid: { default: "512" }
+
+fields:
+  - name: ts_iso
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S.%fZ"
+
+  - name: hostname
+    type: param
+    param: hostname
+
+  - name: fqdn
+    type: template
+    template: "{{hostname}}.{{params.fqdn_suffix}}"
+
+  - name: target_user
+    type: choice
+    choices: ${params.target_user_pool}
+
+  - name: target_domain
+    type: param
+    param: domain
+
+  # One RID per account so the same user always carries the same SID:
+  # 500 for the built-in Administrator, otherwise by position in the pool.
+  - name: target_user_rid
+    type: template
+    template: >-
+      {%- set pool = [params.target_user_pool] if params.target_user_pool is string else params.target_user_pool -%}
+      {{ 500 if target_user == 'Administrator' else 1104 + (pool.index(target_user) if target_user in pool else target_user | length) }}
+
+  - name: target_user_sid
+    type: template
+    template: "{{params.domain_sid}}-{{target_user_rid}}"
+
+  - name: target_logon_id
+    type: faker
+    method: hex_8
+
+  - name: logon_guid
+    type: faker
+    method: uuid4
+
+  - name: target_logon_guid
+    type: faker
+    method: uuid4
+
+  - name: sid_list
+    type: template
+    template: "%{% raw %}{{% endraw %}{{params.domain_sid}}-{{params.special_group_rid}}{% raw %}}{% endraw %}"
+
+  - name: pri
+    type: fixed
+    value: 134                              # local0.info
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{hostname}} {"@timestamp":"{{ts_iso}}","event":{"code":4964,"provider":"Microsoft-Windows-Security-Auditing","action":"Special groups have been assigned to a new logon","category":["authentication"],"type":["admin"]},"host":{"name":"{{hostname}}","hostname":"{{hostname}}"},"winlog":{"channel":"Security","event_id":4964,"provider_name":"Microsoft-Windows-Security-Auditing","provider_guid":"{54849625-5478-4994-A5BA-3E3B0328C30D}","computer_name":"{{fqdn}}","task":"Special Logon","keywords":["Audit Success"],"event_data":{"SubjectUserSid":"S-1-5-18","SubjectUserName":"{{hostname}}$","SubjectDomainName":"{{target_domain}}","SubjectLogonId":"0x3e7","LogonGuid":"{{ '{' }}{{logon_guid}}{{ '}' }}","TargetUserSid":"{{target_user_sid}}","TargetUserName":"{{target_user}}","TargetDomainName":"{{target_domain}}","TargetLogonId":"0x{{target_logon_id}}","TargetLogonGuid":"{{ '{' }}{{target_logon_guid}}{{ '}' }}","SidList":"{{sid_list}}"}}}
