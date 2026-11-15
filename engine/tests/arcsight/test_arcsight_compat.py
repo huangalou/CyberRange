@@ -30,6 +30,7 @@ pytestmark = pytest.mark.skipif(
 # Baseline 2026-09-07 (post audit #1–#6). (expected verdict, reason)
 EXPECT: dict[str, tuple[str, str]] = {
     # ── WARN: ArcSight limitation or sample-dependent field presence ──
+    "google/cloud-audit/v1/admin-activity": ("WARN", "subscription_id/ackDeadlineSeconds/messageRetentionDuration are Pub/Sub-admin tokens, description/role_id/addedPermissions are IAM custom-role tokens; status.code only exists on denied calls"),
     "aws/cloudtrail/2.0/credential-abuse-teampcp": ("WARN", "errorCode/errorMessage only exist on failure events; `original`/`additionalEventData` are ArcSight-side synthesized tokens"),
     # ── PARTIAL: some samples land on a specific pattern, the rest fall through ──
     "cisco/firepower/7.x/intrusion-event": ("PARTIAL", "only the fmc_unified wire variant carries the InstanceID prefix ArcSight 430001 requires; ftd_device/sfims_legacy are real wires ArcSight 8.5.2 lacks"),
@@ -71,7 +72,8 @@ def test_baseline_totals_do_not_regress():
     counts = {v: sum(1 for r in results if r.verdict == v) for v in sim.VERDICT_RANK}
     # 2026-09-07 baseline: OK 30 / WARN 1 / PARTIAL 4 / CATCH-ALL 1 / FAIL 3 / N/A 18 (57 catalogs)
     # 2026-11-15: OK 35 / WARN 1 / PARTIAL 4 / CATCH-ALL 1 / FAIL 3 / N/A 20 (64 catalogs)
+    # 2026-11-15: OK 43 / WARN 2 / PARTIAL 4 / CATCH-ALL 1 / FAIL 3 / N/A 22 (75 catalogs)
     assert counts["FAIL"] <= 3, counts
     assert counts["CATCH-ALL"] <= 1, counts
-    assert counts["OK"] >= 35, counts
+    assert counts["OK"] >= 43, counts
     assert sum(counts.values()) == len(_catalogs()), counts

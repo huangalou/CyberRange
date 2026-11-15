@@ -1,0 +1,279 @@
+vendor: radware
+product: defensepro
+version: "8.x"
+log_type: security.attack_event
+description: |
+  Radware DefensePro security (attack) event as sent to a syslog server —
+  one line per attack report (DoS / DDoS floods, packet anomalies, scans
+  and so on).
+
+  Layout of the event body, following the sample Radware publishes in its
+  knowledge base ("How to Match an Attack From Syslog to the Attack in
+  Forensic"):
+
+    DefensePro: 12-02-2019 06:05:34 WARNING 73 Behavioral-DoS "network flood IPv4 TCP-SYN" TCP 0.0.0.0 0 0.0.0.0 0 0 Regular "policy" start 0 0 N/A 0 N/A high forward FFFFFFFF-FFFF-FFFF-0025-00005C59A0BB
+
+  i.e., after `DefensePro: <DD-MM-YYYY HH:MM:SS> <severity>`:
+
+    <attack id> <category> "<attack name>" <protocol> <source ip>
+    <source port> <destination ip> <destination port> <physical port>
+    <context> "<policy name>" <status> <packet count> <bandwidth>
+    <VLAN tag> <MPLS RD> <MPLS tag> <risk> <action> <unique id>
+
+  The field NAMES above are this catalog's reading of that sample; the
+  field-by-field definition lives in Radware's "DefensePro - SIEM
+  Integration Guide", which is behind the customer portal and was NOT
+  read for this catalog. Compare with a line from your own device before
+  relying on positions beyond the ones a rule keys on.
+
+  The unique id is FFFFFFFF-FFFF-FFFF-AAAA-BBBBTTTTTTTT per the same
+  article: a counter (0xBBBBAAAA) and the hex timestamp. Here the
+  timestamp half is the event time and the counter is random.
+
+  Attack id, category, protocol and name travel together: `attack` is the
+  driver, drawn from `attack_pool` entries written as
+  "<id>:<category>:<protocol>:<name>". Pin the driver, not what it
+  drives — `--param attack_pool="73:Behavioral-DoS:TCP:network flood IPv4
+  TCP-SYN"` keeps the four consistent, whereas pinning `attack_id` alone
+  leaves name and category following a random attack. Provenance of the
+  default pool:
+
+    * 73 Behavioral-DoS "network flood IPv4 TCP-SYN" — the knowledge-base
+      sample above.
+    * 113 "Invalid TCP Flags", 104 "Invalid IPv4 Header or Total Length" —
+      id and name from the DefensePro packet-anomalies help page (a 6.09
+      page); the category label "Anomalies" is the author's recollection.
+    * 350 Anti-Scanning "TCP Scan", 351 Anti-Scanning "UDP Scan",
+      200000 SynFlood "SYN Flood HTTP" — the author's recollection of
+      Radware attack ids, not checked against any document. Replace them
+      with the ids your device reports (intrusion signatures in
+      particular are site and signature-file specific, so none ship here).
+
+  Also from the author's understanding rather than a document read for
+  this catalog: the status values other than `start`, the action values
+  other than `forward` (`drop` appears only in the forensic export of the
+  same article), the risk values other than `high`, and the use of
+  WARNING for every security event. The syslog severity word is emitted
+  as a fixed WARNING; pin `severity` if your device differs.
+
+  Syslog framing: the knowledge-base samples show the line as stored by a
+  receiver ("Aug 10 11:37:11 <device address> DefensePro: ..."), which is
+  what is emitted here with a PRI in front. The PRI assumes facility
+  local6 (IBM's DSM guide gives 21 / Local Use 6 as the DefensePro
+  default) and severity warning: 21*8 + 4 = 172. The inner timestamp is
+  device local time; `tz` shifts both timestamps.
+
+  Rule-relevant fields that can be pinned directly: `src_ip`, `src_port`,
+  `dst_ip`, `dst_port`, `action`, `risk`, `policy`, `status`,
+  `packet_count`; pools are `src_pool`, `dst_pool`, `policy_pool`.
+
+  Source of truth:
+    - Radware knowledge base — How to Match an Attack From Syslog to the
+      Attack in Forensic (sample security-event line, unique id layout):
+        https://support.radware.com/app/answers/answer_view/a_id/1020016/~/how-to-match-an-attack-from-syslog-to-the-attack-in-forensic
+    - Radware knowledge base — A note regarding DefensePro 6.x syslog
+      message (receiver-side framing "<time> <address> DefensePro: ..."):
+        https://support.radware.com/app/answers/answer_view/a_id/1017130/~/a-note-regarding-defensepro-6.x-syslog-message-
+    - DefensePro online help 6.09 — Packet Anomalies (anomaly ids, names):
+        https://webhelp.radware.com/dp/v6.09/packet_anomalies.htm
+    - IBM QRadar DSM guide — Radware DefensePro (syslog facility default):
+        https://www.ibm.com/docs/SS42VS_DSM/com.ibm.dsm.doc/c_DSM_guide_Radware_DefensePro_intro.html
+
+format: text
+transport: [udp_syslog, tcp_syslog]
+
+ocsf:
+  class: detection_finding
+  category_uid: 2
+  class_uid: 2004
+
+detections:
+  wazuh: []
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  risk_refs: []
+  pa_refs: []
+
+regression:
+  baseline_alert_count: 0
+  baseline_ttd_ms: 5000
+
+params:
+  # Address the receiver records for the device (hostname slot of the header).
+  device_ip: { default: "192.0.2.20" }
+  # Device clock offset; both timestamps follow it.
+  tz: { default: "+0000" }
+  src_pool: { default: ["198.51.100.23", "198.51.100.77", "203.0.113.9"] }
+  dst_pool: { default: ["192.0.2.80", "192.0.2.81"] }
+  # Destination port follows the attack's protocol: TCP attacks draw from
+  # dst_port_pool, UDP attacks from udp_port_pool.
+  dst_port_pool: { default: ["80", "443"] }
+  udp_port_pool: { default: ["53"] }
+  # Network policy that matched: policy_pool for TCP traffic, udp_policy for
+  # UDP traffic (set udp_policy to an empty string to use policy_pool for both).
+  policy_pool: { default: ["dmz-web"] }
+  udp_policy: { default: "dns-servers" }
+  # "<attack id>:<category>:<protocol>:<attack name>" — see the description
+  # for which entries are documented and which are from memory.
+  attack_pool:
+    default:
+      - "73:Behavioral-DoS:TCP:network flood IPv4 TCP-SYN"
+      - "113:Anomalies:TCP:Invalid TCP Flags"
+      - "104:Anomalies:UDP:Invalid IPv4 Header or Total Length"
+      - "350:Anti-Scanning:TCP:TCP Scan"
+      - "351:Anti-Scanning:UDP:UDP Scan"
+      - "200000:SynFlood:TCP:SYN Flood HTTP"
+  action_weights: { default: { drop: 0.7, forward: 0.3 } }
+  risk_weights: { default: { high: 0.4, medium: 0.4, low: 0.2 } }
+  status_weights: { default: { start: 0.3, ongoing: 0.4, term: 0.2, occur: 0.1 } }
+
+fields:
+  - name: pri
+    type: fixed
+    value: 172                              # local6.warning (21*8 + 4)
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+    utc_offset: ${params.tz}
+
+  - name: device_ip
+    type: param
+    param: device_ip
+
+  - name: event_time
+    type: datetime
+    format: "%d-%m-%Y %H:%M:%S"
+    utc_offset: ${params.tz}
+
+  - name: severity
+    type: fixed
+    value: "WARNING"
+
+  # Driver: id, category, protocol and name are all split out of this.
+  - name: attack
+    type: choice
+    choices: ${params.attack_pool}
+
+  - name: attack_id
+    type: template
+    template: "{{ attack.split(':', 3)[0] }}"
+
+  - name: attack_category
+    type: template
+    template: "{{ attack.split(':', 3)[1] }}"
+
+  - name: protocol
+    type: template
+    template: "{{ attack.split(':', 3)[2] }}"
+
+  - name: attack_name
+    type: template
+    template: "{{ attack.split(':', 3)[3] }}"
+
+  - name: src_ip
+    type: choice
+    choices: ${params.src_pool}
+
+  - name: src_port
+    type: int_range
+    min: 1024
+    max: 65535
+
+  - name: dst_ip
+    type: choice
+    choices: ${params.dst_pool}
+
+  - name: tcp_dst_port
+    type: choice
+    choices: ${params.dst_port_pool}
+
+  - name: udp_dst_port
+    type: choice
+    choices: ${params.udp_port_pool}
+
+  - name: dst_port
+    type: template
+    template: "{{ udp_dst_port if protocol == 'UDP' else tcp_dst_port }}"
+
+  - name: physical_port
+    type: int_range
+    min: 1
+    max: 4
+
+  - name: context
+    type: fixed
+    value: "Regular"
+
+  - name: tcp_policy
+    type: choice
+    choices: ${params.policy_pool}
+
+  - name: policy
+    type: template
+    template: "{{ params.udp_policy if (protocol == 'UDP' and params.udp_policy) else tcp_policy }}"
+
+  - name: status
+    type: weighted_choice
+    choices: ${params.status_weights}
+
+  # The documented sample line carries 0 packets and 0 Kbit at attack start;
+  # the counters are filled in on the later status reports.
+  - name: packet_seed
+    type: int_range
+    min: 1
+    max: 50000
+
+  - name: packet_count
+    type: template
+    template: "{{ 0 if status == 'start' else packet_seed }}"
+
+  - name: bandwidth_seed
+    type: int_range
+    min: 1
+    max: 90000
+
+  # Kbit
+  - name: bandwidth
+    type: template
+    template: "{{ 0 if status == 'start' else bandwidth_seed }}"
+
+  - name: vlan_tag
+    type: fixed
+    value: "N/A"
+
+  - name: mpls_rd
+    type: fixed
+    value: "0"
+
+  - name: mpls_tag
+    type: fixed
+    value: "N/A"
+
+  - name: risk
+    type: weighted_choice
+    choices: ${params.risk_weights}
+
+  - name: action
+    type: weighted_choice
+    choices: ${params.action_weights}
+
+  - name: epoch
+    type: datetime
+    format: epoch
+
+  - name: counter
+    type: int_range
+    min: 1
+    max: 65535
+
+  # The hex time in the id is the absolute (UTC) epoch; it does not shift
+  # with `tz`.
+  - name: unique_id
+    type: template
+    template: "FFFFFFFF-FFFF-FFFF-{{ '%04X' % (counter | int) }}-0000{{ '%08X' % (epoch | int) }}"
+
+template: |-
+  <{{pri}}>{{rfc3164_ts}} {{device_ip}} DefensePro: {{event_time}} {{severity}} {{attack_id}} {{attack_category}} "{{attack_name}}" {{protocol}} {{src_ip}} {{src_port}} {{dst_ip}} {{dst_port}} {{physical_port}} {{context}} "{{policy}}" {{status}} {{packet_count}} {{bandwidth}} {{vlan_tag}} {{mpls_rd}} {{mpls_tag}} {{risk}} {{action}} {{unique_id}}

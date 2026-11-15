@@ -1,0 +1,202 @@
+vendor: pulsesecure
+product: connect-secure
+version: "9.x"
+log_type: vpn.user_access
+description: |
+  Pulse Connect Secure (now Ivanti Connect Secure) SSL VPN user access
+  log — sign-in results — as sent to a syslog server.
+
+  `outcome` (success / failed) selects how the sign-in went and `event`
+  selects which pair of messages is emitted:
+
+    event          outcome  message id  message
+    login          success  AUT31504    Login succeeded for <user>/<realm> (session:<id>) from <ip> with <user agent>.
+    login          failed   AUT23457    Login failed using auth server <server> (<server type>). Reason: Failed
+    primary_auth   success  AUT24326    Primary authentication successful for <user>/<auth server> from <ip>
+    primary_auth   failed   AUT24327    Primary authentication failed for <user>/<auth server> from <ip>
+
+  `login` is the default (`event_weights`); the realm, role and browser
+  are only in that pair. Note that in Ivanti's published samples
+  AUT24326 / AUT24327 are the "Primary authentication" messages, not
+  "Login succeeded / failed".
+
+  Pin the drivers, not what they drive: message id, message text, roles
+  and user agent are derived from `outcome` and `event` (a failed
+  sign-in has no role and no agent, as in Ivanti's samples). Pinning
+  `msg_id` or `msg` on its own yields a line whose parts disagree.
+  User, realm, role and source address are set with `user_pool`,
+  `realm`, `roles` and `src_pool` (or pin `user` / `src_ip`).
+
+  Two wire layouts, chosen with `--param log_filter=`:
+
+    standard (the appliance's default filter) —
+      <134>1 <ts> <appliance> PulseSecure: - - - <date> <time> - <node> - [<source ip>] <user>(<realm>)[<roles>] - <message>
+      No message id is emitted in this layout: the administration guide
+      lists an "event ID" among the Standard filter's fields, but the
+      one standard-layout sample found (Elastic's, below) carries none.
+      Check which your appliance does.
+
+    welf (the "WELF" filter) —
+      <134>1 <ts> <appliance> PulseSecure: - - - id=firewall time="<date> <time>" pri=6 fw=<appliance> vpn=<node> user=<user> realm="<realm>" roles="<roles>" proto=auth src=<source ip> dst= dstname= type=vpn op= arg="" result= sent= rcvd= agent="<user agent>" duration= msg="<message id>: <message>"
+
+  What this is based on — please compare with your own appliance:
+    * The administration guide states that syslog is sent in RFC 5424
+      form, names the Standard (default) and WELF filters, and offers
+      facility LOCAL0-LOCAL7 (it also mentions LOG_USER / LOG_INFO); it
+      does not show a sample line. PRI 134 (local0.info) is what the
+      samples below carry.
+    * The WELF layout, the four message ids and their texts are from the
+      samples in Ivanti's Splunk deployment guide appendix. That guide
+      is for Ivanti POLICY Secure (the sibling product; its samples say
+      vpn=ic); it is used here on the understanding that Connect Secure
+      shares the log format and message catalog. `node` defaults to
+      "ive", the author's recollection of what Connect Secure writes.
+    * The standard layout is from the raw sample in Elastic's Pulse
+      Connect Secure integration page (a third party), where an RFC 3164
+      relay header precedes the appliance's own "1 <ts> <appliance>
+      PulseSecure: - - - ..." line; only the appliance's part is emitted
+      here. No Ivanti page showing a standard-layout line was found.
+    * The local date/time inside the line and the offset in the header
+      both follow `tz`.
+
+  Source of truth:
+    - Ivanti Connect Secure 9.1R16 Administration Guide — Logging and
+      Monitoring (filters, RFC 5424, facility):
+        https://help.ivanti.com/ps/help/en_US/ICS/9.1RX/ag-9.1R16/logging_n_monitoring.htm
+    - Ivanti Policy Secure — Splunk Enterprise Deployment Guide, Appendix
+      (WELF sample lines and message ids):
+        https://help.ivanti.com/ps/help/en_US/IPS/vNow/int-splunk/appendix.htm
+    - Elastic — Pulse Connect Secure integration (standard-layout sample):
+        https://www.elastic.co/docs/reference/integrations/pulse_connect_secure
+
+format: text
+transport: [udp_syslog, tcp_syslog]
+
+ocsf:
+  class: authentication
+  category_uid: 3
+  class_uid: 3002
+
+detections:
+  wazuh: []
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  risk_refs: []
+  pa_refs: []
+
+regression:
+  baseline_alert_count: 0
+  baseline_ttd_ms: 5000
+
+params:
+  # Address the appliance puts in the header (and in fw= for welf).
+  appliance_ip: { default: "192.0.2.30" }
+  # Node name: "- <node> -" in standard, vpn=<node> in welf.
+  node: { default: "ive" }
+  # standard | welf
+  log_filter: { default: "standard" }
+  # Appliance clock offset; header and inner timestamps follow it.
+  tz: { default: "+0000" }
+  src_pool: { default: ["198.51.100.23", "198.51.100.77", "203.0.113.9"] }
+  user_pool: { default: ["alice", "bob", "carol"] }
+  realm: { default: "Users" }
+  # Role(s) mapped on a successful sign-in; comma-separated if several.
+  roles: { default: "Staff" }
+  auth_server: { default: "System Local" }
+  auth_server_type: { default: "Local Authentication" }
+  user_agent:
+    default: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:102.0) Gecko/20100101 Firefox/102.0"
+  outcome_weights: { default: { failed: 0.6, success: 0.4 } }
+  event_weights: { default: { login: 1.0, primary_auth: 0.0 } }
+
+fields:
+  # Drivers.
+  - name: outcome
+    type: weighted_choice
+    choices: ${params.outcome_weights}
+
+  - name: event
+    type: weighted_choice
+    choices: ${params.event_weights}
+
+  - name: pri
+    type: fixed
+    value: 134                              # local0.info (16*8 + 6)
+
+  - name: header_ts
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S"
+    utc_offset: ${params.tz}
+
+  # ±HHMM -> ±HH:MM for the RFC 5424 header.
+  - name: header_offset
+    type: template
+    template: "{{ params.tz[:3] }}:{{ params.tz[3:] }}"
+
+  - name: local_ts
+    type: datetime
+    format: "%Y-%m-%d %H:%M:%S"
+    utc_offset: ${params.tz}
+
+  - name: appliance_ip
+    type: param
+    param: appliance_ip
+
+  - name: node
+    type: param
+    param: node
+
+  - name: user
+    type: choice
+    choices: ${params.user_pool}
+
+  - name: realm
+    type: param
+    param: realm
+
+  - name: src_ip
+    type: choice
+    choices: ${params.src_pool}
+
+  - name: roles
+    type: template
+    template: "{{ params.roles if outcome == 'success' and event == 'login' else '' }}"
+
+  - name: agent
+    type: template
+    template: "{{ params.user_agent if outcome == 'success' and event == 'login' else '' }}"
+
+  - name: session_hex
+    type: faker
+    method: hex_8
+
+  - name: session_id
+    type: template
+    template: "{{ session_hex | lower }}"
+
+  - name: msg_id
+    type: template
+    template: >-
+      {%- if event == 'login' -%}
+      {{ 'AUT31504' if outcome == 'success' else 'AUT23457' }}
+      {%- else -%}
+      {{ 'AUT24326' if outcome == 'success' else 'AUT24327' }}
+      {%- endif -%}
+
+  - name: msg
+    type: template
+    template: >-
+      {%- if event == 'login' and outcome == 'success' -%}
+      Login succeeded for {{ user }}/{{ realm }} (session:{{ session_id }}) from {{ src_ip }} with {{ agent }}.
+      {%- elif event == 'login' -%}
+      Login failed using auth server {{ params.auth_server }} ({{ params.auth_server_type }}). Reason: Failed
+      {%- elif outcome == 'success' -%}
+      Primary authentication successful for {{ user }}/{{ params.auth_server }} from {{ src_ip }}
+      {%- else -%}
+      Primary authentication failed for {{ user }}/{{ params.auth_server }} from {{ src_ip }}
+      {%- endif -%}
+
+template: |-
+  <{{pri}}>1 {{header_ts}}{{header_offset}} {{appliance_ip}} PulseSecure: - - - {% if params.log_filter == 'welf' %}id=firewall time="{{local_ts}}" pri=6 fw={{appliance_ip}} vpn={{node}} user={{user}} realm="{{realm}}" roles="{{roles}}" proto=auth src={{src_ip}} dst= dstname= type=vpn op= arg="" result= sent= rcvd= agent="{{agent}}" duration= msg="{{msg_id}}: {{msg}}"{% else %}{{local_ts}} - {{node}} - [{{src_ip}}] {{user}}({{realm}})[{{roles}}] - {{msg}}{% endif %}

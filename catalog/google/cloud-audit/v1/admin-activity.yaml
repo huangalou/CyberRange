@@ -1,0 +1,388 @@
+vendor: google
+product: cloud-audit
+version: "v1"
+log_type: cloud_audit.admin_activity
+description: |
+  Google Cloud — Cloud Audit Logs, Admin Activity stream. Each line is
+  one Cloud Logging LogEntry as single-line JSON, the form a log sink
+  delivers (for example as the data of a Pub/Sub message); there is no
+  syslog prefix. The audit record itself is `protoPayload`, of type
+  `type.googleapis.com/google.cloud.audit.AuditLog`, and the entry sits
+  in `projects/<project_id>/logs/cloudaudit.googleapis.com%2Factivity`.
+
+  `operation` selects which administrative action is logged; serviceName,
+  methodName, resourceName, resource.type, resource.labels, the checked
+  permission and the request body all follow it:
+
+    operation            serviceName                          methodName                                         resource.type
+    set_iam_policy       cloudresourcemanager.googleapis.com  SetIamPolicy                                       project
+    create_sa_key        iam.googleapis.com                   google.iam.admin.v1.CreateServiceAccountKey        service_account
+    firewall_insert      compute.googleapis.com               v1.compute.firewalls.insert                        gce_firewall_rule
+    firewall_patch       compute.googleapis.com               v1.compute.firewalls.patch                         gce_firewall_rule
+    vm_insert            compute.googleapis.com               v1.compute.instances.insert                        gce_instance
+    vm_delete            compute.googleapis.com               v1.compute.instances.delete                        gce_instance
+    gke_create_cluster   container.googleapis.com             google.container.v1.ClusterManager.CreateCluster   gke_cluster
+    gke_delete_cluster   container.googleapis.com             google.container.v1.ClusterManager.DeleteCluster   gke_cluster
+
+  `outcome` selects whether the call went through:
+
+    outcome   protoPayload.status              authorizationInfo[].granted  severity
+    success   {}                               true                         NOTICE
+    denied    {"code":7,"message":"..."}       false                        ERROR
+              (7 = PERMISSION_DENIED)
+
+  Pin the drivers, not what they drive: service_name, method_name,
+  resource_type, resource_name, resource_labels, permission and request
+  are derived from `operation`; status, granted and severity from
+  `outcome`. Pinning one derived field on its own leaves the others
+  following a random operation / outcome and yields a self-contradictory
+  entry (for example an IAM method name on a gce_instance resource).
+  `operation` takes exactly one of the eight names above and `outcome`
+  exactly `success` or `denied`; any other value leaves the derived
+  fields empty.
+
+  What a detection usually keys on, and how to set it:
+    * who — `principal_pool` (or pin `principal_email`);
+      authenticationInfo.principalSubject follows it ("serviceAccount:"
+      for *.gserviceaccount.com addresses, "user:" otherwise)
+    * from where — `src_pool` (requestMetadata.callerIp) and
+      `user_agent_pool` (callerSuppliedUserAgent)
+    * where — `project_id` (logName, resource.labels.project_id and
+      every resource path follow it)
+    * what — `operation`, plus the object names: `firewall_pool`,
+      `instance_pool`, `cluster_pool`, `target_sa_name`, `zone`,
+      `location`
+    * content of the change — `iam_role` / `iam_member` for
+      set_iam_policy (request.policy.bindings and, on success,
+      serviceData.policyDelta.bindingDeltas); `fw_source_range` /
+      `fw_port` for the firewall operations
+
+  Values given with --param are inserted into the JSON as-is; keep them
+  free of unescaped `"` and `\`.
+
+  Long-running operations: the Compute Engine and GKE methods here are
+  long-running, and the audit documentation says such operations write a
+  first entry (LogEntry.operation.first=true) and a later completion
+  entry (last=true), and that some services leave the field out on
+  failure. This catalog emits only the first entry — the one carrying
+  the request — with `operation.first` set for a successful Compute /
+  GKE call, and no `operation` object on a denied one.
+
+  Timestamps are UTC ("Z"), so there is no `tz` parameter.
+
+  Read on the pages listed below: the LogEntry and AuditLog field names
+  and meanings; the logName pattern; the service names and method names
+  of the IAM, Compute Engine and GKE rows and that they are Admin
+  Activity; the permissions iam.serviceAccountKeys.create,
+  compute.firewalls.create / update, compute.instances.delete and
+  container.clusters.create / delete; resource.type `project` and
+  `service_account`; the shape of the CreateServiceAccountKey request
+  and its resourceName (projects/-/serviceAccounts/<unique id>); the
+  policyDelta.bindingDeltas shape; severity NOTICE on a successful
+  entry.
+
+  Not on those pages, written from general knowledge of the product —
+  compare with entries exported from your own project:
+    * the literal method name `SetIamPolicy` for the project-level call
+      (the Resource Manager page names the operation
+      cloudresourcemanager.v3.projects.setIamPolicy and shows no method
+      string for it) and its permission
+      resourcemanager.projects.setIamPolicy;
+    * compute.instances.create for v1.compute.instances.insert (the page
+      refers to the IAM documentation instead of listing permissions);
+    * resource.type gce_firewall_rule / gce_instance / gke_cluster and
+      every resource.labels key set;
+    * the resourceName paths of the Compute Engine and GKE rows;
+    * the request bodies other than CreateServiceAccountKey, including
+      the `alloweds` / `sourceRanges` keys and the serviceData @type;
+    * that a PERMISSION_DENIED call is written to the activity stream
+      with severity ERROR, and the wording of status.message (the text
+      here is illustrative);
+    * the shape of insertId and operation.id, and the user agent
+      strings.
+  Real entries carry more fields than this (response, resourceLocation,
+  fuller requestAttributes and so on); only the ones rules normally
+  match on are produced.
+
+  Source of truth:
+    - Cloud Audit Logs — Understand audit logs (sample entry, logName,
+      long-running operations):
+        https://docs.cloud.google.com/logging/docs/audit/understanding-audit-logs
+    - AuditLog reference (AuditLog, AuthenticationInfo,
+      AuthorizationInfo, RequestMetadata, Status):
+        https://docs.cloud.google.com/logging/docs/reference/audit/auditlog/rest/Shared.Types/AuditLog
+    - LogEntry reference (logName, resource, timestamp, severity,
+      insertId, operation):
+        https://docs.cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry
+    - IAM audit logging (service account key methods and permissions):
+        https://docs.cloud.google.com/iam/docs/audit-logging
+    - IAM — example logs for service accounts:
+        https://docs.cloud.google.com/iam/docs/audit-logging/examples-service-accounts
+    - Resource Manager audit logging:
+        https://docs.cloud.google.com/resource-manager/docs/audit-logging
+    - Compute Engine audit logging (first 300,000 characters of the
+      page were read):
+        https://docs.cloud.google.com/compute/docs/logging/audit-logging
+    - GKE (container.googleapis.com) audit logging:
+        https://docs.cloud.google.com/kubernetes-engine/docs/how-to/audit-logging-container
+
+format: json
+transport: [pubsub, file]
+
+ocsf:
+  class: api_activity
+  category_uid: 6
+  class_uid: 6003
+
+detections:
+  wazuh: []
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  risk_refs: []
+  pa_refs: []
+
+regression:
+  baseline_alert_count: 0
+  baseline_ttd_ms: 5000
+
+params:
+  project_id: { default: "example-project-123" }
+  principal_pool:
+    default:
+      - "alice@example.com"
+      - "bob@example.com"
+      - "ci-deployer@example-project-123.iam.gserviceaccount.com"
+  src_pool: { default: ["198.51.100.23", "198.51.100.77", "203.0.113.9"] }
+  user_agent_pool:
+    default:
+      - "google-cloud-sdk gcloud/460.0.0 command/gcloud.projects.add-iam-policy-binding invocation-id/0123456789abcdef environment/None environment-version/None interactive/True from-script/False python/3.11.6 term/xterm-256color (Linux 5.15.0),gzip(gfe)"
+      - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36,gzip(gfe)"
+      - "Terraform/1.7.4 (+https://www.terraform.io) Terraform-Plugin-SDK/2.31.0 terraform-provider-google/5.18.0,gzip(gfe)"
+  zone:     { default: "us-central1-a" }
+  # GKE cluster location (a region or a zone).
+  location: { default: "us-central1" }
+  firewall_pool: { default: ["allow-mgmt-ingress", "allow-ingress-temp", "allow-all-temp"] }
+  instance_pool: { default: ["web-01", "build-runner-02", "db-01"] }
+  cluster_pool:  { default: ["prod-cluster", "staging-cluster"] }
+  # Account part of the service account a key is created for.
+  target_sa_name: { default: "app-backend" }
+  # set_iam_policy: the binding being added.
+  iam_role:   { default: "roles/owner" }
+  iam_member: { default: "user:mallory@example.org" }
+  # firewall_insert / firewall_patch: what the rule lets in.
+  fw_source_range: { default: "0.0.0.0/0" }
+  fw_port:         { default: "22" }
+  operation_weights:
+    default:
+      set_iam_policy: 0.20
+      create_sa_key: 0.15
+      firewall_insert: 0.15
+      firewall_patch: 0.10
+      vm_insert: 0.15
+      vm_delete: 0.10
+      gke_create_cluster: 0.10
+      gke_delete_cluster: 0.05
+  outcome_weights: { default: { success: 0.9, denied: 0.1 } }
+
+fields:
+  - name: operation
+    type: weighted_choice
+    choices: ${params.operation_weights}
+
+  - name: outcome
+    type: weighted_choice
+    choices: ${params.outcome_weights}
+
+  - name: project_id
+    type: param
+    param: project_id
+
+  - name: principal_email
+    type: choice
+    choices: ${params.principal_pool}
+
+  - name: principal_subject
+    type: template
+    template: "{{ 'serviceAccount:' if principal_email.endswith('.gserviceaccount.com') else 'user:' }}{{ principal_email }}"
+
+  - name: caller_ip
+    type: choice
+    choices: ${params.src_pool}
+
+  - name: user_agent
+    type: choice
+    choices: ${params.user_agent_pool}
+
+  - name: zone
+    type: param
+    param: zone
+
+  - name: location
+    type: param
+    param: location
+
+  - name: firewall_name
+    type: choice
+    choices: ${params.firewall_pool}
+
+  - name: instance_name
+    type: choice
+    choices: ${params.instance_pool}
+
+  - name: cluster_name
+    type: choice
+    choices: ${params.cluster_pool}
+
+  - name: target_sa_email
+    type: template
+    template: "{{ params.target_sa_name }}@{{ project_id }}.iam.gserviceaccount.com"
+
+  # Numeric resource ids (service account unique id: 21 digits;
+  # Compute Engine resource ids: 19 digits).
+  - name: id_head
+    type: int_range
+    min: 100000000
+    max: 999999999
+
+  - name: id_tail
+    type: int_range
+    min: 1000000000
+    max: 9999999999
+
+  - name: sa_unique_id
+    type: template
+    template: "10{{ id_head }}{{ id_tail }}"
+
+  - name: compute_id
+    type: template
+    template: "{{ id_head }}{{ id_tail }}"
+
+  - name: service_name
+    type: template
+    template: |-
+      {{ {'set_iam_policy': 'cloudresourcemanager.googleapis.com', 'create_sa_key': 'iam.googleapis.com', 'firewall_insert': 'compute.googleapis.com', 'firewall_patch': 'compute.googleapis.com', 'vm_insert': 'compute.googleapis.com', 'vm_delete': 'compute.googleapis.com', 'gke_create_cluster': 'container.googleapis.com', 'gke_delete_cluster': 'container.googleapis.com'}[operation] }}
+
+  - name: method_name
+    type: template
+    template: |-
+      {{ {'set_iam_policy': 'SetIamPolicy', 'create_sa_key': 'google.iam.admin.v1.CreateServiceAccountKey', 'firewall_insert': 'v1.compute.firewalls.insert', 'firewall_patch': 'v1.compute.firewalls.patch', 'vm_insert': 'v1.compute.instances.insert', 'vm_delete': 'v1.compute.instances.delete', 'gke_create_cluster': 'google.container.v1.ClusterManager.CreateCluster', 'gke_delete_cluster': 'google.container.v1.ClusterManager.DeleteCluster'}[operation] }}
+
+  - name: resource_type
+    type: template
+    template: |-
+      {{ {'set_iam_policy': 'project', 'create_sa_key': 'service_account', 'firewall_insert': 'gce_firewall_rule', 'firewall_patch': 'gce_firewall_rule', 'vm_insert': 'gce_instance', 'vm_delete': 'gce_instance', 'gke_create_cluster': 'gke_cluster', 'gke_delete_cluster': 'gke_cluster'}[operation] }}
+
+  - name: permission
+    type: template
+    template: |-
+      {{ {'set_iam_policy': 'resourcemanager.projects.setIamPolicy', 'create_sa_key': 'iam.serviceAccountKeys.create', 'firewall_insert': 'compute.firewalls.create', 'firewall_patch': 'compute.firewalls.update', 'vm_insert': 'compute.instances.create', 'vm_delete': 'compute.instances.delete', 'gke_create_cluster': 'container.clusters.create', 'gke_delete_cluster': 'container.clusters.delete'}[operation] }}
+
+  - name: resource_name
+    type: template
+    template: |-
+      {%- if operation == 'set_iam_policy' -%}
+      projects/{{ project_id }}
+      {%- elif operation == 'create_sa_key' -%}
+      projects/-/serviceAccounts/{{ sa_unique_id }}
+      {%- elif operation in ('firewall_insert', 'firewall_patch') -%}
+      projects/{{ project_id }}/global/firewalls/{{ firewall_name }}
+      {%- elif operation in ('vm_insert', 'vm_delete') -%}
+      projects/{{ project_id }}/zones/{{ zone }}/instances/{{ instance_name }}
+      {%- elif operation in ('gke_create_cluster', 'gke_delete_cluster') -%}
+      projects/{{ project_id }}/locations/{{ location }}/clusters/{{ cluster_name }}
+      {%- endif -%}
+
+  # JSON object for resource.labels.
+  - name: resource_labels
+    type: template
+    template: |-
+      {%- if operation == 'set_iam_policy' -%}
+      {"project_id":"{{ project_id }}"}
+      {%- elif operation == 'create_sa_key' -%}
+      {"email_id":"{{ target_sa_email }}","project_id":"{{ project_id }}","unique_id":"{{ sa_unique_id }}"}
+      {%- elif operation in ('firewall_insert', 'firewall_patch') -%}
+      {"firewall_rule_id":"{{ compute_id }}","project_id":"{{ project_id }}"}
+      {%- elif operation in ('vm_insert', 'vm_delete') -%}
+      {"instance_id":"{{ compute_id }}","project_id":"{{ project_id }}","zone":"{{ zone }}"}
+      {%- elif operation in ('gke_create_cluster', 'gke_delete_cluster') -%}
+      {"cluster_name":"{{ cluster_name }}","location":"{{ location }}","project_id":"{{ project_id }}"}
+      {%- else -%}
+      {}
+      {%- endif -%}
+
+  # JSON object for protoPayload.request.
+  - name: request
+    type: template
+    template: |-
+      {%- if operation == 'set_iam_policy' -%}
+      {"@type":"type.googleapis.com/google.iam.v1.SetIamPolicyRequest","resource":"{{ project_id }}","policy":{"bindings":[{"role":"{{ params.iam_role }}","members":["{{ params.iam_member }}"]}]}}
+      {%- elif operation == 'create_sa_key' -%}
+      {"@type":"type.googleapis.com/google.iam.admin.v1.CreateServiceAccountKeyRequest","name":"projects/-/serviceAccounts/{{ target_sa_email }}"}
+      {%- elif operation == 'firewall_insert' -%}
+      {"@type":"type.googleapis.com/compute.firewalls.insert","name":"{{ firewall_name }}","network":"https://www.googleapis.com/compute/v1/projects/{{ project_id }}/global/networks/default","direction":"INGRESS","sourceRanges":["{{ params.fw_source_range }}"],"alloweds":[{"IPProtocol":"tcp","ports":["{{ params.fw_port }}"]}]}
+      {%- elif operation == 'firewall_patch' -%}
+      {"@type":"type.googleapis.com/compute.firewalls.patch","name":"{{ firewall_name }}","sourceRanges":["{{ params.fw_source_range }}"],"alloweds":[{"IPProtocol":"tcp","ports":["{{ params.fw_port }}"]}]}
+      {%- elif operation == 'vm_insert' -%}
+      {"@type":"type.googleapis.com/compute.instances.insert","name":"{{ instance_name }}","machineType":"projects/{{ project_id }}/zones/{{ zone }}/machineTypes/e2-medium"}
+      {%- elif operation == 'vm_delete' -%}
+      {"@type":"type.googleapis.com/compute.instances.delete"}
+      {%- elif operation == 'gke_create_cluster' -%}
+      {"@type":"type.googleapis.com/google.container.v1.CreateClusterRequest","parent":"projects/{{ project_id }}/locations/{{ location }}","cluster":{"name":"{{ cluster_name }}"}}
+      {%- elif operation == 'gke_delete_cluster' -%}
+      {"@type":"type.googleapis.com/google.container.v1.DeleteClusterRequest","name":"projects/{{ project_id }}/locations/{{ location }}/clusters/{{ cluster_name }}"}
+      {%- else -%}
+      {}
+      {%- endif -%}
+
+  - name: granted
+    type: template
+    template: "{{ 'true' if outcome == 'success' else 'false' }}"
+
+  - name: severity
+    type: template
+    template: "{{ 'NOTICE' if outcome == 'success' else 'ERROR' }}"
+
+  # JSON object for protoPayload.status.
+  - name: status
+    type: template
+    template: |-
+      {%- if outcome == 'success' -%}
+      {}
+      {%- elif service_name == 'compute.googleapis.com' -%}
+      {"code":7,"message":"Required '{{ permission }}' permission for '{{ resource_name }}'"}
+      {%- else -%}
+      {"code":7,"message":"Permission '{{ permission }}' denied on resource '{{ resource_name }}' (or it may not exist)."}
+      {%- endif -%}
+
+  - name: timestamp
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S.%fZ"
+
+  - name: receive_timestamp
+    type: datetime
+    format: "%Y-%m-%dT%H:%M:%S.%fZ"
+
+  - name: epoch
+    type: datetime
+    format: epoch
+
+  - name: insert_hex
+    type: faker
+    method: hex_16
+
+  - name: insert_id
+    type: template
+    template: "{{ insert_hex | lower }}"
+
+  - name: operation_hex
+    type: faker
+    method: hex_16
+
+  - name: operation_id
+    type: template
+    template: "operation-{{ epoch }}000-{{ operation_hex[:8] | lower }}-{{ operation_hex[8:] | lower }}"
+
+template: |-
+  {"protoPayload":{"@type":"type.googleapis.com/google.cloud.audit.AuditLog","status":{{status}},"authenticationInfo":{"principalEmail":"{{principal_email}}","principalSubject":"{{principal_subject}}"},"requestMetadata":{"callerIp":"{{caller_ip}}","callerSuppliedUserAgent":"{{user_agent}}","requestAttributes":{"time":"{{timestamp}}","auth":{}}},"serviceName":"{{service_name}}","methodName":"{{method_name}}","authorizationInfo":[{"resource":"{{resource_name}}","permission":"{{permission}}","granted":{{granted}},"permissionType":"ADMIN_WRITE"}],"resourceName":"{{resource_name}}"{% if operation == 'set_iam_policy' and outcome == 'success' %},"serviceData":{"@type":"type.googleapis.com/google.iam.v1.logging.AuditData","policyDelta":{"bindingDeltas":[{"action":"ADD","role":"{{params.iam_role}}","member":"{{params.iam_member}}"}]}}{% endif %},"request":{{request}}},"insertId":"{{insert_id}}","resource":{"type":"{{resource_type}}","labels":{{resource_labels}}},"timestamp":"{{timestamp}}","severity":"{{severity}}","logName":"projects/{{project_id}}/logs/cloudaudit.googleapis.com%2Factivity"{% if outcome == 'success' and service_name in ('compute.googleapis.com', 'container.googleapis.com') %},"operation":{"id":"{{operation_id}}","producer":"{{service_name}}","first":true}{% endif %},"receiveTimestamp":"{{receive_timestamp}}"}

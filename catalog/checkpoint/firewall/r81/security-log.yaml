@@ -1,0 +1,226 @@
+vendor: checkpoint
+product: firewall
+version: "r81"
+log_type: firewall.security_log
+description: |
+  Check Point Security Gateway connection log of the Firewall blade
+  (Accept / Drop / Reject), as exported from a Management Server or Log
+  Server by Log Exporter (`cp_log_export`) in its default `syslog`
+  format. This is the "firewall traffic" source most detection rules key
+  on.
+
+  Wire layout: an RFC 5424-style header whose APP-NAME is the literal
+  `CheckPoint`, a `-` MSGID, and then - instead of RFC 5424 structured
+  data - one bracketed list of `key:"value"` pairs separated by `; `:
+
+    <134>1 2024-05-01T08:15:30Z cp-mgmt CheckPoint 18160 - [action:"Accept"; flags:"444676"; ifdir:"inbound"; ... src:"198.51.100.23"]
+
+  The header timestamp is UTC with a `Z` suffix and the body carries
+  `time` as epoch seconds, so there is no device-timezone parameter. The
+  header hostname is the exporting Management / Log Server
+  (`log_server`); the gateway that enforced the rule is `origin`.
+
+  What a detection usually keys on (all can be pinned with --param):
+    * `action`            - Accept / Drop / Reject (the driver, see below)
+    * `src` / `dst`       - pools `src_pool` / `dst_pool`
+    * `s_port`            - source port
+    * `service`, `service_id`, `proto` - destination port, service name
+      and IP protocol number; all three come from one `svc` entry
+    * `rule_name`, `match_id` - matched Access Control rule name / number
+    * `ifname`, `ifdir`   - interface that logged the packet and the
+      packet direction on it (inbound / outbound)
+    * `inzone` / `outzone`, `origin`, `product`
+
+  Pin the driver, not what it drives:
+    * `action` takes exactly `Accept`, `Drop` or `Reject`. `rule_action`,
+      `rule_name`, `match_id`, `rule_uid` and `flags` follow it, so
+      `--param action=Drop` yields a line that is a drop throughout.
+      Pinning `rule_action` alone gives a line whose action and matched
+      rule disagree. `rule_name` and `match_id` drive nothing: pin them
+      directly to reproduce the rule a detection names.
+    * `svc` is one `<service_id>/<ip-proto>/<dst-port>` entry from
+      `service_pool`; `service`, `service_id` and `proto` are split out
+      of it. To force a destination port, pin `svc` (for example
+      `--param svc=ssh/6/22`) or give a one-entry `service_pool`;
+      pinning `service` alone leaves `service_id` and `proto` describing
+      another service.
+
+  Topology is fixed: connections come from `src_pool` (outside) to
+  `dst_pool` (inside), are logged on `ifname` with ifdir "inbound",
+  inzone "External", outzone "Internal". `ifdir` is the direction of the
+  packet on the logging interface, not a network direction; pin `ifdir`,
+  `ifname`, `inzone` and `outzone` together if a rule needs the reverse.
+
+  product value. The Firewall blade's `product` field is
+  "VPN-1 & FireWall-1" (legacy name still on the wire; SmartConsole
+  shows the blade as "Firewall"). That string was seen in public sample
+  logs (below), not in a Check Point reference table: sk144192 documents
+  `product` only as "Product name" without listing values.
+
+  Representative, not taken from a reference table - check against your
+  own export before relying on them:
+    * The field set and order follow public sample logs of this format
+      rather than a Check Point specification; Log Exporter emits
+      whatever fields the log carries, so real lines vary by version,
+      blade set and tracking options (accounting adds byte / packet
+      counters, NAT adds xlate* fields, Identity Awareness adds user
+      fields - none of which are emitted here).
+    * `flags`, `logid`, `version`, `__policy_id_tag` and the UUIDs are
+      placeholders shaped like the samples. sk144192 marks flags, ifdir,
+      ifname, version and __policy_id_tag as internal-use fields and
+      does not describe their values.
+    * Rule names / numbers are invented. Accept-only fields are not
+      modelled separately: Drop and Reject lines carry the same field
+      set as Accept.
+
+  Source of truth:
+    - sk122323 Log Exporter (availability R80.20+, syslog over TCP/UDP,
+      output formats Syslog / Splunk / CEF / LEEF / Generic / JSON /
+      LogRhythm / RSA; no layout or sample lines on the page):
+        https://support.checkpoint.com/results/sk/sk122323
+    - R81 Logging and Monitoring Administration Guide - Log Exporter
+      (feature overview only) and its Appendix (loguid semantics, CEF /
+      LEEF header defaults):
+        https://sc1.checkpoint.com/documents/R81/WebAdminGuides/EN/CP_R81_LoggingAndMonitoring_AdminGuide/Topics-LMG/Log-Exporter.htm
+        https://sc1.checkpoint.com/documents/R81/WebAdminGuides/EN/CP_R81_LoggingAndMonitoring_AdminGuide/Topics-LMG/Log-Exporter-Appendix.htm
+    - sk144192 Check Point log fields (Common Fields and Firewall
+      Fields: meaning and type of src, dst, proto, s_port, service,
+      service_id, rule_name, rule_uid, layer_name, rule_action, inzone,
+      outzone, origin, sequencenum, loguid; only the first part of this
+      very long page was read):
+        https://support.checkpoint.com/results/sk/sk144192
+    - Wire layout and sample lines (third-party, not Check Point):
+      AxoSyslog "Check Point Log Exporter parser" and the test corpus of
+      the Elastic Check Point integration:
+        https://axoflow.com/docs/axosyslog-core/chapter-parsers/parser-checkpoint/
+        https://github.com/elastic/integrations/blob/main/packages/checkpoint/data_stream/firewall/_dev/test/pipeline/test-checkpoint.log
+
+format: key_value          # RFC 5424-style header + [key:"value"; key:"value"; ...]
+transport: [udp_syslog, tcp_syslog]
+
+ocsf:
+  class: network_activity
+  category_uid: 4
+  class_uid: 4001
+
+detections:
+  wazuh: []
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  risk_refs: []
+  pa_refs: []
+
+params:
+  # Management / Log Server that runs Log Exporter (syslog header host).
+  log_server: { default: "cp-mgmt" }
+  # Security Gateway that enforced the rule.
+  origin:     { default: "192.0.2.1" }
+  gateway_name: { default: "gw-01" }
+  policy_name:  { default: "Standard" }
+  src_pool: { default: ["198.51.100.23", "198.51.100.77", "203.0.113.9"] }
+  dst_pool: { default: ["192.0.2.10", "192.0.2.20", "192.0.2.80"] }
+  # <service_id>/<ip-proto>/<dst-port>
+  service_pool:
+    default:
+      - "https/6/443"
+      - "http/6/80"
+      - "ssh/6/22"
+      - "domain-udp/17/53"
+      - "Remote_Desktop_Protocol/6/3389"
+  action_weights: { default: { Accept: 0.6, Drop: 0.35, Reject: 0.05 } }
+
+fields:
+  - name: action
+    type: weighted_choice
+    choices: ${params.action_weights}
+
+  - { name: pri, type: fixed, value: 134 }               # local0.info
+  - { name: header_ts, type: datetime, format: "%Y-%m-%dT%H:%M:%SZ" }
+  - { name: log_server, type: param, param: log_server }
+  - { name: pid, type: int_range, min: 2000, max: 32000 }
+
+  - name: flags
+    type: template
+    template: "{{ {'Accept': 444676, 'Drop': 425984, 'Reject': 425984}.get(action, 444676) }}"
+
+  - { name: ifdir, type: fixed, value: "inbound" }
+  - { name: ifname, type: fixed, value: "eth0" }
+  - { name: logid, type: fixed, value: 0 }
+
+  - { name: time, type: datetime, format: epoch }
+  - { name: loguid_b, type: int_range, min: 1, max: 4294967295 }
+  - { name: loguid_c, type: int_range, min: 1, max: 4294967295 }
+  - name: loguid
+    type: template
+    template: "{{ '{0x%x,0x0,0x%x,0x%x}' | format(time | int, loguid_b | int, loguid_c | int) }}"
+
+  - { name: origin, type: param, param: origin }
+  - name: originsicname
+    type: template
+    template: "CN={{ params.gateway_name }},O={{ params.log_server }}.example.com.x7k2pq"
+  - { name: sequencenum, type: int_range, min: 1, max: 999 }
+  - { name: version, type: fixed, value: 5 }
+
+  - name: policy_id_tag
+    type: template
+    template: "product=VPN-1 & FireWall-1[db_tag={7D2F4C1A-0B3E-4E5F-9A6B-1C2D3E4F5A6B};mgmt={{ params.log_server }};date=1714500000;policy_name={{ params.policy_name }}\\]"
+
+  - name: dst
+    type: choice
+    choices: ${params.dst_pool}
+
+  - { name: inzone, type: fixed, value: "External" }
+  - { name: layer_name, type: fixed, value: "Network" }
+  - { name: layer_uuid, type: fixed, value: "5b1c2d3e-4f50-4a61-b728-394a5b6c7d8e" }
+
+  - name: match_id
+    type: template
+    template: "{{ {'Accept': 3, 'Drop': 12, 'Reject': 9}.get(action, 12) }}"
+
+  - { name: parent_rule, type: fixed, value: 0 }
+
+  - name: rule_action
+    type: template
+    template: "{{ action }}"
+
+  - name: rule_name
+    type: template
+    template: "{{ {'Accept': 'Allow Published Services', 'Drop': 'Cleanup rule', 'Reject': 'Reject Ident'}.get(action, 'Cleanup rule') }}"
+
+  - name: rule_uid
+    type: template
+    template: "{{ {'Accept': '0a1b2c3d-1111-4a4a-8b8b-000000000003', 'Drop': '0a1b2c3d-1111-4a4a-8b8b-000000000012', 'Reject': '0a1b2c3d-1111-4a4a-8b8b-000000000009'}.get(action, '0a1b2c3d-1111-4a4a-8b8b-000000000012') }}"
+
+  - { name: outzone, type: fixed, value: "Internal" }
+  - { name: product, type: fixed, value: "VPN-1 & FireWall-1" }
+
+  - name: svc
+    type: choice
+    choices: ${params.service_pool}
+
+  - name: service_id
+    type: template
+    template: "{{ svc.split('/')[0] }}"
+
+  - name: proto
+    type: template
+    template: "{{ svc.split('/')[1] }}"
+
+  - name: service
+    type: template
+    template: "{{ svc.split('/')[2] }}"
+
+  - { name: s_port, type: int_range, min: 1024, max: 65535 }
+
+  - name: src
+    type: choice
+    choices: ${params.src_pool}
+
+template: |-
+  <{{pri}}>1 {{header_ts}} {{log_server}} CheckPoint {{pid}} - [action:"{{action}}"; flags:"{{flags}}"; ifdir:"{{ifdir}}"; ifname:"{{ifname}}"; logid:"{{logid}}"; loguid:"{{loguid}}"; origin:"{{origin}}"; originsicname:"{{originsicname}}"; sequencenum:"{{sequencenum}}"; time:"{{time}}"; version:"{{version}}"; __policy_id_tag:"{{policy_id_tag}}"; dst:"{{dst}}"; inzone:"{{inzone}}"; layer_name:"{{layer_name}}"; layer_uuid:"{{layer_uuid}}"; match_id:"{{match_id}}"; parent_rule:"{{parent_rule}}"; rule_action:"{{rule_action}}"; rule_name:"{{rule_name}}"; rule_uid:"{{rule_uid}}"; outzone:"{{outzone}}"; product:"{{product}}"; proto:"{{proto}}"; s_port:"{{s_port}}"; service:"{{service}}"; service_id:"{{service_id}}"; src:"{{src}}"]
+
+regression:
+  baseline_alert_count: 0
+  baseline_ttd_ms: 5000
