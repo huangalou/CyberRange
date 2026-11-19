@@ -70,7 +70,7 @@ CyberRange/
 ├── CLAUDE.md
 ├── LICENSE
 ├── README.md
-├── catalog/                 ← 75 份 YAML，35 個 vendor/product
+├── catalog/                 ← 76 份 YAML，35 個 vendor/product
 ├── engine/                  ← Python library + CLI
 │   ├── pyproject.toml       ← cyberrange console script
 │   ├── src/cyberrange/
@@ -112,7 +112,7 @@ cd web && npm install && npm run dev   # http://localhost:3000
 cd engine && source .venv/bin/activate && python -m pytest tests/ -q   # engine
 # ArcSight parse-compat 軸(需本機解壓的 SmartConnector parser bundle,專有檔不進 repo;未設 env 整組 skip)
 ARCSIGHT_PARSERS=~/Projects/CyberRange-lab/vendor-refs/arcsight/arcsight python -m pytest tests/arcsight -q
-python tests/arcsight/arcsight_sim.py --trace   # 75 份逐一列 verdict(OK/WARN/PARTIAL/CATCH-ALL/FAIL/N-A)
+python tests/arcsight/arcsight_sim.py --trace   # 76 份逐一列 verdict(OK/WARN/PARTIAL/CATCH-ALL/FAIL/N-A)
 cd api && python -m pytest tests/ -q                                    # api（沿用同一個 venv）
 cd web && npm run build                                                 # web
 ```

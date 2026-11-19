@@ -1,0 +1,162 @@
+vendor: fortinet
+product: fortios
+version: "7.4"
+log_type: event.vpn.ipsec_phase1
+description: |
+  FortiGate FortiOS 7.4 IPsec IKE phase 1 negotiation failures
+  (type="event" subtype="vpn" action="negotiate"):
+
+    * logid="0101037124" — logdesc/msg "IPsec phase 1 error",
+      status="negotiate_error", with a `reason` such as
+      "peer SA proposal not match local policy"
+    * logid="0101037128" — logdesc "Progress IPsec phase 1",
+      status="failure", result="ERROR", role="responder"
+
+  An unsolicited peer on the internet scanning or brute-forcing the
+  IKE service produces this pair for every attempt, so rules about IKE
+  enumeration usually count either logid per remote address. `kind`
+  selects which message is emitted (`error` or `progress`); logid,
+  logdesc, msg, status and the progress-only keys follow it. Pin it with
+  `--param kind=error` and shape the rate with --burst.
+
+  The remote peer is `remip` / `remport`; `locip` / `locport` are the
+  FortiGate's own WAN address and IKE port (500, or 4500 after NAT-T).
+  `cookies` is the initiator SPI followed by an all-zero responder SPI,
+  because the exchange never got past the first message.
+
+  Source of truth:
+    - FortiOS 7.4 Log Message Reference, VPN event logids 37124 and
+      37128 (field set and values)
+    - Key order and value shapes checked against FortiOS 7.x device
+      output for both logids
+
+format: key_value
+transport: [udp_syslog, tcp_syslog, file]
+
+ocsf:
+  class: network_activity
+  category_uid: 4
+  class_uid: 4001
+
+detections:
+  wazuh:
+    - decoder: fortigate
+  sigma: []
+  elk_detection: []
+
+mythos_alignment:
+  risk_refs: []
+  pa_refs: []
+
+params:
+  devname: { default: "FGT100E-LAB" }
+  devid:   { default: "FG100E1234567890" }
+  vd:      { default: "root" }
+  # Device clock offset; date/time/the syslog timestamp follow it.
+  tz:      { default: "+0000" }
+  # The FortiGate's WAN address that terminates IKE.
+  local_ip: { default: "192.0.2.1" }
+  outintf:  { default: "wan1" }
+  remip_pool: { default: ["198.51.100.23", "198.51.100.77", "203.0.113.9"] }
+  kind_weights: { default: { error: 0.5, progress: 0.5 } }
+  reason_weights:
+    default:
+      "peer SA proposal not match local policy": 0.7
+      "gw lookup failed (proposal mismatch)": 0.3
+
+fields:
+  - name: kind
+    type: weighted_choice
+    choices: ${params.kind_weights}
+
+  - name: rfc3164_ts
+    type: datetime
+    format: "%b %d %H:%M:%S"
+    utc_offset: ${params.tz}
+
+  - name: date
+    type: datetime
+    format: "%Y-%m-%d"
+    utc_offset: ${params.tz}
+
+  - name: time
+    type: datetime
+    format: "%H:%M:%S"
+    utc_offset: ${params.tz}
+
+  - name: eventtime
+    type: datetime
+    format: epoch_ns
+
+  - name: tz
+    type: param
+    param: tz
+
+  - name: devname
+    type: param
+    param: devname
+
+  - name: devid
+    type: param
+    param: devid
+
+  - name: vd
+    type: param
+    param: vd
+
+  - name: logid
+    type: template
+    template: "{{ '0101037124' if kind == 'error' else '0101037128' }}"
+
+  - name: logdesc
+    type: template
+    template: "{{ 'IPsec phase 1 error' if kind == 'error' else 'Progress IPsec phase 1' }}"
+
+  - name: msg
+    type: template
+    template: "{{ 'IPsec phase 1 error' if kind == 'error' else 'progress IPsec phase 1' }}"
+
+  - name: status
+    type: template
+    template: "{{ 'negotiate_error' if kind == 'error' else 'failure' }}"
+
+  - name: remip
+    type: choice
+    choices: ${params.remip_pool}
+
+  - name: locip
+    type: param
+    param: local_ip
+
+  - name: remport
+    type: int_range
+    min: 1024
+    max: 65535
+
+  - name: locport
+    type: weighted_choice
+    choices: { "500": 0.6, "4500": 0.4 }
+
+  - name: outintf
+    type: param
+    param: outintf
+
+  - name: spi
+    type: int_range
+    min: 1
+    max: 18446744073709551615
+
+  - name: cookies
+    type: template
+    template: "{{ '%016x' % (spi | int) }}/0000000000000000"
+
+  - name: reason
+    type: weighted_choice
+    choices: ${params.reason_weights}
+
+template: |-
+  <187>{{rfc3164_ts}} {{devname}} date={{date}} time={{time}} devname="{{devname}}" devid="{{devid}}" eventtime={{eventtime}} tz="{{tz}}" logid="{{logid}}" type="event" subtype="vpn" level="error" vd="{{vd}}" logdesc="{{logdesc}}" msg="{{msg}}" action="negotiate" remip={{remip}} locip={{locip}} remport={{remport}} locport={{locport}} outintf="{{outintf}}" cookies="{{cookies}}" user="N/A" group="N/A" useralt="N/A" xauthuser="N/A" xauthgroup="N/A" assignip=N/A vpntunnel="N/A" status="{{status}}"{% if kind == 'error' %} reason="{{reason}}" peer_notif="NOT-APPLICABLE"{% else %} init="remote" mode="main" dir="inbound" stage=1 role="responder" result="ERROR"{% endif %} advpnsc=0
+
+regression:
+  baseline_alert_count: 0
+  baseline_ttd_ms: 5000

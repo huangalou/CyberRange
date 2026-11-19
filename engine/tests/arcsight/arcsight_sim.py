@@ -352,6 +352,7 @@ SPEC: dict[str, dict] = {
     "trendmicro/tippingpoint-sms/5.x/ips-alert": dict(kind="regex", file="tippingpoint/tippingpoint_sms_2_5.subagent.sdkrfilereader.properties", pre=after_host),
     "fortinet/fortios/7.4/utm-ips-signature": dict(kind="kv", file="fortigate/fortigate.sdkkeyvaluefilereader.properties", pre=after_host),
     "fortinet/fortios/7.4/event-system-admin-login": dict(kind="kv", file="fortigate/fortigate.sdkkeyvaluefilereader.properties", pre=after_host),
+    "fortinet/fortios/7.4/event-vpn-ipsec-phase1": dict(kind="kv", file="fortigate/fortigate.sdkkeyvaluefilereader.properties", pre=after_host),
     "fortinet/fortios/7.4/fortios.event.vpn.sslvpn_auth.fortibleed": dict(kind="kv", file="fortigate/fortigate.sdkkeyvaluefilereader.properties", pre=after_host),
     "fortinet/fortios/7.4/utm-webfilter-litellm-c2-teampcp": dict(kind="kv", file="fortigate/fortigate.sdkkeyvaluefilereader.properties", pre=after_host),
     "fortinet/fortiweb/7.x/attack-log": dict(kind="na", note="no FortiWeb parser in 8.5.2 bundle (FortiWeb → CEF recommended)"),
